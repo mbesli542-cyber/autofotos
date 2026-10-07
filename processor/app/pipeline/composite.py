@@ -48,9 +48,25 @@ def resample_layer(layer: VehicleLayer, scale: float) -> VehicleLayer:
     h, w = layer.alpha.shape
     size = (max(1, int(round(w * scale))), max(1, int(round(h * scale))))
     interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LANCZOS4
-    premultiplied = layer.rgb * layer.alpha[..., None]
+    premultiplied = np.ascontiguousarray(layer.rgb * layer.alpha[..., None], dtype=np.float32)
     pm = cv2.resize(premultiplied, size, interpolation=interpolation)
-    alpha = np.clip(cv2.resize(layer.alpha, size, interpolation=interpolation), 0.0, 1.0)
+    alpha = cv2.resize(layer.alpha, size, interpolation=interpolation)
+    if scale > 1.0:
+        # Lanczos over- and undershoots next to highlights/chrome; in linear light
+        # that shows as dark rims that do not exist on the car. Keep every value
+        # inside the range of its source neighbourhood (no invented detail).
+        kernel = np.ones((3, 3), np.uint8)
+        pm = np.clip(
+            pm,
+            cv2.resize(cv2.erode(premultiplied, kernel), size, interpolation=cv2.INTER_LINEAR),
+            cv2.resize(cv2.dilate(premultiplied, kernel), size, interpolation=cv2.INTER_LINEAR),
+        )
+        alpha = np.clip(
+            alpha,
+            cv2.resize(cv2.erode(layer.alpha, kernel), size, interpolation=cv2.INTER_LINEAR),
+            cv2.resize(cv2.dilate(layer.alpha, kernel), size, interpolation=cv2.INTER_LINEAR),
+        )
+    alpha = np.clip(alpha, 0.0, 1.0)
     pm = np.clip(pm, 0.0, None)
     rgb = np.where(alpha[..., None] > 1e-4, pm / np.maximum(alpha[..., None], 1e-4), 0.0)
     return VehicleLayer(
@@ -65,6 +81,25 @@ def feather_alpha(alpha: np.ndarray, sigma: float = 0.6) -> np.ndarray:
     """Sub-pixel softening of the cut line only (opaque interior unchanged)."""
     blurred = cv2.GaussianBlur(alpha, (0, 0), sigma)
     return np.where(alpha >= 0.999, np.maximum(alpha, blurred), blurred).astype(np.float32)
+
+
+def feather_layer(layer: VehicleLayer, sigma: float = 0.6) -> VehicleLayer:
+    """Feather the alpha and give pixels that become visible a matching colour.
+
+    Pixels that were fully transparent carry no colour (black); when the
+    feather makes them slightly visible they get the colour of the nearby
+    vehicle edge instead of drawing a dark outline.
+    """
+    alpha = feather_alpha(layer.alpha, sigma)
+    grown = (alpha > 1e-4) & (layer.alpha <= 1e-4)
+    rgb = layer.rgb
+    if grown.any():
+        spread = max(1.5, 2.5 * sigma)
+        pm = cv2.GaussianBlur(layer.rgb * layer.alpha[..., None], (0, 0), spread)
+        weight = cv2.GaussianBlur(layer.alpha, (0, 0), spread)
+        fill = pm / np.maximum(weight, 1e-4)[..., None]
+        rgb = np.where(grown[..., None], np.clip(fill, 0.0, 1.0), layer.rgb).astype(np.float32)
+    return VehicleLayer(rgb=rgb, alpha=alpha, offset_x=layer.offset_x, offset_y=layer.offset_y)
 
 
 def place_layer(

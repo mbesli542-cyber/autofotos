@@ -5,8 +5,12 @@ Truthfulness rules (non-negotiable):
 - only a tiny exposure correction, an optional tiny contrast correction and a
   subtle white-balance harmonisation are allowed;
 - HARD_LIMITS cap every correction regardless of configuration;
-- a colour guard measures hue and saturation of the vehicle before/after and
-  reverts the correction if the paint colour would change.
+- exposure is applied ratio-preserving (every pixel's R:G:B ratio – hue and
+  saturation – stays exactly the same) with a highlight shoulder, so bright
+  paint is never clipped to flat white;
+- a colour guard measures hue (95th percentile), saturation and newly clipped
+  highlights of the vehicle before/after and reverts the correction if the
+  paint would change.
 
 Example: a dark navy blue car must stay dark navy blue – never become black.
 """
@@ -29,8 +33,9 @@ HARD_LIMITS = {
 }
 
 #: Colour guard thresholds.
-MAX_MEDIAN_HUE_SHIFT_DEG = 1.5
+MAX_HUE_SHIFT_P95_DEG = 1.5  # 95th percentile of |Δhue| over chromatic paint pixels
 MAX_SATURATION_CHANGE = 0.03  # relative
+MAX_NEW_CLIPPED_FRACTION = 0.002  # vehicle pixels that newly reach full white
 
 #: Photos are corrected only halfway towards a neutral exposure.
 EXPOSURE_STRENGTH = 0.5
@@ -45,13 +50,14 @@ class VehicleCorrection:
     #: Filled by the guard.
     guard_passed: bool = True
     reverted: str | None = None
-    median_hue_shift_deg: float = 0.0
+    hue_shift_p95_deg: float = 0.0
     saturation_change: float = 0.0
+    new_clipped_fraction: float = 0.0
 
     def as_dict(self) -> dict:
         data = asdict(self)
         data["wb_gains"] = [round(g, 4) for g in self.wb_gains]
-        for key in ("exposure_ev", "contrast", "median_hue_shift_deg", "saturation_change"):
+        for key in ("exposure_ev", "contrast", "hue_shift_p95_deg", "saturation_change", "new_clipped_fraction"):
             data[key] = round(float(data[key]), 4)
         return data
 
@@ -81,12 +87,18 @@ def estimate_correction(
     small = srgb_to_linear(photo_rgb[::step, ::step])
     alpha_small = vehicle_alpha[::step, ::step]
 
-    # Exposure: log-average luminance of the whole photo (scene exposure, not
-    # the paint colour – a dark car alone must not be brightened).
-    lum = luminance(small)
-    key = float(np.exp(np.mean(np.log(lum + 1e-4))))
-    ev = EXPOSURE_STRENGTH * float(np.log2(NEUTRAL_KEY / max(key, 1e-4)))
-    ev = float(np.clip(ev, -limits["exposure_ev"], limits["exposure_ev"]))
+    # Exposure: judged from the SURROUNDINGS only (median luminance of the
+    # non-vehicle pixels), so the paint colour never drives it – a black car
+    # must not be brightened, a white car must not be darkened. Only
+    # under-exposed photos are lifted (half-way, capped); a bright scene is
+    # never darkened because the car is placed into a bright showroom.
+    ev = 0.0
+    surroundings = luminance(small)[alpha_small < 0.1]
+    if surroundings.size >= 0.05 * alpha_small.size:
+        key = float(np.median(surroundings))
+        if key < NEUTRAL_KEY:
+            ev = EXPOSURE_STRENGTH * float(np.log2(NEUTRAL_KEY / max(key, 1e-4)))
+            ev = float(np.clip(ev, 0.0, limits["exposure_ev"]))
 
     # White balance: only from NEUTRAL vehicle parts (tyres, glass, chrome).
     gains = (1.0, 1.0, 1.0)
@@ -101,42 +113,59 @@ def estimate_correction(
                 gray = float(mean.mean())
                 raw = gray / np.maximum(mean, 1e-5)
                 raw = 1.0 + 0.5 * (raw - 1.0)  # half-strength
+                # keep luminance unchanged, then shrink the deviation (which keeps the
+                # luminance neutral) so that no channel exceeds the limit
                 lim = limits["white_balance"]
-                clipped = np.clip(raw, 1.0 - lim, 1.0 + lim)
-                # keep luminance unchanged
-                norm = float(np.dot(clipped, [0.2126, 0.7152, 0.0722]))
-                gains = tuple(float(g / norm) for g in clipped)
+                normalised = raw / float(np.dot(raw, [0.2126, 0.7152, 0.0722]))
+                deviation = normalised - 1.0
+                largest = float(np.max(np.abs(deviation)))
+                if largest > lim:
+                    deviation *= lim / largest
+                gains = tuple(float(1.0 + d) for d in deviation)
     # Contrast is never estimated automatically: a global contrast change alters how
     # dark paint reads (navy towards black). It stays 0 unless set explicitly.
     return VehicleCorrection(exposure_ev=ev, contrast=0.0, wb_gains=gains)
 
 
 def apply_correction(linear: np.ndarray, correction: VehicleCorrection) -> np.ndarray:
-    gain = np.float32(2.0 ** correction.exposure_ev)
-    out = linear * gain * np.asarray(correction.wb_gains, np.float32)
+    out = (linear * np.asarray(correction.wb_gains, np.float32)).astype(np.float32)
+    if correction.exposure_ev:
+        # Same factor for R, G and B of a pixel → hue and saturation unchanged.
+        # Shoulder: mid-tones get ~the full gain, highlights approach white
+        # smoothly instead of being clipped (shading on white paint survives).
+        gain = np.float32(2.0 ** correction.exposure_ev)
+        y = np.maximum(luminance(out), 1e-6)
+        target = gain * y / (1.0 + (gain - 1.0) * np.minimum(y, 1.0))
+        out = out * (target / y)[..., None]
     if correction.contrast:
         pivot = np.float32(NEUTRAL_KEY)
         out = pivot * np.power(np.maximum(out, 0) / pivot, 1.0 + correction.contrast)
+    # Never clip single channels (that would shift the hue): scale the pixel down.
+    peak = out.max(axis=-1, keepdims=True)
+    out = np.where(peak > 1.0, out / np.maximum(peak, 1e-6), out)
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
-def colour_shift(before: np.ndarray, after: np.ndarray) -> tuple[float, float]:
-    """Median hue shift (deg) of chromatic pixels and relative saturation change."""
+def colour_shift(before: np.ndarray, after: np.ndarray) -> tuple[float, float, float]:
+    """Hue shift (95th percentile, deg) of chromatic pixels, relative saturation
+    change and the fraction of pixels that newly reach full white."""
     if len(before) == 0:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
     lab_b = lab_from_linear(before.reshape(-1, 1, 3)).reshape(-1, 3)
     lab_a = lab_from_linear(after.reshape(-1, 1, 3)).reshape(-1, 3)
     chromatic = np.hypot(lab_b[:, 1], lab_b[:, 2]) > 8.0
     if chromatic.sum() > 50:
         dh = hue_degrees(lab_a[chromatic]) - hue_degrees(lab_b[chromatic])
         dh = (dh + 180.0) % 360.0 - 180.0
-        hue_shift = float(np.median(np.abs(dh)))
+        hue_shift = float(np.percentile(np.abs(dh), 95))
     else:
         hue_shift = 0.0
     sat_b = float(np.mean(linear_saturation(before)))
     sat_a = float(np.mean(linear_saturation(after)))
     sat_change = (sat_a - sat_b) / max(sat_b, 1e-4)
-    return hue_shift, sat_change
+    white = 0.995
+    newly_clipped = (after.max(axis=-1) >= white) & (before.max(axis=-1) < white)
+    return hue_shift, sat_change, float(newly_clipped.mean())
 
 
 def guarded_correction(
@@ -152,14 +181,20 @@ def guarded_correction(
     attempts = [
         ("none", correction),
         ("white_balance", VehicleCorrection(exposure_ev=correction.exposure_ev, contrast=correction.contrast)),
+        ("exposure", VehicleCorrection(wb_gains=correction.wb_gains, contrast=correction.contrast)),
         ("all", VehicleCorrection()),
     ]
     for reverted, candidate in attempts:
         after = apply_correction(before, candidate)
-        hue_shift, sat_change = colour_shift(before, after)
-        candidate.median_hue_shift_deg = hue_shift
+        hue_shift, sat_change, clipped = colour_shift(before, after)
+        candidate.hue_shift_p95_deg = hue_shift
         candidate.saturation_change = sat_change
-        ok = hue_shift <= MAX_MEDIAN_HUE_SHIFT_DEG and abs(sat_change) <= MAX_SATURATION_CHANGE
+        candidate.new_clipped_fraction = clipped
+        ok = (
+            hue_shift <= MAX_HUE_SHIFT_P95_DEG
+            and abs(sat_change) <= MAX_SATURATION_CHANGE
+            and clipped <= MAX_NEW_CLIPPED_FRACTION
+        )
         if ok or reverted == "all":
             candidate.guard_passed = ok
             candidate.reverted = None if reverted == "none" else reverted

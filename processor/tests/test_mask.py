@@ -55,3 +55,16 @@ def test_bbox_and_cropped_warning():
     _, info = clean_mask(alpha)
     codes = [w.code for w in assess_mask(alpha, bbox, info)]
     assert "vehicle_cropped" in codes
+
+
+def test_thin_gaps_under_roof_rails_are_not_filled_but_windows_are():
+    from app.pipeline.mask import clean_mask
+
+    alpha = np.zeros((600, 900), np.float32)
+    alpha[150:500, 100:800] = 1.0  # body + cabin block (vehicle height 350)
+    alpha[250:330, 250:420] = 0.0  # window the model missed (80 px = 23 %)
+    alpha[160:170, 450:650] = 0.0  # thin gap under a roof rail (10 px = 3 %)
+    result, info = clean_mask(alpha)
+    assert result[290, 330] == 1.0  # window filled
+    assert result[165, 550] == 0.0  # rail gap stays background
+    assert info.holes_filled == 1

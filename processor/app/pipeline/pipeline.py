@@ -20,7 +20,7 @@ import numpy as np
 
 from ..presets import EXTERIOR_SHOTS, BackgroundProvider, Preset
 from .color import linear_to_u8, srgb_to_linear
-from .composite import extract_vehicle, feather_alpha, over, place_layer, resample_layer
+from .composite import extract_vehicle, feather_layer, over, place_layer, resample_layer
 from .debug import NULL_DEBUG, DebugSink
 from .decode import decode_image
 from .export import encode_jpeg
@@ -135,10 +135,9 @@ def process_photo(
                 "Das Fahrzeug musste stark vergrößert werden – für beste Qualität näher heran oder mit höherer Auflösung fotografieren.",
             )
         )
-    scaled = resample_layer(layer, placement.scale)
-    scaled_alpha = feather_alpha(scaled.alpha, sigma=0.6)
+    scaled = feather_layer(resample_layer(layer, placement.scale), sigma=0.6)
     vehicle_rgb, vehicle_alpha, origin = place_layer(
-        type(scaled)(rgb=scaled.rgb, alpha=scaled_alpha, offset_x=scaled.offset_x, offset_y=scaled.offset_y),
+        scaled,
         placement.left,
         placement.top,
         width,

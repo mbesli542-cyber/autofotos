@@ -137,3 +137,28 @@ def test_opaque_vehicle_pixels_are_copied_unchanged_at_scale_one():
     background = np.zeros((100, 200, 3), np.float32)
     composite = over(background, rgb, a)
     assert np.array_equal(composite[20:60, 10:70], vehicle)
+
+
+def test_upscaling_does_not_invent_dark_rims_around_highlights():
+    from app.pipeline.composite import resample_layer
+
+    rgb = np.full((40, 40, 3), 0.2, np.float32)
+    rgb[18:21, 18:21] = 1.0  # chrome highlight
+    layer = VehicleLayer(rgb=rgb, alpha=np.ones((40, 40), np.float32), offset_x=0, offset_y=0)
+    up = resample_layer(layer, 2.4)
+    assert up.rgb.min() >= 0.2 - 1e-4  # nothing darker than the source neighbourhood
+    assert up.rgb.max() <= 1.0 + 1e-6
+
+
+def test_feathered_edge_pixels_get_the_vehicle_colour_not_black():
+    from app.pipeline.composite import feather_layer
+
+    rgb = np.zeros((30, 30, 3), np.float32)
+    alpha = np.zeros((30, 30), np.float32)
+    rgb[:, :15] = 0.9  # white car, hard edge at x=15
+    alpha[:, :15] = 1.0
+    layer = feather_layer(VehicleLayer(rgb=rgb, alpha=alpha, offset_x=0, offset_y=0), sigma=0.6)
+    grown = (layer.alpha > 0.01) & (alpha == 0)
+    assert grown.any()
+    assert layer.rgb[grown].min() > 0.8
+    assert np.array_equal(layer.rgb[:, :14], rgb[:, :14])  # opaque interior untouched

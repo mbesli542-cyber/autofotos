@@ -92,6 +92,10 @@ def refine_alpha(rgb: np.ndarray, coarse: np.ndarray, model_input_size: int = 10
     return np.clip(alpha, 0.0, 1.0).astype(np.float32)
 
 
+#: Enclosed holes lower than this (relative to the vehicle height) stay open.
+MIN_FILL_HOLE_HEIGHT = 0.08
+
+
 def clean_mask(alpha: np.ndarray, *, upper_fill_ratio: float = 0.62) -> tuple[np.ndarray, MaskInfo]:
     info = MaskInfo()
     binary = (alpha >= 0.5).astype(np.uint8)
@@ -140,6 +144,10 @@ def clean_mask(alpha: np.ndarray, *, upper_fill_ratio: float = 0.62) -> tuple[np
             continue
         if hcent[label][1] > limit_y:
             continue  # near the ground: gap under the car, keep it open
+        if h < MIN_FILL_HOLE_HEIGHT * (bottom - top) or area < 0.25 * w * h:
+            # thin gaps (under roof rails, spoilers, roof boxes) show real
+            # background – only window-sized holes are glass the model missed
+            continue
         filled[hlabels == label] = 1
         info.holes_filled += 1
         info.hole_area_filled += area
