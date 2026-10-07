@@ -1,0 +1,11 @@
+[project]
+name = "autoexperten-processor"
+version = "1.0.0"
+description = "Truthful AutoExperten showroom processing for vehicle listing photos"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

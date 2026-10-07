@@ -1,0 +1,12 @@
+# Only the processor image is built with Docker (context = repo root).
+# Whitelist what it needs; everything else (node_modules, .next, models,
+# local data, secrets) stays out of the build context.
+*
+!processor/requirements.txt
+!processor/app/
+!processor/scripts/
+!public/presets/
+!public/brand/
+**/__pycache__
+**/*.pyc
+**/.env

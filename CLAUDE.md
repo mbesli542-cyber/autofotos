@@ -42,9 +42,18 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
   strong reason. Do not build payments, CRM, pricing, public registration etc.
 - **Keep components reusable** and screens thin (`src/features/*` compose
   `src/components/*`; business rules live in `src/lib/*` as pure functions).
-- **The future AI processing API must stay easy to connect**: the UI only talks
+- **The processing API must stay easy to connect**: the UI only talks
   to `/api/process-photo` + `/api/process-job/:jobId`; implementations sit
-  behind the `ImageProcessor` interface.
+  behind the `ImageProcessor` interface (`RealImageProcessor` → `processor/`).
+- **No generative image AI in processing** (no DALL·E, Stable Diffusion, Flux,
+  Midjourney, Generative Fill, image-to-image). The processor composites the
+  ORIGINAL vehicle pixels; vehicle corrections stay within `HARD_LIMITS` and
+  the colour guard in `processor/app/pipeline/light.py`. Never loosen them.
+- **One fixed showroom.** The background is the master image
+  `public/presets/autoexperten-standard-showroom.jpg` (+ preset JSON); it is
+  never generated per photo.
+- **Official logo only** (`public/brand/official/`); never redraw or
+  approximate it.
 
 ## Architecture map
 
@@ -64,11 +73,16 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | API routes | `src/app/api/process-photo`, `src/app/api/process-job/[jobId]` |
 | Client service container | `src/lib/app-services.ts` |
 | DB schema, RLS, storage policies | `supabase/migrations/` |
-| Brand config / logo placeholder | `src/config/brand.ts`, `src/components/brand/BrandLogo.tsx` |
+| Brand config / official logo | `src/config/brand.ts`, `src/components/brand/BrandLogo.tsx`, `public/brand/` |
+| Showroom preset + master image | `public/presets/autoexperten-standard.json`, `…-showroom.jpg` |
+| Image processor (Python/FastAPI) | `processor/` (see `processor/README.md`) |
+| Processor pipeline steps | `processor/app/pipeline/` (decode, segmentation, mask, placement, light, shadow, composite, export) |
+| Dev test page (dev only) | `src/app/dev/processing-test`, `src/app/api/dev/`, `src/lib/dev-tools.ts` |
 
 Routes: `/login`, `/fahrzeuge`, `/fahrzeuge/neu`, `/fahrzeuge/[id]`,
 `/fahrzeuge/[id]/kamera`, `/fahrzeuge/[id]/fotos`, `/fahrzeuge/[id]/bearbeiten`,
-`/fahrzeuge/[id]/daten`, `/kamera`, `/bearbeiten`, `/mehr`.
+`/fahrzeuge/[id]/daten`, `/kamera`, `/bearbeiten`, `/mehr`;
+dev only (404 in production unless `ENABLE_DEV_TOOLS=true`): `/dev/processing-test`.
 
 ## Conventions & gotchas
 
@@ -84,7 +98,10 @@ Routes: `/login`, `/fahrzeuge`, `/fahrzeuge/neu`, `/fahrzeuge/[id]`,
 - Always order photos by the shot template (`sortPhotosByShotOrder`), never by
   time.
 - Demo mode is automatic when `NEXT_PUBLIC_SUPABASE_URL`/key are missing.
-- Logo: real assets go to `/public/brand/`; switch via `LOGO_ASSETS.useAssetFiles`.
+- Logo: official assets in `/public/brand/` (`LOGO_ASSETS`); see `public/brand/README.md`.
+- Processor: settings come from env / `processor/.env` (`app/config.py`);
+  `PROCESSOR_DEBUG=true` writes debug images – never on public instances.
+  The processor does not run on Vercel (BiRefNet model 224 MB, ≈ 7 GB peak RAM per job).
 
 ## Commands
 
@@ -98,4 +115,15 @@ npm run build
 npm run check      # all of the above
 ```
 
-Run `npm run check` before committing.
+Processor (from `processor/`):
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest
+.venv/bin/uvicorn app.main:app --port 8000
+.venv/bin/python -m app.cli photo.jpg -o out.jpg --debug-dir dbg/
+docker build -f processor/Dockerfile -t autoexperten-processor .   # from repo root
+```
+
+Run `npm run check` (and the processor tests when touching `processor/`)
+before committing.

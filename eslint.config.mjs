@@ -22,6 +22,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Static service worker (plain browser JS, not part of the app bundle).
     "public/sw.js",
+    // Python image processor (its virtualenv may contain vendored JS).
+    "processor/**",
   ]),
 ]);
 

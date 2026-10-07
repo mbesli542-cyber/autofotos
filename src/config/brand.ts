@@ -14,8 +14,11 @@ export const BRAND = {
   phone: "+49 6202 9262357",
   phoneHref: "tel:+4962029262357",
   colors: {
-    /** "Experten" blue – primary actions and active states. */
+    /** UI accent blue – primary actions and active states. */
     blue: "#0A7BFF",
+    /** Colours measured from the official logo file (public/brand/official). */
+    logoBlue: "#0788EA",
+    logoGray: "#403F3F",
     /** "Auto" on light backgrounds. */
     dark: "#0B0C0E",
     /** App background (near black / graphite). */
@@ -32,19 +35,26 @@ export const APP_INFO = {
 } as const;
 
 /**
- * Logo assets.
+ * Official logo assets (public/brand/).
  *
- * PLACEHOLDER: The official AutoExperten logo files are not in the repository
- * yet. Until they are, <BrandLogo /> renders a text-based placeholder
- * ("Auto" + "Experten"). To switch to the real logo:
- *   1. Put the files into /public/brand/ using the names below.
- *   2. Set `useAssetFiles` to `true`.
- * No UI code has to change.
+ * Source: https://www.autoexperten-rn.de (AutoExperten_Logo.png and the
+ * "AE" app icon), stored byte-identical in public/brand/official/.
+ * The website only provides raster artwork (PNG), no SVG.
+ *
+ * - onLight: official wordmark, transparent margin trimmed, scaled for UI use.
+ * - onDark:  same pixels, only the neutral-gray "Auto" letters recoloured to
+ *            white for dark backgrounds (blue untouched). Replace with an
+ *            official light version as soon as one exists.
  */
 export const LOGO_ASSETS = {
-  useAssetFiles: false,
-  /** Logo for light backgrounds ("Auto" dark, "Experten" blue). */
-  onLight: "/brand/autoexperten-logo.svg",
-  /** Logo for dark backgrounds ("Auto" light, "Experten" blue). */
-  onDark: "/brand/autoexperten-logo-light.svg",
+  useAssetFiles: true,
+  onLight: "/brand/autoexperten-logo.png",
+  onDark: "/brand/autoexperten-logo-light.png",
+  /** Intrinsic size of the UI logo files (for layout without shifts). */
+  width: 760,
+  height: 128,
+  official: {
+    wordmark: "/brand/official/AutoExperten_Logo.png",
+    icon: "/brand/official/AutoExperten_Icon.png",
+  },
 } as const;

@@ -8,12 +8,9 @@ const SIZES = {
 } as const;
 
 /**
- * AutoExperten logo.
- *
- * PLACEHOLDER: renders a text wordmark ("Auto" + "Experten" in blue) until
- * the official logo files are added to /public/brand/ and
- * `LOGO_ASSETS.useAssetFiles` is set to true (src/config/brand.ts).
- * Callers never need to change.
+ * AutoExperten logo – renders the official logo files from /public/brand/
+ * (see LOGO_ASSETS in src/config/brand.ts). The text fallback below is only
+ * used if `useAssetFiles` is switched off.
  */
 export function BrandLogo({
   tone = "onDark",
@@ -30,12 +27,16 @@ export function BrandLogo({
       <img
         src={tone === "onDark" ? LOGO_ASSETS.onDark : LOGO_ASSETS.onLight}
         alt="AutoExperten"
-        className={cn("w-auto", SIZES[size].img, className)}
+        width={LOGO_ASSETS.width}
+        height={LOGO_ASSETS.height}
+        decoding="async"
+        className={cn("w-auto select-none", SIZES[size].img, className)}
+        draggable={false}
       />
     );
   }
 
-  // --- PLACEHOLDER WORDMARK (replace by setting LOGO_ASSETS.useAssetFiles) ---
+  // Text fallback (only when LOGO_ASSETS.useAssetFiles is false).
   return (
     <span
       className={cn("inline-flex font-bold tracking-tight", SIZES[size].text, className)}

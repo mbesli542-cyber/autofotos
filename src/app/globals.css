@@ -1,4 +1,6 @@
 @import "tailwindcss";
+/* The Python processor is not part of the web app – do not scan or watch it. */
+@source not "../../processor";
 
 /* AutoExperten Photo – dark premium theme */
 @theme {

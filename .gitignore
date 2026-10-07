@@ -48,3 +48,11 @@ next-env.d.ts
 
 # vitest
 /.vitest
+
+# image processor (Python)
+/processor/.venv/
+/processor/data/
+/processor/models/*.onnx
+__pycache__/
+*.pyc
+.pytest_cache/

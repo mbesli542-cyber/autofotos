@@ -1,18 +1,18 @@
 /**
- * RealImageProcessor – adapter for the future external processing service.
+ * RealImageProcessor – adapter for the external processing service
+ * (processor/, Python/FastAPI).
  *
- * NOT ACTIVE YET. It documents the expected HTTP contract so the production
- * service (segmentation → showroom compositing → export) can be connected by
- * setting environment variables only:
+ * Connected by setting environment variables only:
  *
  *   IMAGE_PROCESSOR=real
- *   IMAGE_PROCESSING_API_URL=https://processing.example.com
+ *   IMAGE_PROCESSING_API_URL=https://processing.example.com   (may contain a
+ *                                       path prefix, e.g. https://host/processor)
  *   IMAGE_PROCESSING_API_KEY=…            (server-side secret)
  *
- * Expected service API:
+ * Expected service API (paths are appended to the base URL):
  *   POST {url}/jobs      body: ProcessPhotoRequest & { userId, shotKey }
  *                        → { jobId, status }
- *   GET  {url}/jobs/:id  → ProcessingJob
+ *   GET  {url}/jobs/:id  → ProcessingJob   (404 → unknown job)
  *
  * The service reads the original from `vehicle-originals`, writes the result
  * to `vehicle-processed/{vehicleId}/{preset}/{shotKey}/{photoId}.jpg`, sets
@@ -31,6 +31,20 @@ export interface RealImageProcessorConfig {
   baseUrl: string;
   apiKey: string | null;
   timeoutMs?: number;
+}
+
+/**
+ * Appends `path` to the service base URL while keeping any path prefix of
+ * the base (`new URL("/jobs", "https://host/processor")` would drop it).
+ * Query parameters of the base URL (e.g. gateway keys) are kept.
+ */
+export function joinServiceUrl(baseUrl: string, path: string): URL {
+  const url = new URL(baseUrl);
+  const prefix = url.pathname.replace(/\/+$/, "");
+  const suffix = path.replace(/^\/+/, "");
+  url.pathname = suffix ? `${prefix}/${suffix}` : prefix || "/";
+  url.hash = "";
+  return url;
 }
 
 export class RealImageProcessor implements ImageProcessor {
@@ -60,15 +74,16 @@ export class RealImageProcessor implements ImageProcessor {
     }
   }
 
-  private async fetchJson(path: string, init: RequestInit): Promise<unknown> {
+  private async fetchJson(path: string, init: { method: "GET" | "POST"; body?: string }): Promise<unknown> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 15_000);
     try {
-      const response = await fetch(new URL(path, this.config.baseUrl), {
+      const response = await fetch(joinServiceUrl(this.config.baseUrl, path), {
         ...init,
         signal: controller.signal,
         headers: {
-          "Content-Type": "application/json",
+          Accept: "application/json",
+          ...(init.body !== undefined ? { "Content-Type": "application/json" } : {}),
           ...(this.config.apiKey ? { Authorization: `Bearer ${this.config.apiKey}` } : {}),
         },
         cache: "no-store",

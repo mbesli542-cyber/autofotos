@@ -1,0 +1,47 @@
+{
+  "id": "autoexperten_standard",
+  "name": "AutoExperten Standard",
+  "description": "Heller Premium-Showroom, Holzfußboden, AutoExperten Wandlogo und blaue Lichtakzente.",
+  "background": {
+    "image": "autoexperten-standard-showroom.jpg",
+    "placeholder": true,
+    "notes": "Master showroom plate WITHOUT a vehicle, 4:3, at least 3200x2400 px. Replace the JPG (same name) and set placeholder=false."
+  },
+  "logo": "official/AutoExperten_Logo.png",
+  "floorHorizon": 0.62,
+  "output": {
+    "aspect": [4, 3],
+    "longEdgeMin": 2400,
+    "longEdgeMax": 3200,
+    "jpegQuality": 92
+  },
+  "placement": {
+    "centerX": 0.5,
+    "groundLine": 0.84,
+    "widthRatio": 0.78,
+    "maxHeightRatio": 0.62,
+    "minMargin": 0.04,
+    "maxUpscale": 2.5
+  },
+  "shotPlacement": {
+    "front": { "widthRatio": 0.62 },
+    "rear": { "widthRatio": 0.62 },
+    "left_side": { "widthRatio": 0.82 },
+    "right_side": { "widthRatio": 0.82 }
+  },
+  "shadow": {
+    "contactOpacity": 0.82,
+    "contactHeight": 0.012,
+    "ambientOpacity": 0.42,
+    "ambientHeight": 0.075,
+    "ambientSpread": 1.04,
+    "ambientBlur": 0.03,
+    "color": [34, 25, 18]
+  },
+  "vehicleAdjustments": {
+    "exposureEvLimit": 0.25,
+    "contrastLimit": 0.0,
+    "whiteBalanceLimit": 0.02,
+    "lightWrap": 0.1
+  }
+}

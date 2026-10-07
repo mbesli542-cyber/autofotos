@@ -7,8 +7,10 @@ Employees photograph vehicles for online listings with a **guided camera**:
 the app shows which of the 15 required angles is next, how the car should sit
 in the frame (semi-transparent outline), what is still missing, and lets them
 review and retake photos. Completed photo sets can then be processed into the
-AutoExperten showroom style (processing is mocked in this MVP – the
-architecture for the real pipeline is in place).
+AutoExperten showroom style: the separate processor service (`processor/`,
+Python/FastAPI) cuts out the **original** vehicle pixels and places them on
+the fixed AutoExperten showroom with a contact shadow – the vehicle itself is
+never regenerated. Without the processor the app uses a clearly marked mock.
 
 > UI language: German. Mobile first. Installable as a PWA – no App Store needed.
 
@@ -25,7 +27,7 @@ architecture for the real pipeline is in place).
 6. [PWA usage](#pwa-usage)
 7. [Camera: limitations, HTTPS & orientation](#camera-limitations-https--orientation)
 8. [Offline / weak connection](#offline--weak-connection)
-9. [Image processing – current mock & future pipeline](#image-processing--current-mock--future-pipeline)
+9. [Image processing](#image-processing) (mock, real processor, showroom, dev test page)
 10. [Project structure](#project-structure)
 11. [Tests & quality checks](#tests--quality-checks)
 12. [Brand assets](#brand-assets)
@@ -304,7 +306,7 @@ on the server. No full offline sync is implemented on purpose.
 
 ---
 
-## Image processing – current mock & future pipeline
+## Image processing
 
 ### Principle
 
@@ -342,41 +344,100 @@ Connecting the real backend = implement that service + set env vars. **No UI
 changes are needed.** (In demo mode only the mock processor is allowed,
 because demo mode has no authentication.)
 
-### Production pipeline (to be implemented in the processing service)
+### Real processor (Stage 2 prototype) – `processor/`
+
+A separate Python service (FastAPI + Pillow + OpenCV + ONNX Runtime, CPU)
+implements the contract above. Full documentation: **[processor/README.md](processor/README.md)**.
 
 ```
-Original image
- → segmentation (vehicle detection)
- → vehicle mask
- → transparent vehicle layer (original pixels, untouched)
- → standardized AutoExperten showroom background
- → size and perspective normalization (consistent framing per shot)
- → realistic ground contact shadow
- → lighting harmonization (around the vehicle, not re-painting it)
- → preserve original vehicle paint color
- → logo / branding
- → final export (AE_{ref}_{nn}_{shot}.jpg)
+original photo
+ → decode (EXIF orientation, ICC → sRGB)
+ → vehicle segmentation (BiRefNet, local ONNX model)
+ → full-resolution alpha (guided filter), mask clean-up
+ → cut-out of the ORIGINAL vehicle pixels
+ → conservative light matching (tiny exposure / white balance, colour guard)
+ → bbox-based placement (no distortion, ~78 % width, centred, ground line 84 %)
+ → fixed AutoExperten showroom plate
+ → contact + ambient shadow from the mask
+ → edge harmonisation (decontamination, light wrap)
+ → JPEG 4:3, 2400–3200 px, quality 92, sRGB, no EXIF
 ```
 
-The original vehicle pixels should remain untouched whenever possible. Do not
-generatively recreate wheels, bodywork, badges, headlights, interior or damage.
+**Truthful-vehicle policy:** no generative image AI anywhere (no DALL·E,
+Stable Diffusion, Flux, Midjourney, Generative Fill, image-to-image). Paint
+colour, wheels, badges, lights, glass, damage and wear are the photographed
+pixels. Vehicle corrections are capped by hard limits in code
+(`processor/app/pipeline/light.py`) and reverted if the measured hue or
+saturation of the vehicle would change. Interior shots are not composited.
+
+**Run it locally**
+
+```bash
+cd processor
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/uvicorn app.main:app --port 8000      # GET http://localhost:8000/health
+```
+
+or with Docker (context = repo root):
+`docker build -f processor/Dockerfile -t autoexperten-processor .` and
+`docker run --rm -p 8000:8000 autoexperten-processor`.
+
+The segmentation model (224 MB, ≈ 7 GB peak RAM per running job on the CPU;
+the lighter `isnet-general-use` needs ≈ 1.5 GB) makes the processor unsuitable
+for Vercel functions – run it on a VM/container with ≥ 12 GB RAM.
+
+**Test one real car photo**
+
+1. Start the processor (above) and `npm run dev`.
+2. In `.env.local` set `IMAGE_PROCESSING_API_URL=http://localhost:8000`
+   (and `IMAGE_PROCESSING_API_KEY` if the processor has `PROCESSOR_API_KEY`).
+3. Open **http://localhost:3000/dev/processing-test** – choose a photo, style
+   "AutoExperten Standard", shot, **Verarbeiten** → Original / Bearbeitet side
+   by side → "Ergebnis herunterladen".
+   The page is not linked anywhere and is only served in development (or with
+   `ENABLE_DEV_TOOLS=true`, internal deployments only).
+4. Without the app: `cd processor && .venv/bin/python -m app.cli car.jpg -o out.jpg --debug-dir dbg/`.
+
+**Connect the app** (`.env.local`): `IMAGE_PROCESSOR=real`,
+`NEXT_PUBLIC_IMAGE_PROCESSOR=real`, `IMAGE_PROCESSING_API_URL`,
+`IMAGE_PROCESSING_API_KEY`. The processor additionally needs
+`SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (processor side only) to read
+originals and store results in `vehicle-processed`. No UI changes needed.
+
+**Debugging:** `PROCESSOR_DEBUG=true` keeps `original.jpg`, `mask.png`,
+`vehicle-transparent.png`, `background.jpg`, `composite-before-shadow.jpg`,
+`shadow.png`, `final.jpg` per job (`processor/data/jobs/<id>/debug/`, also
+shown on the dev test page). Never enable it on a public instance.
 
 ### AutoExperten showroom preset
 
-`src/lib/processing/presets.ts` defines three presets. **`autoexperten_standard`**
-(default) is the specification for the showroom compositing:
+`public/presets/autoexperten-standard.json` is the processing preset (output
+size, placement, shadow, adjustment limits) – used by the processor and
+referenced from `src/lib/processing/presets.ts`.
+
+**Showroom master image:** the background is one fixed image,
+`public/presets/autoexperten-standard-showroom.jpg` (4:3, ≥ 3200×2400, empty
+showroom, wall/floor junction at ~62 % of the height). The current file is a
+deterministic **placeholder** rendered by
+`processor/scripts/render_showroom_placeholder.py` (white wall, parquet,
+spotlights, blue LED strips, wood slats, plants, brand wall with the official
+logo, "SCHWETZINGEN", www.autoexperten-rn.de, +49 6202 9262357). To use the
+real showroom photo: replace that JPG (same name) and set
+`"placeholder": false` in `autoexperten-standard.json`. No code changes.
+
+The look of `autoexperten_standard` (default):
 
 - bright premium showroom, clean white / light-gray wall
 - warm ceiling spotlights (~3000 K)
 - blue vertical LED accent lighting (AutoExperten blue)
 - premium warm wood / parquet floor
 - vertical wood-slat wall panels, plants (as in the reference mockup)
-- brand wall: "AutoExperten Schwetzingen", www.autoexperten-rn.de, +49 6202 9262357
-- vehicle placement (centre, ground line, target width) and contact-shadow parameters
-- reference image: `public/presets/autoexperten-standard-reference.jpg` (to be supplied)
+- brand wall: official logo, Schwetzingen, www.autoexperten-rn.de, +49 6202 9262357
 
 `autoexperten_dark` (dark premium showroom) and `original_plus` (original
-background, only light/colour/contrast optimised) are defined alongside.
+background, only light/colour/contrast optimised) are defined in the app but
+not implemented by the processor yet (jobs fail with
+"Dieser Bearbeitungsstil ist noch nicht verfügbar.").
 
 ---
 
@@ -390,6 +451,8 @@ src/
     (app)/(capture)/…/kamera   full-screen guided camera
     api/process-photo          POST – start processing job
     api/process-job/[jobId]    GET  – job status
+    dev/processing-test        developer test page (dev only, not linked)
+    api/dev/processing-test/…  its proxy routes to the processor (dev only)
     login/, offline/, manifest.ts, layout.tsx, globals.css
   features/                    screen components (compose components + hooks)
   components/                  reusable UI
@@ -410,10 +473,15 @@ src/
   proxy.ts         Supabase session refresh / redirect (Next 16 "proxy")
 public/
   overlays/  camera framing guides (SVG)    demo/shots/  demo placeholder photos
-  icons/     PWA icons (placeholders)       brand/       official logo goes here
-  presets/   showroom reference images      sw.js        service worker
+  icons/     PWA icons (official monogram)  brand/       official logo (+ official/ originals)
+  presets/   showroom preset JSON + master  sw.js        service worker
 supabase/migrations/   schema, RLS, storage
 scripts/generate-demo-assets.mjs
+processor/             Python image processor (FastAPI) – see processor/README.md
+  app/pipeline/        decode, segmentation, mask, placement, light, shadow, composite, export
+  app/jobs/ storage/   job manager, Supabase photo store
+  app/showroom/        placeholder showroom renderer
+  tests/               pytest
 ```
 
 ---
@@ -428,8 +496,13 @@ scripts/generate-demo-assets.mjs
 - vehicle validation (required fields, VIN, mileage, dates, plates)
 - vehicle status rules
 - mock processor job lifecycle and request validation
+- real processor adapter (URL joining, auth header, 404 handling)
 - photo slots (incl. pending uploads and extra photos)
 - component tests: `ShotProgress`, `VehicleForm`
+
+`cd processor && .venv/bin/python -m pytest` runs the processor tests (API
+validation/auth, job lifecycle, mask, placement, compositing output, colour
+guard, decoding, debug output, showroom placeholder, Supabase store).
 
 The full acceptance flow (login → create vehicle → 15 guided captures →
 review → retake → complete → process → Original/Bearbeitet) was verified in
@@ -439,12 +512,13 @@ headless Chromium with a fake camera on phone, landscape and desktop viewports.
 
 ## Brand assets
 
-- **Logo:** the official AutoExperten logo is not in the repository yet.
-  `BrandLogo` renders a clearly marked text placeholder ("Auto" + blue
-  "Experten"). Put `autoexperten-logo.svg` (light backgrounds) and
-  `autoexperten-logo-light.svg` (dark backgrounds) into `public/brand/` and set
-  `LOGO_ASSETS.useAssetFiles = true` in `src/config/brand.ts`.
-- **App icons** in `public/icons/` are placeholders ("AE" monogram) – replace
-  them with icons derived from the official logo.
+- **Logo:** the official AutoExperten logo (from autoexperten-rn.de, not
+  redrawn) is in `public/brand/official/`; the UI uses trimmed copies
+  `public/brand/autoexperten-logo.png` (light backgrounds) and
+  `autoexperten-logo-light.png` (dark backgrounds, only the gray "Auto" turned
+  white). See `public/brand/README.md`. `LOGO_ASSETS` in
+  `src/config/brand.ts` points to them. If an official SVG becomes available,
+  drop it into `public/brand/` and update `LOGO_ASSETS`.
+- **App icons** in `public/icons/` are made from the official "AE" monogram.
 - **Overlays** in `public/overlays/` are generic framing guides; they can be
   replaced with refined artwork using the same file names.

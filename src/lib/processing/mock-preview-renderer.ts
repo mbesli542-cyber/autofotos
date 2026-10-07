@@ -6,7 +6,7 @@
  * the original photo is drawn 1:1 (pixels untouched) and an AutoExperten
  * branding bar is appended BELOW the image. The real pipeline replaces this.
  */
-import { BRAND } from "@/config/brand";
+import { BRAND, LOGO_ASSETS } from "@/config/brand";
 import { canvasToBlob, fitWithin, loadImageFromUrl } from "@/lib/camera/image-utils";
 import type { ProcessingPresetId } from "@/lib/domain/types";
 import { PROCESSING_PRESETS } from "./presets";
@@ -14,17 +14,30 @@ import { PROCESSING_PRESETS } from "./presets";
 /** Keeps canvas sizes within mobile Safari limits. */
 const MAX_LONG_EDGE = 4096;
 
-const BAR_THEMES: Record<ProcessingPresetId, { background: string; auto: string; text: string; muted: string }> = {
-  autoexperten_standard: { background: "#F2F3F5", auto: "#0B0C0E", text: "#1D2026", muted: "#5B6370" },
-  autoexperten_dark: { background: "#0E1013", auto: "#FFFFFF", text: "#E9EBEE", muted: "#9AA1AD" },
-  original_plus: { background: "#16181C", auto: "#FFFFFF", text: "#E9EBEE", muted: "#9AA1AD" },
+interface BarTheme {
+  background: string;
+  /** Official logo file matching the bar background (never redrawn as text). */
+  logo: string;
+  text: string;
+  muted: string;
+}
+
+const BAR_THEMES: Record<ProcessingPresetId, BarTheme> = {
+  autoexperten_standard: { background: "#F2F3F5", logo: LOGO_ASSETS.onLight, text: "#1D2026", muted: "#5B6370" },
+  autoexperten_dark: { background: "#0E1013", logo: LOGO_ASSETS.onDark, text: "#E9EBEE", muted: "#9AA1AD" },
+  original_plus: { background: "#16181C", logo: LOGO_ASSETS.onDark, text: "#E9EBEE", muted: "#9AA1AD" },
 };
 
 export async function renderMockProcessedPreview(
   originalUrl: string,
   preset: ProcessingPresetId,
 ): Promise<Blob> {
-  const image = await loadImageFromUrl(originalUrl);
+  const theme = BAR_THEMES[preset];
+  const [image, logo] = await Promise.all([
+    loadImageFromUrl(originalUrl),
+    // A missing logo must not break the preview – the bar is then drawn without it.
+    loadImageFromUrl(theme.logo).catch(() => null),
+  ]);
   const size = fitWithin(image.naturalWidth || 1600, image.naturalHeight || 1200, MAX_LONG_EDGE);
   const barHeight = Math.round(Math.max(72, size.width * 0.085));
 
@@ -38,7 +51,6 @@ export async function renderMockProcessedPreview(
   ctx.drawImage(image, 0, 0, size.width, size.height);
 
   // 2. Branding bar below the photo.
-  const theme = BAR_THEMES[preset];
   ctx.fillStyle = theme.background;
   ctx.fillRect(0, size.height, size.width, barHeight);
   ctx.fillStyle = BRAND.colors.blue;
@@ -49,19 +61,22 @@ export async function renderMockProcessedPreview(
   const logoBaseline = size.height + barHeight * 0.62;
   const fontStack = "-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
-  // Left: "Auto" + "Experten" wordmark (placeholder until the logo asset exists).
+  // Left: official AutoExperten logo file (scaled only), followed by the city.
   ctx.textBaseline = "alphabetic";
   ctx.textAlign = "left";
-  ctx.font = `700 ${logoSize}px ${fontStack}`;
-  ctx.fillStyle = theme.auto;
-  ctx.fillText("Auto", padding, logoBaseline);
-  const autoWidth = ctx.measureText("Auto").width;
-  ctx.fillStyle = BRAND.colors.blue;
-  ctx.fillText("Experten", padding + autoWidth, logoBaseline);
-  const logoWidth = autoWidth + ctx.measureText("Experten").width;
+  let logoWidth = 0;
+  if (logo) {
+    const logoHeight = Math.round(logoSize * 1.1);
+    const aspect = (logo.naturalWidth || LOGO_ASSETS.width) / (logo.naturalHeight || LOGO_ASSETS.height);
+    logoWidth = Math.round(logoHeight * aspect);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    // The letters' baseline sits at ~76 % of the logo height ("p" descends below).
+    ctx.drawImage(logo, padding, Math.round(logoBaseline - logoHeight * 0.76), logoWidth, logoHeight);
+  }
   ctx.font = `500 ${Math.round(logoSize * 0.55)}px ${fontStack}`;
   ctx.fillStyle = theme.muted;
-  ctx.fillText(BRAND.city, padding + logoWidth + padding * 0.4, logoBaseline);
+  ctx.fillText(BRAND.city, padding + logoWidth + (logo ? padding * 0.4 : 0), logoBaseline);
 
   // Right: contact line + unmistakable mock marker (inside the bar, never on the photo).
   ctx.textAlign = "right";

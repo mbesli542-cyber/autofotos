@@ -1,16 +1,19 @@
-# AutoExperten Logo-Dateien
+# AutoExperten brand assets
 
-Hier gehören die **offiziellen** Logo-Dateien hin (bitte kein neues Logo erstellen):
+| File | What it is |
+| --- | --- |
+| `official/AutoExperten_Logo.png` | **Official** wordmark from https://www.autoexperten-rn.de/AutoExperten_Logo.png (1536×1024, transparent). Byte-identical copy – never edit. |
+| `official/AutoExperten_Icon.png` | **Official** "AE" monogram (website app icon, 500×500). Byte-identical copy. |
+| `official/AutoExperten_Wordmark_small.png` | Official small wordmark (website favicon-large, 840×185). |
+| `autoexperten-logo.png` | UI logo for light backgrounds: official wordmark, transparent margin trimmed, scaled to 760 px. |
+| `autoexperten-logo-light.png` | UI logo for dark backgrounds: same pixels, only the neutral-gray "Auto" letters recoloured to white (blue unchanged). **Derived** – replace with an official light version if AutoExperten has one. |
 
-| Datei                         | Verwendung                                      |
-| ----------------------------- | ----------------------------------------------- |
-| `autoexperten-logo.svg`       | Helle Hintergründe ("Auto" dunkel, "Experten" blau) |
-| `autoexperten-logo-light.svg` | Dunkle Hintergründe ("Auto" hell, "Experten" blau)  |
+The website only provides PNG artwork (no SVG). Logo colours measured from
+the official file: blue `#0788EA`, gray `#403F3F`.
 
-Solange die Dateien fehlen, zeigt `src/components/brand/BrandLogo.tsx` einen
-Text-Platzhalter. Nach dem Ablegen der Dateien in
-`src/config/brand.ts` → `LOGO_ASSETS.useAssetFiles = true` setzen.
-Die UI muss dafür nicht geändert werden.
+App icons in `/public/icons/` are generated from the official monogram on a
+white background. The image processor uses `official/AutoExperten_Logo.png`
+in full resolution for the showroom brand wall.
 
-Die App-Icons in `/public/icons` sind ebenfalls Platzhalter ("AE"-Monogramm)
-und sollten aus dem offiziellen Logo abgeleitet werden.
+Configuration: `LOGO_ASSETS` in `src/config/brand.ts` (`useAssetFiles: true`).
+Do not redraw, recolour or approximate the logo.

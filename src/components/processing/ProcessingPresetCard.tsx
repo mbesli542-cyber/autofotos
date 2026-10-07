@@ -1,4 +1,5 @@
 import { Check } from "lucide-react";
+import { LOGO_ASSETS } from "@/config/brand";
 import { cn } from "@/lib/cn";
 import type { ProcessingPreset } from "@/lib/processing/presets";
 
@@ -40,14 +41,16 @@ export function ProcessingPresetCard({
           <>
             <span className="absolute top-[12%] bottom-[45%] left-[10%] w-[3px] rounded-full bg-ae-blue shadow-[0_0_8px_2px_rgb(10_123_255/0.8)]" />
             <span className="absolute top-[12%] right-[10%] bottom-[45%] w-[3px] rounded-full bg-ae-blue shadow-[0_0_8px_2px_rgb(10_123_255/0.8)]" />
-            <span
-              className={cn(
-                "absolute top-[14%] left-1/2 -translate-x-1/2 text-[9px] font-bold whitespace-nowrap",
-                lightScene ? "text-[#0B0C0E]" : "text-white",
-              )}
-            >
-              Auto<span className="text-ae-blue">Experten</span>
-            </span>
+            {/* Official logo file – never redrawn as text. */}
+            <img
+              src={lightScene ? LOGO_ASSETS.onLight : LOGO_ASSETS.onDark}
+              alt=""
+              width={LOGO_ASSETS.width}
+              height={LOGO_ASSETS.height}
+              decoding="async"
+              draggable={false}
+              className="absolute top-[13%] left-1/2 h-auto w-[52%] -translate-x-1/2 select-none"
+            />
           </>
         )}
         <img

@@ -1,10 +1,13 @@
 /**
  * Processing presets ("Bearbeitungsstile").
  *
- * These are CONFIGURATION for the future processing pipeline – nothing here
- * transforms images yet. The production pipeline will read the showroom spec
- * to composite the segmented, untouched vehicle into the AutoExperten
- * showroom. See README → "Zukünftige Bildverarbeitung".
+ * These are CONFIGURATION – nothing here transforms images. The image
+ * processor (processor/) composites the segmented, untouched vehicle into the
+ * AutoExperten showroom. See README → "Zukünftige Bildverarbeitung".
+ *
+ * Numeric placement / shadow / output values used by the processor live in
+ * the preset JSON (`processingConfig`, e.g. public/presets/autoexperten-standard.json)
+ * – not here – so there is a single source of truth.
  */
 import { BRAND, LOGO_ASSETS } from "@/config/brand";
 import type { ProcessingPresetId } from "@/lib/domain/types";
@@ -23,15 +26,29 @@ export interface ShowroomSpec {
     website: string;
     phone: string;
   };
-  /** Reference photo the final look must match (supplied by AutoExperten). */
-  referenceImage: string;
-  /** Vehicle placement inside the output frame (normalised 0..1). */
-  vehiclePlacement: {
+  /**
+   * Master showroom plate WITHOUT a vehicle that the processor composites
+   * onto (public/presets/…). Until the final photo exists the processor uses
+   * a generated placeholder and reports `showroomPlaceholder: true`.
+   */
+  masterImage?: string;
+  /**
+   * Processor configuration (placement, shadow, output, light limits) –
+   * the source of truth for all numeric values of this preset.
+   */
+  processingConfig?: string;
+  /** Optional look reference photo (supplied by AutoExperten); not composited. */
+  referenceImage?: string;
+  /**
+   * Planning values for presets without a `processingConfig` yet
+   * (normalised 0..1). Presets with a config read them from the JSON.
+   */
+  vehiclePlacement?: {
     horizontalCenter: number;
     groundLine: number;
     targetWidthRatio: number;
   };
-  contactShadow: { opacity: number; softness: "soft" | "medium" | "hard" };
+  contactShadow?: { opacity: number; softness: "soft" | "medium" | "hard" };
 }
 
 export interface ProcessingPreset {
@@ -91,9 +108,10 @@ export const PROCESSING_PRESETS: Record<ProcessingPresetId, ProcessingPreset> = 
         "Grünpflanzen (Palmen) in schlichten Pflanzkübeln",
       ],
       brandWall: BRAND_WALL,
+      masterImage: "/presets/autoexperten-standard-showroom.jpg",
+      // Placement, shadow and output numbers: see this JSON (used by processor/).
+      processingConfig: "/presets/autoexperten-standard.json",
       referenceImage: "/presets/autoexperten-standard-reference.jpg",
-      vehiclePlacement: { horizontalCenter: 0.5, groundLine: 0.84, targetWidthRatio: 0.8 },
-      contactShadow: { opacity: 0.55, softness: "medium" },
     },
     adjustments: { lighting: true, color: true, contrast: true, preserveVehicleColor: true },
     preserveOriginalVehiclePixels: true,

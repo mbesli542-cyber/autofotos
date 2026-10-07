@@ -1,0 +1,12 @@
+# AutoExperten processor – runtime dependencies (Python 3.11+, tested on 3.13).
+# CPU only. No generative image models are used or installed.
+fastapi~=0.142
+uvicorn~=0.54
+python-multipart~=0.0.32
+pydantic~=2.13
+httpx~=0.28
+numpy~=2.5
+pillow~=12.3
+pillow-heif~=1.8
+opencv-python-headless~=5.0
+onnxruntime~=1.30
