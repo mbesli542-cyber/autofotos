@@ -21,6 +21,7 @@ architecture for the real pipeline is in place).
 3. [Install & run locally](#install--run-locally)
 4. [Demo mode](#demo-mode)
 5. [Configure Supabase](#configure-supabase) (env vars, database, storage, users)
+   · [Deployment (Vercel)](#deployment-vercel)
 6. [PWA usage](#pwa-usage)
 7. [Camera: limitations, HTTPS & orientation](#camera-limitations-https--orientation)
 8. [Offline / weak connection](#offline--weak-connection)
@@ -207,6 +208,25 @@ This is an internal tool – **disable public sign-ups** (Authentication →
 Providers → Email → "Allow new users to sign up" off) and invite/create
 employees in the Supabase dashboard (Authentication → Users). They are added
 to the AutoExperten organisation automatically.
+
+---
+
+## Deployment (Vercel)
+
+The project deploys to Vercel without extra configuration (framework preset
+"Next.js", default build command `next build`).
+
+1. Vercel → **Add New → Project** → import `mbesli542-cyber/autofotos`.
+2. Every push to the configured production branch creates a production
+   deployment; other branches get preview URLs.
+3. **Without environment variables the deployment runs in demo mode** – each
+   browser keeps its own local demo data, nothing is shared or stored on a server.
+4. To go live with Supabase, add `NEXT_PUBLIC_SUPABASE_URL` and
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY` under *Project Settings → Environment
+   Variables* and **redeploy** – `NEXT_PUBLIC_*` values are baked in at build time.
+
+Vercel serves the app over HTTPS, so the camera works on phones and the app
+can be installed to the home screen.
 
 ---
 
