@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" fill="none">
+  <!-- AutoExperten Photo · Rahmenvorlage "Vorne" (frontal, mittig).
+       Platzhalter-Silhouette: dient nur der Bildaufteilung, nicht der Modellerkennung. -->
+  <ellipse cx="800" cy="792" rx="520" ry="24" fill="#0A7BFF" fill-opacity="0.18"/>
+  <path d="M260 792 H1340" stroke="#0A7BFF" stroke-width="5" stroke-dasharray="22 16" stroke-linecap="round"/>
+  <path d="M800 300 V780" stroke="#0A7BFF" stroke-width="3" stroke-dasharray="10 14" stroke-opacity="0.8"/>
+  <g stroke="#FFFFFF" stroke-linejoin="round" stroke-linecap="round">
+    <rect x="385" y="698" width="98" height="94" rx="20" stroke-width="6"/>
+    <rect x="1117" y="698" width="98" height="94" rx="20" stroke-width="6"/>
+    <path fill="#FFFFFF" fill-opacity="0.07" stroke-width="7"
+      d="M400 742 Q335 737 330 690 L325 600 Q328 545 370 525 L420 505 L470 500 L590 335 Q800 318 1010 335 L1130 500 L1180 505 L1230 525 Q1272 545 1275 600 L1270 690 Q1265 737 1200 742 Z"/>
+    <path stroke-width="5" d="M497 494 L606 348 Q800 333 994 348 L1103 494 Z"/>
+    <path stroke-width="5" d="M452 472 L396 456 Q380 472 393 494 L456 498 Z M1148 472 L1204 456 Q1220 472 1207 494 L1144 498 Z"/>
+    <path stroke-width="4" stroke-opacity="0.7" d="M560 512 Q800 500 1040 512"/>
+    <path stroke-width="5" d="M360 560 L545 576 L530 612 L365 600 Z M1240 560 L1055 576 L1070 612 L1235 600 Z"/>
+    <path stroke-width="5" d="M620 572 L980 572 Q996 574 992 592 L975 664 Q970 678 955 678 L645 678 Q630 678 625 664 L608 592 Q604 574 620 572 Z"/>
+    <rect x="700" y="690" width="200" height="44" rx="5" stroke-width="5"/>
+    <path stroke-width="4" stroke-opacity="0.7" d="M380 705 Q400 718 440 720 M1220 705 Q1200 718 1160 720"/>
+  </g>
+</svg>

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" fill="none">
+  <!-- AutoExperten Photo · Rahmenvorlage "Felge / Rad": Rad mittig und formatfüllend.
+       Platzhalter: dient nur der Bildaufteilung. -->
+  <path d="M800 70 V930 M370 500 H1230" stroke="#0A7BFF" stroke-width="3" stroke-dasharray="10 14"/>
+  <g stroke="#FFFFFF" stroke-linejoin="round" stroke-linecap="round">
+    <path stroke-width="5" stroke-opacity="0.7" d="M300 470 Q330 70 800 50 Q1270 70 1300 470"/>
+    <circle cx="800" cy="500" r="400" stroke-width="7"/>
+    <circle cx="800" cy="500" r="290" stroke-width="5"/>
+    <circle cx="800" cy="500" r="60" stroke-width="5"/>
+  </g>
+</svg>

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1200" width="1600" height="1200">
+  <!-- DEMO-Platzhalterfoto (generiert von scripts/generate-demo-assets.mjs) -->
+  <defs>
+    <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e9ecf0"/><stop offset="1" stop-color="#c9ced6"/>
+    </linearGradient>
+    <linearGradient id="floor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9a8068"/><stop offset="1" stop-color="#6e5643"/>
+    </linearGradient>
+    <linearGradient id="interior" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1a1d22"/><stop offset="1" stop-color="#2c3139"/>
+    </linearGradient>
+    <linearGradient id="paint" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8b939e"/><stop offset="0.55" stop-color="#4a515b"/><stop offset="1" stop-color="#2a2f36"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="1200" fill="url(#interior)"/>
+  
+    <rect x="260" y="180" width="1080" height="640" rx="40" fill="#2b2f36"/>
+    <rect x="360" y="300" width="360" height="460" rx="60" fill="#3a3f48"/>
+    <rect x="880" y="300" width="360" height="460" rx="60" fill="#3a3f48"/>
+    <rect x="400" y="240" width="280" height="90" rx="40" fill="#454b55"/>
+    <rect x="920" y="240" width="280" height="90" rx="40" fill="#454b55"/>
+    <rect x="740" y="420" width="120" height="340" rx="20" fill="#23272d"/>
+  <g font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+    <rect x="40" y="1080" width="684" height="80" rx="16" fill="#0b0c0e" fill-opacity="0.82"/>
+    <rect x="60" y="1100" width="110" height="40" rx="8" fill="#0A7BFF"/>
+    <text x="115" y="1128" fill="#fff" font-size="24" font-weight="700" text-anchor="middle">DEMO</text>
+    <text x="190" y="1130" fill="#fff" font-size="34" font-weight="600">15 · Fahrzeugdetail</text>
+  </g>
+</svg>

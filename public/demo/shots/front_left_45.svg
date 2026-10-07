@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1200" width="1600" height="1200">
+  <!-- DEMO-Platzhalterfoto (generiert von scripts/generate-demo-assets.mjs) -->
+  <defs>
+    <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e9ecf0"/><stop offset="1" stop-color="#c9ced6"/>
+    </linearGradient>
+    <linearGradient id="floor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9a8068"/><stop offset="1" stop-color="#6e5643"/>
+    </linearGradient>
+    <linearGradient id="interior" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1a1d22"/><stop offset="1" stop-color="#2c3139"/>
+    </linearGradient>
+    <linearGradient id="paint" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8b939e"/><stop offset="0.55" stop-color="#4a515b"/><stop offset="1" stop-color="#2a2f36"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="1200" fill="url(#wall)"/>
+       <rect y="792" width="1600" height="408.00000000000006" fill="url(#floor)"/>
+  <svg x="0" y="60" width="1600" height="1000" viewBox="0 0 1600 1000" fill="none">
+         <g >
+  
+  <path d="M190 712 L545 786 L1475 678" stroke="#0A7BFF" stroke-width="5" stroke-dasharray="22 16" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M190 712 L545 786 L1475 678 L1130 640 Z" fill="#0A7BFF" fill-opacity="0.12"/>
+  <g id="car" stroke="#1b1f25" stroke-linejoin="round" stroke-linecap="round">
+    <path fill="url(#paint)" stroke-width="7"
+      d="M205 700 L195 560 Q198 540 225 535 L455 462 L650 330 Q800 318 960 330 L1260 345 Q1300 350 1320 375 L1395 455 L1458 468 Q1472 474 1470 495 L1468 600 Q1466 650 1450 665 L1440 650 L1345 660 A84 108 0 1 0 1180 677 L785 719 A96 128 0 1 0 595 739 L540 745 L528 768 Q360 740 205 700 Z"/>
+    <path stroke-width="5" d="M515 560 Q522 660 528 768"/>
+    <path stroke-width="5" d="M225 535 Q380 548 515 560 Q670 515 815 482"/>
+    <path stroke-width="5" d="M455 462 L815 482 L960 342 L650 330 Z"/>
+    <path stroke-width="5" d="M860 484 L990 352 Q1000 345 1015 345 L1240 350 Q1265 352 1280 368 L1352 456 Z"/>
+    <path stroke-width="9" d="M1110 349 L1105 470"/>
+    <path stroke-width="4" stroke-opacity="0.8" d="M830 490 L1442 464 M1103 472 L1094 688 M1335 462 Q1325 560 1300 620"/>
+    <path stroke-width="4" d="M400 572 L505 585 L498 620 L405 605 Z M228 552 L300 560 L296 585 L232 578 Z"/>
+    <path stroke-width="4" d="M315 575 Q355 578 390 582 L386 655 Q350 650 318 642 Z"/>
+    <path stroke-width="4" d="M845 478 L805 470 Q790 488 808 502 L848 500"/>
+    <ellipse cx="690" cy="650" rx="74" ry="104" stroke-width="7"/>
+    <ellipse cx="690" cy="650" rx="48" ry="68" stroke-width="4"/>
+    <ellipse cx="690" cy="650" rx="9" ry="13" stroke-width="4"/>
+    <ellipse cx="1262" cy="600" rx="60" ry="84" stroke-width="7"/>
+    <ellipse cx="1262" cy="600" rx="38" ry="54" stroke-width="4"/>
+    <ellipse cx="1262" cy="600" rx="8" ry="11" stroke-width="4"/>
+  </g>
+</g>
+       </svg>
+  <g font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+    <rect x="40" y="1080" width="762" height="80" rx="16" fill="#0b0c0e" fill-opacity="0.82"/>
+    <rect x="60" y="1100" width="110" height="40" rx="8" fill="#0A7BFF"/>
+    <text x="115" y="1128" fill="#fff" font-size="24" font-weight="700" text-anchor="middle">DEMO</text>
+    <text x="190" y="1130" fill="#fff" font-size="34" font-weight="600">01 · Vorne links (45°)</text>
+  </g>
+</svg>

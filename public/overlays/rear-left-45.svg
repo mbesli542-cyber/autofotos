@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" fill="none">
+  <!-- AutoExperten Photo · Rahmenvorlage "Hinten links (45°)": Heck rechts im Bild, Seite nach links.
+       Platzhalter-Silhouette: dient nur der Bildaufteilung, nicht der Modellerkennung. -->
+  <path d="M1410 712 L1055 786 L125 678" stroke="#0A7BFF" stroke-width="5" stroke-dasharray="22 16" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M1410 712 L1055 786 L125 678 L470 640 Z" fill="#0A7BFF" fill-opacity="0.12"/>
+  <g stroke="#FFFFFF" stroke-linejoin="round" stroke-linecap="round">
+    <path fill="#FFFFFF" fill-opacity="0.07" stroke-width="7"
+      d="M1395 700 L1405 560 Q1402 540 1375 535 L1180 470 L1000 345 Q900 335 790 345 L500 345 Q470 347 450 362 L330 455 L165 470 Q140 474 135 495 L138 600 Q140 650 152 665 L160 650 L255 660 A84 108 0 1 1 420 677 L815 719 A96 128 0 1 1 1005 739 L1060 745 L1072 768 Q1240 740 1395 700 Z"/>
+    <path stroke-width="5" d="M1085 560 Q1078 660 1072 768"/>
+    <path stroke-width="5" d="M1375 535 Q1220 548 1085 560 Q990 530 900 497"/>
+    <path stroke-width="5" d="M1180 470 L900 497 L790 352 L1000 345 Z"/>
+    <path stroke-width="5" d="M865 497 L770 365 Q760 356 745 356 L520 356 Q495 358 480 372 L395 462 Z"/>
+    <path stroke-width="9" d="M640 357 L645 480"/>
+    <path stroke-width="4" stroke-opacity="0.8" d="M880 499 L160 480 M648 484 L655 698 M410 466 Q420 560 440 620"/>
+    <path stroke-width="4" d="M1195 568 L1092 575 L1095 612 L1192 602 Z M1372 548 L1300 556 L1302 582 L1370 575 Z"/>
+    <path stroke-width="4" d="M1212 616 L1300 606 L1302 644 L1214 654 Z"/>
+    <path stroke-width="4" d="M380 458 L340 450 Q325 468 343 482 L383 480"/>
+    <ellipse cx="910" cy="650" rx="74" ry="104" stroke-width="7"/>
+    <ellipse cx="910" cy="650" rx="48" ry="68" stroke-width="4"/>
+    <ellipse cx="910" cy="650" rx="9" ry="13" stroke-width="4"/>
+    <ellipse cx="338" cy="600" rx="60" ry="84" stroke-width="7"/>
+    <ellipse cx="338" cy="600" rx="38" ry="54" stroke-width="4"/>
+    <ellipse cx="338" cy="600" rx="8" ry="11" stroke-width="4"/>
+  </g>
+</svg>

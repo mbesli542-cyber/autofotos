@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1200" width="1600" height="1200">
+  <!-- DEMO-Platzhalterfoto (generiert von scripts/generate-demo-assets.mjs) -->
+  <defs>
+    <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e9ecf0"/><stop offset="1" stop-color="#c9ced6"/>
+    </linearGradient>
+    <linearGradient id="floor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9a8068"/><stop offset="1" stop-color="#6e5643"/>
+    </linearGradient>
+    <linearGradient id="interior" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1a1d22"/><stop offset="1" stop-color="#2c3139"/>
+    </linearGradient>
+    <linearGradient id="paint" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8b939e"/><stop offset="0.55" stop-color="#4a515b"/><stop offset="1" stop-color="#2a2f36"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="1200" fill="url(#wall)"/>
+       <rect y="792" width="1600" height="408.00000000000006" fill="url(#floor)"/>
+  <svg x="0" y="60" width="1600" height="1000" viewBox="0 0 1600 1000" fill="none">
+         <g >
+  
+  <ellipse cx="800" cy="772" rx="700" ry="26" fill="#0A7BFF" fill-opacity="0.18"/>
+  <path d="M90 772 H1510" stroke="#0A7BFF" stroke-width="5" stroke-dasharray="22 16" stroke-linecap="round"/>
+  <g stroke="#1b1f25" stroke-linejoin="round" stroke-linecap="round">
+    <path fill="url(#paint)" stroke-width="7"
+      d="M175 735 Q145 728 140 690 L135 622 Q136 578 172 562 Q200 550 240 546 L600 505 Q690 430 780 378 Q800 366 830 363 L1090 360 Q1130 362 1160 384 L1310 470 L1430 488 Q1458 494 1463 522 L1470 640 Q1468 722 1450 735 L1278 735 A118 118 0 1 0 1082 735 L528 735 A118 118 0 1 0 332 735 Z"/>
+    <path stroke-width="5" d="M655 505 L795 395 Q815 383 845 382 L1085 381 Q1112 382 1130 396 L1240 488 Z"/>
+    <path stroke-width="9" d="M930 383 L925 500"/>
+    <path stroke-width="4" stroke-opacity="0.8" d="M608 512 Q615 610 615 690 M925 500 L918 728 M1240 490 Q1225 560 1195 610"/>
+    <path stroke-width="4" stroke-opacity="0.7" d="M240 566 Q800 520 1440 522"/>
+    <path stroke-width="4" d="M150 592 L268 576 L252 612 L160 622 Z"/>
+    <path stroke-width="4" d="M1402 500 L1460 514 L1464 562 L1406 550 Z"/>
+    <path stroke-width="4" d="M650 502 L606 494 Q594 514 612 528 L652 526"/>
+    <path stroke-width="6" d="M842 545 H882 M1128 538 H1166"/>
+    <circle cx="430" cy="670" r="98" stroke-width="7"/>
+    <circle cx="430" cy="670" r="64" stroke-width="4"/>
+    <circle cx="430" cy="670" r="14" stroke-width="4"/>
+    <circle cx="1180" cy="670" r="98" stroke-width="7"/>
+    <circle cx="1180" cy="670" r="64" stroke-width="4"/>
+    <circle cx="1180" cy="670" r="14" stroke-width="4"/>
+  </g>
+</g>
+       </svg>
+  <g font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+    <rect x="40" y="1080" width="814" height="80" rx="16" fill="#0b0c0e" fill-opacity="0.82"/>
+    <rect x="60" y="1100" width="110" height="40" rx="8" fill="#0A7BFF"/>
+    <text x="115" y="1128" fill="#fff" font-size="24" font-weight="700" text-anchor="middle">DEMO</text>
+    <text x="190" y="1130" fill="#fff" font-size="34" font-weight="600">04 · Linke Fahrzeugseite</text>
+  </g>
+</svg>

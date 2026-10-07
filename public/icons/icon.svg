@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- PLACEHOLDER app icon ("AE" text monogram) – replace with an icon derived from the official AutoExperten logo. -->
+  <rect width="512" height="512" rx="112" fill="#0B0C0E"/>
+  <rect x="24" y="24" width="464" height="464" rx="92" fill="none" stroke="#0A7BFF" stroke-opacity="0.35" stroke-width="6"/>
+  <text x="256" y="318" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="210" font-weight="800" letter-spacing="-8"><tspan fill="#FFFFFF">A</tspan><tspan fill="#0A7BFF">E</tspan></text>
+  <rect x="156" y="372" width="200" height="10" rx="5" fill="#0A7BFF"/>
+</svg>
