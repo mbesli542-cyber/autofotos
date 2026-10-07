@@ -63,3 +63,21 @@ def test_very_wide_vehicle_stays_inside_margins():
 def test_empty_bbox_rejected():
     with pytest.raises(ValueError):
         compute_placement(BBox(5, 5, 5, 10), 3200, 2400, STANDARD)
+
+
+def test_far_wheels_of_a_steep_three_quarter_view_stay_on_the_floor():
+    bbox = BBox(0, 0, 1000, 500)
+    free = compute_placement(bbox, 3200, 2400, STANDARD)
+    steep = compute_placement(bbox, 3200, 2400, STANDARD, floor_horizon=0.62, contact_rise=300)
+    assert steep.limited_by == "horizon"
+    assert steep.scale < free.scale
+    highest_contact = steep.bottom - 300 * steep.scale
+    assert highest_contact >= (0.62 + 0.02) * 2400 - 1e-6  # on the floor, not in front of the wall
+    assert steep.bottom == pytest.approx(0.84 * 2400)  # near wheels still on the ground line
+
+
+def test_flat_contacts_do_not_change_the_placement():
+    bbox = BBox(0, 0, 1000, 500)
+    assert compute_placement(bbox, 3200, 2400, STANDARD, floor_horizon=0.62, contact_rise=10) == compute_placement(
+        bbox, 3200, 2400, STANDARD
+    )

@@ -86,7 +86,10 @@ def create_app(
             log.warning("PROCESSOR_DEBUG=true – debug images are stored. Never enable on public instances.")
         if warm_up and hasattr(segmenter, "warm_up"):
             threading.Thread(target=_safe_warm_up, args=(segmenter, model_state), daemon=True).start()
+        stop_cleanup = threading.Event()
+        threading.Thread(target=_cleanup_loop, args=(manager, stop_cleanup), daemon=True).start()
         yield
+        stop_cleanup.set()
         manager.shutdown()
         close = getattr(store, "close", None)
         if callable(close):
@@ -268,6 +271,18 @@ def _busy() -> JSONResponse:
     return error_response(
         503, "busy", "Der Bildverarbeitungs-Service ist ausgelastet. Bitte gleich erneut versuchen."
     )
+
+
+#: Expired jobs (and their photos) are deleted at least this often.
+CLEANUP_INTERVAL_SECONDS = 600
+
+
+def _cleanup_loop(manager: JobManager, stop: threading.Event) -> None:
+    while not stop.wait(CLEANUP_INTERVAL_SECONDS):
+        try:
+            manager.cleanup()
+        except Exception:  # pragma: no cover - logged, retried next round
+            log.exception("Job cleanup failed")
 
 
 def _safe_warm_up(segmenter, state: dict) -> None:

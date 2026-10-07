@@ -33,6 +33,12 @@ MAX_FLOOR_SLOPE = 0.3
 MAX_EXTRAPOLATION_SLOPE = 0.12
 #: Darkness of the floor directly below the car body (no light reaches it).
 UNDERBODY_OPACITY = 0.92
+#: Tyre contacts may sit this much (× vehicle height) above the lowest one –
+#: far-side wheels in steep 3/4 views touch the floor higher in the image.
+MAX_CONTACT_RISE = 0.35
+#: Shadows fade out over this fraction of the image height above the
+#: wall/floor junction instead of ending in a hard line.
+HORIZON_FADE = 0.012
 
 
 def bottom_profile(alpha: np.ndarray, x0: int, x1: int) -> tuple[np.ndarray, np.ndarray]:
@@ -60,14 +66,14 @@ def _floor_side_hull(xs: np.ndarray, ys: np.ndarray) -> list[tuple[float, float]
     return hull
 
 
-def floor_contact_line(bottom: np.ndarray, has: np.ndarray, vehicle_height: float) -> np.ndarray:
-    """Floor y per column, through the tyre contact points (piecewise linear)."""
+def floor_contacts(bottom: np.ndarray, has: np.ndarray, vehicle_height: float) -> list[tuple[float, float]]:
+    """Tyre contact points (x, y) on the floor side of the vehicle outline."""
     columns = np.flatnonzero(has)
     if len(columns) == 0:
-        return np.full_like(bottom, float(bottom.max()))
+        return []
     hull = _floor_side_hull(columns.astype(np.float32), bottom[columns])
     lowest = max(y for _, y in hull)
-    contacts = [(x, y) for x, y in hull if y >= lowest - 0.15 * vehicle_height]
+    contacts = [(x, y) for x, y in hull if y >= lowest - MAX_CONTACT_RISE * vehicle_height]
     # Bumper/sill corners can be hull vertices too: drop outer contacts that are
     # reached by a segment steeper than any floor line could be.
     def steep(a: tuple[float, float], b: tuple[float, float]) -> bool:
@@ -77,6 +83,35 @@ def floor_contact_line(bottom: np.ndarray, has: np.ndarray, vehicle_height: floa
         contacts.pop(0 if contacts[0][1] < contacts[1][1] else 1)
     while len(contacts) > 1 and steep(contacts[-2], contacts[-1]):
         contacts.pop(-1 if contacts[-1][1] < contacts[-2][1] else -2)
+    return contacts
+
+
+def contact_rise(bottom: np.ndarray, has: np.ndarray, vehicle_height: float) -> float:
+    """How far (px) a floor contact may sit above the lowest one.
+
+    Uses the tyre contacts of the outline hull and, because far-side wheels of
+    photos taken from above are hidden inside the outline, also the lowest
+    point within the outer 15 % of the vehicle width on each side. Bumper
+    overhangs make this an upper estimate – it only matters for placement when
+    the rise exceeds roughly a third of the vehicle height.
+    """
+    columns = np.flatnonzero(has)
+    if len(columns) < 2:
+        return 0.0
+    lowest = float(bottom[columns].max())
+    contacts = floor_contacts(bottom, has, vehicle_height)
+    hull_rise = lowest - min(y for _, y in contacts) if contacts else 0.0
+    zone = max(1, int(0.15 * len(columns)))
+    left = float(bottom[columns[:zone]].max())
+    right = float(bottom[columns[-zone:]].max())
+    return float(max(hull_rise, lowest - min(left, right)))
+
+
+def floor_contact_line(bottom: np.ndarray, has: np.ndarray, vehicle_height: float) -> np.ndarray:
+    """Floor y per column, through the tyre contact points (piecewise linear)."""
+    contacts = floor_contacts(bottom, has, vehicle_height)
+    if not contacts:
+        return np.full_like(bottom, float(bottom.max()))
     xs = np.arange(len(bottom), dtype=np.float32)
     if len(contacts) == 1:
         return np.full_like(bottom, contacts[0][1])
@@ -147,7 +182,10 @@ def build_shadow(
         * (1.0 - UNDERBODY_OPACITY * under)
         * (1.0 - np.clip(cfg.ambient_opacity, 0, 1) * ambient)
     )
-    shadow[: max(0, int(floor_y))] = 0.0  # shadows only fall on the floor
+    # shadows fall on the floor only – fade out softly towards the wall junction
+    fade = max(2.0, HORIZON_FADE * height)
+    weight = np.clip((ys[:, 0] - floor_y) / fade, 0.0, 1.0)
+    shadow *= weight[:, None]
     return np.clip(shadow, 0.0, 1.0).astype(np.float32)
 
 

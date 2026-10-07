@@ -47,6 +47,8 @@ class MaskInfo:
     hole_area_filled: int = 0
     uncertain_fraction: float = 0.0
     coverage: float = 0.0
+    #: Large parts separated from the main part (e.g. by a pole in front of the car).
+    split_parts: int = 0
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,16 @@ def clean_mask(alpha: np.ndarray, *, upper_fill_ratio: float = 0.62) -> tuple[np
         # Attached parts (mirrors, antennas) lie inside the vehicle's box.
         if ix * iy >= 0.8 * w * h:
             keep.append(label)
+            continue
+        if area >= 0.1 * main_area:
+            # A big part right next to the main part at the same height: the car
+            # was cut by something in front of it (pole, sign, person). Keep both
+            # so nothing of the car is lost – and warn, the gap is not invented.
+            gap = max(x - (mx + mw), mx - (x + w), 0)
+            overlap = max(0, min(y + h, my + mh) - max(y, my))
+            if gap <= 0.1 * mw and overlap >= 0.6 * min(h, mh):
+                keep.append(label)
+            info.split_parts += 1
     info.components_kept = len(keep)
     keep_mask = np.isin(labels, keep).astype(np.uint8)
 
@@ -202,6 +214,14 @@ def assess_mask(alpha: np.ndarray, bbox: BBox, info: MaskInfo) -> list[QualityWa
     if info.uncertain_fraction > 0.12:
         warnings.append(
             QualityWarning("mask_uncertain", "Die Freistellung ist unsicher – bitte das Ergebnis prüfen.")
+        )
+    if info.split_parts:
+        warnings.append(
+            QualityWarning(
+                "vehicle_occluded",
+                "Das Fahrzeug ist im Foto teilweise verdeckt oder unterbrochen (z. B. durch einen Pfosten) – "
+                "bitte das Ergebnis prüfen und ggf. ohne Hindernis neu fotografieren.",
+            )
         )
     if info.components_total > 25:
         warnings.append(

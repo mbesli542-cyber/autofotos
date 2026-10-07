@@ -29,7 +29,7 @@ from .light import effective_limits, estimate_correction, guarded_correction
 from .mask import QualityWarning, assess_mask, clean_mask, mask_bbox, refine_alpha
 from .placement import compute_placement, output_size
 from .segmentation import VehicleSegmenter
-from .shadow import apply_shadow, build_shadow
+from .shadow import apply_shadow, bottom_profile, build_shadow, contact_rise
 
 ProgressFn = Callable[[float, str], None]
 
@@ -127,7 +127,19 @@ def process_photo(
     progress(0.62, "placement")
     placement_cfg = preset.placement_for(shot_key)
     width, height = output_size(bbox, preset.output, placement_cfg)
-    placement = compute_placement(bbox, width, height, placement_cfg)
+    profile, has_profile = bottom_profile(alpha, bbox.x0, bbox.x1)
+    rise = contact_rise(profile, has_profile, bbox.height)
+    placement = compute_placement(
+        bbox, width, height, placement_cfg, floor_horizon=preset.floor_horizon, contact_rise=rise
+    )
+    if placement.limited_by == "horizon" and placement.width < 0.85 * placement_cfg.width_ratio * width:
+        warnings.append(
+            QualityWarning(
+                "steep_perspective",
+                "Die Perspektive ist sehr steil – das Fahrzeug wird kleiner dargestellt. "
+                "Bitte etwas weiter entfernt und auf Höhe der Fahrzeugmitte fotografieren.",
+            )
+        )
     if placement.scale > 1.25:
         warnings.append(
             QualityWarning(
@@ -195,6 +207,7 @@ def process_photo(
             "componentsTotal": mask_info.components_total,
             "componentsKept": mask_info.components_kept,
             "holesFilled": mask_info.holes_filled,
+            "splitParts": mask_info.split_parts,
             "uncertainFraction": round(mask_info.uncertain_fraction, 4),
         },
         "placement": {
@@ -204,6 +217,7 @@ def process_photo(
             "width": round(placement.width, 1),
             "height": round(placement.height, 1),
             "limitedBy": placement.limited_by,
+            "contactRise": round(rise, 1),
             "layerOrigin": list(origin),
         },
         "adjustments": correction.as_dict(),

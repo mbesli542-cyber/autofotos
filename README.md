@@ -370,7 +370,7 @@ pixels. Vehicle corrections are capped by hard limits in code
 (`processor/app/pipeline/light.py`) and reverted if the measured hue or
 saturation of the vehicle would change. Interior shots are not composited.
 
-**Run it locally**
+**Run it locally** (Python 3.12+)
 
 ```bash
 cd processor
@@ -396,7 +396,7 @@ for Vercel functions – run it on a VM/container with ≥ 12 GB RAM.
    by side → "Ergebnis herunterladen".
    The page is not linked anywhere and is only served in development (or with
    `ENABLE_DEV_TOOLS=true`, internal deployments only).
-4. Without the app: `cd processor && .venv/bin/python -m app.cli car.jpg -o out.jpg --debug-dir dbg/`.
+4. Without the app: `cd processor && .venv/bin/python -m app.cli car.jpg -o /tmp/out.jpg --debug-dir /tmp/dbg`.
 
 **Connect the app** (`.env.local`): `IMAGE_PROCESSOR=real`,
 `NEXT_PUBLIC_IMAGE_PROCESSOR=real`, `IMAGE_PROCESSING_API_URL`,

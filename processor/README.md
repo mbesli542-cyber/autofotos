@@ -1,6 +1,6 @@
 # AutoExperten processor
 
-Separate image-processing service for **AutoExperten Photo** (Python 3.11+,
+Separate image-processing service for **AutoExperten Photo** (Python 3.12+,
 FastAPI, Pillow, OpenCV, ONNX Runtime – CPU only).
 
 It turns one real vehicle photo into an AutoExperten showroom listing photo:
@@ -102,6 +102,8 @@ see `public/brand/README.md`.
 
 ## Run locally
 
+Requires Python 3.12+ (tested with 3.13).
+
 ```bash
 cd processor
 python3 -m venv .venv
@@ -182,7 +184,8 @@ Security:
   automatically for about a minute).
 - `/docs` and `/openapi.json` exist only with `PROCESSOR_DEBUG=true`.
 
-Jobs are kept in memory and on disk for `PROCESSOR_JOB_TTL_HOURS`; a restart
+Jobs are kept in memory and on disk for `PROCESSOR_JOB_TTL_HOURS` (expired
+jobs are deleted within 10 minutes); a restart
 forgets running jobs (prototype), and job folders of earlier runs are deleted
 once they are older than the TTL.
 

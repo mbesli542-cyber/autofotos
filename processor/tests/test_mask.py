@@ -68,3 +68,61 @@ def test_thin_gaps_under_roof_rails_are_not_filled_but_windows_are():
     assert result[290, 330] == 1.0  # window filled
     assert result[165, 550] == 0.0  # rail gap stays background
     assert info.holes_filled == 1
+
+
+class _FakeSession:
+    def __init__(self, output):
+        self.output = output
+
+    def get_inputs(self):
+        return [type("Input", (), {"name": "input_image"})()]
+
+    def run(self, _outputs, _feeds):
+        return [self.output]
+
+
+@pytest.mark.parametrize("peak, area", [(0.09, 0.3), (0.98, 0.0005)])
+def test_photos_without_a_confident_object_are_rejected(monkeypatch, tmp_path, peak, area):
+    from app.pipeline.segmentation import MODEL_REGISTRY, OnnxSegmenter, SegmentationError
+
+    out = np.full((1, 1, 1024, 1024), 0.001, np.float32)
+    rows = int(1024 * area) or 1
+    out[0, 0, :rows, :] = peak
+    segmenter = OnnxSegmenter(MODEL_REGISTRY["isnet-general-use"], tmp_path, auto_download=False)
+    monkeypatch.setattr(segmenter, "_get_session", lambda: _FakeSession(out))
+    with pytest.raises(SegmentationError):
+        segmenter.segment(np.full((300, 400, 3), 128, np.uint8))
+
+
+def test_a_confident_object_is_returned_at_photo_size(monkeypatch, tmp_path):
+    from app.pipeline.segmentation import MODEL_REGISTRY, OnnxSegmenter
+
+    out = np.zeros((1, 1, 1024, 1024), np.float32)
+    out[0, 0, 400:700, 200:800] = 0.97
+    segmenter = OnnxSegmenter(MODEL_REGISTRY["isnet-general-use"], tmp_path, auto_download=False)
+    monkeypatch.setattr(segmenter, "_get_session", lambda: _FakeSession(out))
+    alpha = segmenter.segment(np.full((300, 400, 3), 128, np.uint8))
+    assert alpha.shape == (300, 400) and alpha.max() == pytest.approx(1.0)
+
+
+def test_a_car_split_by_a_pole_is_kept_whole_and_flagged():
+    from app.pipeline.mask import assess_mask, clean_mask, mask_bbox
+
+    alpha = np.zeros((600, 1000), np.float32)
+    alpha[200:480, 100:900] = 1.0
+    alpha[150:520, 520:545] = 0.0  # pole in front of the car
+    result, info = clean_mask(alpha)
+    bbox = mask_bbox(result)
+    assert (bbox.x0, bbox.x1) == (100, 900)  # both halves kept
+    assert info.split_parts == 1
+    assert any(w.code == "vehicle_occluded" for w in assess_mask(result, bbox, info))
+
+
+def test_a_separate_car_further_away_is_not_merged():
+    from app.pipeline.mask import clean_mask, mask_bbox
+
+    alpha = np.zeros((600, 1400), np.float32)
+    alpha[200:480, 50:750] = 1.0  # the photographed car
+    alpha[220:470, 950:1350] = 1.0  # another car with a clear gap
+    result, info = clean_mask(alpha)
+    assert mask_bbox(result).x1 == 750

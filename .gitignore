@@ -52,7 +52,9 @@ next-env.d.ts
 # image processor (Python)
 /processor/.venv/
 /processor/data/
-/processor/models/*.onnx
+/processor/models/
+/processor/dbg/
+/processor/out*.jpg
 __pycache__/
 *.pyc
 .pytest_cache/

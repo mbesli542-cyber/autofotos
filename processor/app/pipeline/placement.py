@@ -2,9 +2,10 @@
 
 The vehicle is scaled UNIFORMLY (aspect ratio preserved, never distorted),
 centred horizontally, and its lowest pixel (tyre contact) is put on the
-preset's ground line. Constraints are applied in this order of priority:
-never crop (margins), maximum height, no excessive up-scaling, then the
-target width.
+preset's ground line. The scale is the smallest of: target width, maximum
+height, frame margins (never crop), maximum up-scaling and – for 3/4 views
+whose far wheels touch the floor higher up – the showroom floor horizon (every
+tyre contact must stay on the floor, never in front of the wall).
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ class PlacementResult:
     height: float
     output_width: int
     output_height: int
-    #: Which rule determined the scale: width | height | margin | upscale.
+    #: Which rule determined the scale: width | height | margin | upscale | horizon.
     limited_by: str
 
     @property
@@ -60,7 +61,20 @@ def output_size(bbox: BBox, output: OutputConfig, placement: Placement) -> tuple
     return width - width % 2, height - height % 2
 
 
-def compute_placement(bbox: BBox, width: int, height: int, placement: Placement) -> PlacementResult:
+#: Highest tyre contact stays at least this far (× image height) below the horizon.
+HORIZON_CLEARANCE = 0.02
+
+
+def compute_placement(
+    bbox: BBox,
+    width: int,
+    height: int,
+    placement: Placement,
+    *,
+    floor_horizon: float | None = None,
+    contact_rise: float = 0.0,
+) -> PlacementResult:
+    """`contact_rise`: source pixels between the lowest and the highest tyre contact."""
     if bbox.width <= 0 or bbox.height <= 0:
         raise ValueError("empty bounding box")
     margin_x = placement.min_margin * width
@@ -76,6 +90,9 @@ def compute_placement(bbox: BBox, width: int, height: int, placement: Placement)
         ),
         "upscale": placement.max_upscale,
     }
+    if floor_horizon is not None and contact_rise > 0:
+        room = ground_y - (floor_horizon + HORIZON_CLEARANCE) * height
+        candidates["horizon"] = max(room, 1.0) / contact_rise
     limited_by = min(candidates, key=lambda key: candidates[key])
     scale = candidates[limited_by]
     if not math.isfinite(scale) or scale <= 0:

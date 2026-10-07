@@ -29,6 +29,13 @@ from ..config import Settings
 log = logging.getLogger(__name__)
 
 
+#: A photo without a confident foreground object is rejected instead of
+#: stretching model noise into a mask (measured: car photos reach 1.0 with
+#: ≥ 5 % of the frame above 0.5; empty walls/pocket shots stay below 0.1).
+MIN_CONFIDENCE = 0.5
+MIN_FOREGROUND_FRACTION = 0.002
+
+
 class ModelUnavailableError(Exception):
     """The segmentation model cannot be loaded – a service problem, not the photo's."""
 
@@ -191,8 +198,8 @@ class OnnxSegmenter:
         if self.spec.apply_sigmoid:
             pred = 1.0 / (1.0 + np.exp(-pred))
         lo, hi = float(pred.min()), float(pred.max())
-        if hi - lo < 1e-6:
-            raise SegmentationError("segmentation produced an empty mask")
+        if hi < MIN_CONFIDENCE or float(np.mean(pred > 0.5)) < MIN_FOREGROUND_FRACTION or hi - lo < 1e-6:
+            raise SegmentationError("no confident foreground object in the photo")
         pred = (pred - lo) / (hi - lo)
         alpha = cv2.resize(pred, (width, height), interpolation=cv2.INTER_CUBIC)
         return np.clip(alpha, 0.0, 1.0).astype(np.float32)

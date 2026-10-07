@@ -1,4 +1,4 @@
-# AutoExperten processor – runtime dependencies (Python 3.11+, tested on 3.13).
+# AutoExperten processor – runtime dependencies (Python 3.12+, tested on 3.13).
 # CPU only. No generative image models are used or installed.
 fastapi~=0.142
 uvicorn~=0.54

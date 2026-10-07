@@ -121,7 +121,7 @@ Processor (from `processor/`):
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/python -m pytest
 .venv/bin/uvicorn app.main:app --port 8000
-.venv/bin/python -m app.cli photo.jpg -o out.jpg --debug-dir dbg/
+.venv/bin/python -m app.cli photo.jpg -o /tmp/out.jpg --debug-dir /tmp/dbg
 docker build -f processor/Dockerfile -t autoexperten-processor .   # from repo root
 ```
 
