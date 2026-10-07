@@ -45,6 +45,17 @@ export async function GET(request: NextRequest) {
     signal: request.signal,
   });
   if (!call.ok) return call.response;
+  if (call.value.status === 503) {
+    // /health answers 503 when the segmentation model cannot be loaded.
+    const body = (await readJson(call.value)) as { modelError?: unknown; status?: unknown } | null;
+    if (body && (body.modelError === true || body.status === "error")) {
+      return apiError(
+        503,
+        "processor_model_error",
+        "Das Segmentierungsmodell des Bildverarbeitungs-Service konnte nicht geladen werden (Server-Log prüfen).",
+      );
+    }
+  }
   if (!call.value.ok) {
     return processorErrorResponse(call.value, {
       notFound: "Der Bildverarbeitungs-Service bietet keinen Status an (/health).",

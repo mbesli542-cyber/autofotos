@@ -260,7 +260,6 @@ export class SupabaseDataProvider implements DataProvider {
     });
     // Processed files are derivatives and may be regenerated (upsert).
     await this.upload(STORAGE_BUCKETS.processed, path, file, { upsert: true });
-    this.signedUrlCache.delete(`${STORAGE_BUCKETS.processed}/${path}`);
     await this.recordProcessedPhoto({ photoId: photo.id, preset, processedStoragePath: path });
     return { ...photo, processedStoragePath: path, processedPreset: preset };
   }
@@ -278,5 +277,7 @@ export class SupabaseDataProvider implements DataProvider {
       })
       .eq("id", input.photoId);
     if (error) throw toAppError(error);
+    // A re-processed result reuses its path – make viewers fetch the new file.
+    this.signedUrlCache.delete(`${STORAGE_BUCKETS.processed}/${input.processedStoragePath}`);
   }
 }

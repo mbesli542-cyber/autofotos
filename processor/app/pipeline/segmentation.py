@@ -29,6 +29,10 @@ from ..config import Settings
 log = logging.getLogger(__name__)
 
 
+class ModelUnavailableError(Exception):
+    """The segmentation model cannot be loaded – a service problem, not the photo's."""
+
+
 class SegmentationError(Exception):
     """The segmenter could not produce a usable mask."""
 
@@ -105,7 +109,7 @@ def ensure_model(spec: OnnxModelSpec, models_dir: Path, auto_download: bool) -> 
     if path.is_file():
         return path
     if not auto_download:
-        raise SegmentationError(
+        raise ModelUnavailableError(
             f"Model file {path} missing and PROCESSOR_AUTO_DOWNLOAD_MODELS is disabled"
         )
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -117,7 +121,7 @@ def ensure_model(spec: OnnxModelSpec, models_dir: Path, auto_download: bool) -> 
         urllib.request.urlretrieve(spec.url, tmp)  # noqa: S310 - fixed https URL
         actual = _sha256(tmp)
         if actual != spec.sha256:
-            raise SegmentationError(f"Checksum mismatch for {spec.name}: {actual}")
+            raise ModelUnavailableError(f"Checksum mismatch for {spec.name}: {actual}")
         tmp.chmod(0o644)  # mkstemp creates 0600; the service may run as another user
         tmp.replace(path)
     finally:
@@ -146,7 +150,12 @@ class OnnxSegmenter:
             if self._session is None:
                 import onnxruntime as ort
 
-                path = ensure_model(self.spec, self._models_dir, self._auto_download)
+                try:
+                    path = ensure_model(self.spec, self._models_dir, self._auto_download)
+                except ModelUnavailableError:
+                    raise
+                except Exception as error:  # download failed (network, disk, …)
+                    raise ModelUnavailableError(f"cannot obtain model {self.spec.name}: {error}") from error
                 options = ort.SessionOptions()
                 if self._threads:
                     options.intra_op_num_threads = self._threads
@@ -155,9 +164,12 @@ class OnnxSegmenter:
                 # (several GB for BiRefNet) after each run instead of keeping it
                 # for the lifetime of the service; measured: same speed.
                 options.enable_cpu_mem_arena = False
-                self._session = ort.InferenceSession(
-                    str(path), options, providers=["CPUExecutionProvider"]
-                )
+                try:
+                    self._session = ort.InferenceSession(
+                        str(path), options, providers=["CPUExecutionProvider"]
+                    )
+                except Exception as error:  # unreadable/corrupt file, out of memory, …
+                    raise ModelUnavailableError(f"cannot load model {self.spec.name}: {error}") from error
             return self._session
 
     def warm_up(self) -> None:

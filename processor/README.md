@@ -177,7 +177,9 @@ Security:
   start without a key (the service role bypasses RLS).
 - Request bodies are capped (`PROCESSOR_MAX_UPLOAD_MB`, also for chunked
   uploads → `413`); only JPEG, PNG, WebP and HEIC are decoded, up to 80 MP.
-- At most 4 jobs per worker may wait or run; more → `503` "ausgelastet".
+- At most 4 upload jobs per worker (they hold the photo in memory) and 200
+  jobs in total may wait or run; more → `503` "ausgelastet" (the app retries
+  automatically for about a minute).
 - `/docs` and `/openapi.json` exist only with `PROCESSOR_DEBUG=true`.
 
 Jobs are kept in memory and on disk for `PROCESSOR_JOB_TTL_HOURS`; a restart

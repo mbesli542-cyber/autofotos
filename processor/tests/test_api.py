@@ -329,3 +329,28 @@ def test_job_folders_of_earlier_processes_expire(settings, fake_segmenter, tmp_p
         assert fresh.exists()  # younger than the TTL
     finally:
         manager.shutdown()
+
+
+def test_missing_model_is_reported_as_a_service_problem_not_a_photo_problem(settings, photo):
+    from app.pipeline.segmentation import MODEL_REGISTRY, OnnxSegmenter
+
+    segmenter = OnnxSegmenter(
+        MODEL_REGISTRY["isnet-general-use"], settings.data_dir / "no-models", auto_download=False
+    )
+    app = create_app(settings, segmenter=segmenter, store=None, warm_up=False)
+    with TestClient(app) as client:
+        job = client.post("/jobs/upload", files={"file": ("car.jpg", photo, "image/jpeg")}).json()
+        done = wait_for(client, job["jobId"])
+    assert done["status"] == "failed"
+    assert done["error"] == "Die Bildbearbeitung ist derzeit nicht verfügbar. Bitte später erneut versuchen."
+
+
+def test_contract_jobs_are_not_limited_by_the_upload_queue(make_client, fake_segmenter):
+    client, _ = make_client()
+    gate = threading.Event()
+    fake_segmenter.gate = gate
+    body = {"vehicleId": VEHICLE_ID, "photoId": PHOTO_ID, "preset": "autoexperten_standard"}
+    with client:
+        codes = [client.post("/jobs", json=body).status_code for _ in range(8)]
+        gate.set()
+    assert codes == [202] * 8

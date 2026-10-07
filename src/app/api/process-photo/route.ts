@@ -9,7 +9,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { apiError, authenticateRequest } from "@/lib/api/route-helpers";
 import { getImageProcessor } from "@/lib/processing/get-image-processor";
+import { ProcessingServiceError } from "@/lib/processing/real-image-processor";
 import {
+  PROCESSING_BUSY_CODE,
   parseProcessPhotoRequest,
   type ImageProcessor,
   type ProcessPhotoResponse,
@@ -67,7 +69,15 @@ export async function POST(request: NextRequest) {
       { jobId: job.jobId, status: job.status },
       { status: 202 },
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof ProcessingServiceError && error.status === 503) {
+      // The processor queue is full – the client retries after a short wait.
+      return apiError(
+        503,
+        PROCESSING_BUSY_CODE,
+        "Die Bildbearbeitung ist gerade ausgelastet. Bitte in Kürze erneut versuchen.",
+      );
+    }
     return apiError(
       502,
       "processing_unavailable",

@@ -21,7 +21,7 @@ from ..config import Settings
 from ..pipeline.debug import DEBUG_FILE_NAMES, NULL_DEBUG, DebugSink
 from ..pipeline.decode import DecodeError
 from ..pipeline.pipeline import process_photo
-from ..pipeline.segmentation import SegmentationError, VehicleSegmenter
+from ..pipeline.segmentation import ModelUnavailableError, SegmentationError, VehicleSegmenter
 from ..presets import BackgroundProvider, PresetError, load_preset
 from ..storage.base import PhotoNotFoundError, PhotoStore, StorageError
 
@@ -35,6 +35,7 @@ ERROR_MESSAGES = {
     "preset": "Dieser Bearbeitungsstil ist noch nicht verfügbar.",
     "not_found": "Das Originalfoto wurde nicht gefunden.",
     "storage": "Das Foto konnte nicht geladen oder gespeichert werden. Bitte später erneut versuchen.",
+    "service": "Die Bildbearbeitung ist derzeit nicht verfügbar. Bitte später erneut versuchen.",
     "unknown": "Die Bearbeitung ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
 }
 
@@ -44,11 +45,13 @@ class StoreUnavailableError(Exception):
 
 
 class QueueFullError(Exception):
-    """Too many jobs are waiting – each queued upload holds its photo in memory."""
+    """Too many jobs are waiting."""
 
 
-#: Jobs that may wait or run at the same time, per worker thread.
-MAX_PENDING_PER_WORKER = 4
+#: Upload jobs hold their photo in memory while they wait – keep that queue short.
+MAX_PENDING_UPLOADS_PER_WORKER = 4
+#: Contract jobs fetch the original only when they start; this only bounds abuse.
+MAX_PENDING_JOBS = 200
 
 
 def _now() -> datetime:
@@ -114,7 +117,7 @@ class JobManager:
         )
         self.jobs_dir = settings.data_dir / "jobs"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
-        self.max_pending = MAX_PENDING_PER_WORKER * settings.concurrency
+        self.max_pending_uploads = MAX_PENDING_UPLOADS_PER_WORKER * settings.concurrency
         self._sweep_orphans()
 
     # ------------------------------------------------------------------ api
@@ -209,9 +212,10 @@ class JobManager:
         job_id = uuid.uuid4().hex
         job = Job(id=job_id, kind=kind, directory=self.jobs_dir / job_id, **kwargs)
         with self._lock:
-            pending = sum(1 for j in self._jobs.values() if j.status in ("queued", "processing"))
-            if pending >= self.max_pending:
-                raise QueueFullError(f"{pending} jobs pending")
+            pending = [j for j in self._jobs.values() if j.status in ("queued", "processing")]
+            uploads = sum(1 for j in pending if j.kind == "upload")
+            if len(pending) >= MAX_PENDING_JOBS or (kind == "upload" and uploads >= self.max_pending_uploads):
+                raise QueueFullError(f"{len(pending)} jobs pending")
             self._jobs[job_id] = job
         job.directory.mkdir(parents=True, exist_ok=True)
         return job
@@ -270,14 +274,16 @@ class JobManager:
             )
         except Exception as error:  # noqa: BLE001 - mapped to user-facing messages
             code = _error_code(error)
-            if code == "unknown":
-                log.exception("Job %s failed", job.id)
+            if code in ("unknown", "service"):
+                log.exception("Job %s failed (%s)", job.id, code)
             else:
                 log.warning("Job %s failed: %s (%s)", job.id, code, error)
             self._update(job, status="failed", error=ERROR_MESSAGES[code], metadata={"errorCode": code})
 
 
 def _error_code(error: Exception) -> str:
+    if isinstance(error, ModelUnavailableError):
+        return "service"
     if isinstance(error, DecodeError):
         return "decode"
     if isinstance(error, SegmentationError):

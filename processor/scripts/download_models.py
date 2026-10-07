@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import Settings  # noqa: E402
-from app.pipeline.segmentation import MODEL_REGISTRY, SegmentationError, _sha256, ensure_model  # noqa: E402
+from app.pipeline.segmentation import MODEL_REGISTRY, ModelUnavailableError, _sha256, ensure_model  # noqa: E402
 
 
 def main() -> int:
@@ -35,7 +35,7 @@ def main() -> int:
             return 2
         try:
             path = ensure_model(spec, settings.models_dir, auto_download=True)
-        except SegmentationError as exc:
+        except ModelUnavailableError as exc:
             print(f"{name}: {exc}", file=sys.stderr)
             return 1
         if _sha256(path) != spec.sha256:

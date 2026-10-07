@@ -87,6 +87,9 @@ export interface ApiErrorBody {
   error: { code: string; message: string };
 }
 
+/** Error code of POST /api/process-photo when the processor queue is full (503). */
+export const PROCESSING_BUSY_CODE = "processing_busy";
+
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
 export function parseProcessPhotoRequest(
