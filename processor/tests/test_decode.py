@@ -39,3 +39,26 @@ def test_png_with_alpha_becomes_rgb():
 def test_garbage_is_rejected(data):
     with pytest.raises(DecodeError):
         decode_image(data)
+
+
+def _encoded(fmt: str, size=(96, 72), mode="RGB") -> bytes:
+    buffer = io.BytesIO()
+    Image.new(mode, size, 0).save(buffer, fmt)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("fmt", ["TIFF", "BMP", "GIF"])
+def test_only_photo_formats_are_decoded(fmt):
+    with pytest.raises(DecodeError):
+        decode_image(_encoded(fmt))
+
+
+@pytest.mark.parametrize("fmt", ["JPEG", "PNG", "WEBP"])
+def test_photo_formats_are_decoded(fmt):
+    assert decode_image(_encoded(fmt)).rgb.shape == (72, 96, 3)
+
+
+def test_images_above_the_pixel_limit_are_rejected():
+    # 100 MP – Pillow alone would only warn (it raises above twice its limit)
+    with pytest.raises(DecodeError, match="too large"):
+        decode_image(_encoded("PNG", (10_000, 10_000), "L"))

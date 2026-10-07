@@ -8,14 +8,16 @@ Single-photo testing:
     GET  /jobs/{jobId}/result     processed JPEG
     GET  /jobs/{jobId}/debug      list of debug files (PROCESSOR_DEBUG=true only)
     GET  /jobs/{jobId}/debug/{n}  one debug file    (PROCESSOR_DEBUG=true only)
-    GET  /health                  service status (no auth)
+    GET  /health                  service status (no auth; details only with auth)
+
+Every other endpoint requires "Authorization: Bearer <PROCESSOR_API_KEY>" when
+the key is set (checked by app.guard.RequestGuard before any body is read).
 
 Run: uvicorn app.main:app --host 0.0.0.0 --port 8000
 """
 
 from __future__ import annotations
 
-import hmac
 import logging
 import re
 import threading
@@ -29,7 +31,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
-from .jobs.manager import JobManager, StoreUnavailableError
+from .guard import RequestGuard, is_authorized
+from .jobs.manager import JobManager, QueueFullError, StoreUnavailableError
 from .pipeline.pipeline import PIPELINE_VERSION
 from .pipeline.segmentation import VehicleSegmenter, create_segmenter
 from .presets import BackgroundProvider, PresetError, load_preset
@@ -63,6 +66,9 @@ def create_app(
     warm_up: bool = True,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
+    if settings.supabase_configured and not settings.api_key:
+        # The service role bypasses RLS – never expose it through an open API.
+        raise RuntimeError("PROCESSOR_API_KEY is required when SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY are set")
     segmenter = segmenter or create_segmenter(settings)
     if store is None and settings.supabase_configured:
         from .storage.supabase import SupabasePhotoStore
@@ -86,9 +92,26 @@ def create_app(
         if callable(close):
             close()  # releases the Supabase HTTP connection pool
 
-    app = FastAPI(title="AutoExperten Image Processor", version=PIPELINE_VERSION, lifespan=lifespan)
+    app = FastAPI(
+        title="AutoExperten Image Processor",
+        version=PIPELINE_VERSION,
+        lifespan=lifespan,
+        # interactive API docs only for local debugging
+        docs_url="/docs" if settings.debug else None,
+        redoc_url=None,
+        openapi_url="/openapi.json" if settings.debug else None,
+    )
     app.state.manager = manager
     app.state.settings = settings
+
+    # Added before CORS so that CORS stays the outer layer (preflight requests
+    # carry no Authorization header). Multipart overhead: 1 MiB on top.
+    app.add_middleware(
+        RequestGuard,
+        api_key=settings.api_key,
+        max_body_bytes=settings.max_upload_bytes + 1024 * 1024,
+        public_paths=("/health", "/docs", "/openapi.json") if settings.debug else ("/health",),
+    )
 
     if settings.cors_origins:
         app.add_middleware(
@@ -113,10 +136,8 @@ def create_app(
         )
 
     def require_auth(authorization: Annotated[str | None, Header()] = None) -> None:
-        if not settings.api_key:
-            return
-        expected = f"Bearer {settings.api_key}"
-        if not authorization or not hmac.compare_digest(authorization.encode(), expected.encode()):
+        # second line of defence – RequestGuard already rejected unauthenticated calls
+        if not is_authorized(authorization, settings.api_key):
             raise _AuthError()
 
     Auth = Depends(require_auth)
@@ -126,15 +147,21 @@ def create_app(
         return error_response(401, "unauthorized", "Nicht autorisiert.")
 
     @app.get("/health")
-    def health():
+    def health(authorization: Annotated[str | None, Header()] = None):
+        loaded = bool(getattr(segmenter, "loaded", True))
+        failed = model_state["error"] and not loaded
+        status = 503 if failed else 200  # lets container health checks notice a broken model
+        if not is_authorized(authorization, settings.api_key):
+            # unauthenticated callers (health checks) only learn whether the service is up
+            return JSONResponse(
+                status_code=status, content={"status": "error" if failed else "ok", "version": PIPELINE_VERSION}
+            )
         model = getattr(segmenter, "spec", None)
         try:
             preset = load_preset(settings, "autoexperten_standard")
             placeholder = backgrounds.is_placeholder(preset)
         except PresetError:
             placeholder = None
-        loaded = bool(getattr(segmenter, "loaded", True))
-        failed = model_state["error"] and not loaded
         body = {
             "status": "error" if failed else "ok",
             "version": PIPELINE_VERSION,
@@ -147,8 +174,7 @@ def create_app(
             "supabase": store is not None,
             "showroomPlaceholder": placeholder,
         }
-        # 503 lets container health checks notice a model that cannot be loaded
-        return JSONResponse(status_code=503 if failed else 200, content=body)
+        return JSONResponse(status_code=status, content=body)
 
     @app.post("/jobs", status_code=202, dependencies=[Auth])
     def create_contract_job(body: ContractJobRequest):
@@ -166,6 +192,8 @@ def create_app(
                 "storage_not_configured",
                 "Der Bildverarbeitungs-Service ist nicht mit Supabase verbunden.",
             )
+        except QueueFullError:
+            return _busy()
         return job.to_response()
 
     @app.post("/jobs/upload", status_code=202, dependencies=[Auth])
@@ -185,7 +213,10 @@ def create_app(
                 return error_response(413, "too_large", "Die Datei ist zu groß.")
         if not data:
             return error_response(400, "empty_file", "Die Datei ist leer.")
-        job = manager.submit_upload(bytes(data), preset=preset, shot_key=shotKey)
+        try:
+            job = manager.submit_upload(bytes(data), preset=preset, shot_key=shotKey)
+        except QueueFullError:
+            return _busy()
         return job.to_response()
 
     def _get_job(job_id: str):
@@ -231,6 +262,12 @@ def create_app(
 
 class _AuthError(Exception):
     pass
+
+
+def _busy() -> JSONResponse:
+    return error_response(
+        503, "busy", "Der Bildverarbeitungs-Service ist ausgelastet. Bitte gleich erneut versuchen."
+    )
 
 
 def _safe_warm_up(segmenter, state: dict) -> None:

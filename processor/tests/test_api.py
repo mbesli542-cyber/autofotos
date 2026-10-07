@@ -59,13 +59,66 @@ def make_client(settings, fake_segmenter, photo):
     return _make
 
 
-def test_health_needs_no_auth(make_client):
+def test_health_needs_no_auth_but_details_do(make_client):
     client, _ = make_client(api_key="secret")
     with client:
-        body = client.get("/health").json()
-    assert body["status"] == "ok"
-    assert body["auth"] is True
-    assert body["showroomPlaceholder"] is True  # preset still flagged as placeholder
+        public = client.get("/health")
+        details = client.get("/health", headers={"Authorization": "Bearer secret"}).json()
+    assert public.status_code == 200
+    assert public.json() == {"status": "ok", "version": details["version"]}  # nothing else leaks
+    assert details["auth"] is True
+    assert details["showroomPlaceholder"] is True  # preset still flagged as placeholder
+
+
+def test_unauthenticated_requests_are_rejected_before_the_body_is_parsed(make_client):
+    client, _ = make_client(api_key="secret")
+    with client:
+        response = client.post("/jobs", content=b"{not json", headers={"Content-Type": "application/json"})
+        assert response.status_code == 401  # not 400 – the body was never looked at
+        assert client.post("/jobs/upload", files={"file": ("a.jpg", b"x" * 1000, "image/jpeg")}).status_code == 401
+        assert client.get("/docs").status_code in (401, 404)
+        assert client.get("/openapi.json", headers={"Authorization": "Bearer secret"}).status_code == 404
+
+
+def test_oversized_bodies_are_rejected(make_client, photo):
+    client, _ = make_client(max_upload_bytes=10_000)
+    limit = 10_000 + 1024 * 1024
+    with client:
+        declared = client.post(
+            "/jobs/upload", content=b"0" * 16, headers={"Content-Length": str(limit + 1), "Content-Type": "image/jpeg"}
+        )
+        assert declared.status_code == 413
+
+        def chunks():  # no Content-Length – streamed (chunked) body
+            for _ in range(limit // 65536 + 2):
+                yield b"0" * 65536
+
+        streamed = client.post("/jobs/upload", content=chunks(), headers={"Content-Type": "multipart/form-data; boundary=x"})
+        assert streamed.status_code == 413
+        assert streamed.json()["error"]["code"] == "too_large"
+        # within the transport limit but above the photo limit -> handler answers 413 too
+        too_big_photo = client.post("/jobs/upload", files={"file": ("car.jpg", photo, "image/jpeg")})
+        assert too_big_photo.status_code == 413
+
+
+def test_queue_is_bounded(make_client, fake_segmenter, photo):
+    client, _ = make_client()
+    gate = threading.Event()
+    fake_segmenter.gate = gate
+    with client:
+        codes = [
+            client.post("/jobs/upload", files={"file": ("car.jpg", photo, "image/jpeg")}).status_code
+            for _ in range(5)
+        ]
+        gate.set()
+    assert codes[:4] == [202, 202, 202, 202]
+    assert codes[4] == 503
+
+
+def test_service_role_requires_an_api_key(settings, fake_segmenter):
+    unsafe = replace(settings, api_key=None, supabase_url="https://x.supabase.co", supabase_service_role_key="k" * 40)
+    with pytest.raises(RuntimeError):
+        create_app(unsafe, segmenter=fake_segmenter, warm_up=False)
 
 
 @pytest.mark.parametrize(
@@ -252,3 +305,27 @@ def test_health_reports_a_model_that_cannot_be_loaded(settings):
             response = client.get("/health")
     assert response.status_code == 503
     assert response.json()["modelError"] is True
+
+
+def test_job_folders_of_earlier_processes_expire(settings, fake_segmenter, tmp_path):
+    import os
+
+    from app.jobs.manager import JobManager
+    from app.presets import BackgroundProvider
+
+    s = replace(settings, data_dir=tmp_path, job_ttl_hours=1)
+    old = tmp_path / "jobs" / ("a" * 32)
+    (old / "debug").mkdir(parents=True)
+    (old / "result.jpg").write_bytes(b"x")
+    (old / "debug" / "original.jpg").write_bytes(b"x")
+    fresh = tmp_path / "jobs" / ("b" * 32)
+    fresh.mkdir()
+    long_ago = time.time() - 3 * 3600
+    for path in [old, old / "debug", old / "result.jpg", old / "debug" / "original.jpg"]:
+        os.utime(path, (long_ago, long_ago))
+    manager = JobManager(s, fake_segmenter, BackgroundProvider(s))
+    try:
+        assert not old.exists()  # removed at start-up
+        assert fresh.exists()  # younger than the TTL
+    finally:
+        manager.shutdown()

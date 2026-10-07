@@ -43,6 +43,14 @@ class StoreUnavailableError(Exception):
     """JSON contract jobs need a configured photo store (Supabase)."""
 
 
+class QueueFullError(Exception):
+    """Too many jobs are waiting – each queued upload holds its photo in memory."""
+
+
+#: Jobs that may wait or run at the same time, per worker thread.
+MAX_PENDING_PER_WORKER = 4
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -106,6 +114,8 @@ class JobManager:
         )
         self.jobs_dir = settings.data_dir / "jobs"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self.max_pending = MAX_PENDING_PER_WORKER * settings.concurrency
+        self._sweep_orphans()
 
     # ------------------------------------------------------------------ api
 
@@ -169,7 +179,25 @@ class JobManager:
                     removed.append(self._jobs.pop(job_id))
         for job in removed:
             shutil.rmtree(job.directory, ignore_errors=True)
-        return len(removed)
+        return len(removed) + self._sweep_orphans()
+
+    def _sweep_orphans(self) -> int:
+        """Delete job folders of earlier processes (unknown ids) once they exceed the TTL."""
+        cutoff = (_now() - timedelta(hours=self.settings.job_ttl_hours)).timestamp()
+        with self._lock:
+            known = set(self._jobs)
+        removed = 0
+        for directory in self.jobs_dir.iterdir():
+            if not directory.is_dir() or directory.name in known:
+                continue
+            try:
+                newest = max([directory.stat().st_mtime] + [p.stat().st_mtime for p in directory.rglob("*")])
+            except OSError:
+                continue
+            if newest < cutoff:
+                shutil.rmtree(directory, ignore_errors=True)
+                removed += 1
+        return removed
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
@@ -179,11 +207,13 @@ class JobManager:
     def _create(self, kind: str, **kwargs) -> Job:
         self.cleanup()
         job_id = uuid.uuid4().hex
-        directory = self.jobs_dir / job_id
-        directory.mkdir(parents=True, exist_ok=True)
-        job = Job(id=job_id, kind=kind, directory=directory, **kwargs)
+        job = Job(id=job_id, kind=kind, directory=self.jobs_dir / job_id, **kwargs)
         with self._lock:
+            pending = sum(1 for j in self._jobs.values() if j.status in ("queued", "processing"))
+            if pending >= self.max_pending:
+                raise QueueFullError(f"{pending} jobs pending")
             self._jobs[job_id] = job
+        job.directory.mkdir(parents=True, exist_ok=True)
         return job
 
     def _update(self, job: Job, **changes) -> None:

@@ -108,12 +108,14 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env            # optional – edit as needed
 .venv/bin/python scripts/download_models.py   # optional, else downloaded on first job
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-`GET http://localhost:8000/health` → `{"status":"ok", "modelLoaded": …,
-"showroomPlaceholder": …}`. The model is warmed up in the background after
-start-up.
+`GET http://localhost:8000/health` → `{"status":"ok","version":"1.0.0"}`
+(with `Authorization: Bearer <key>` also model, debug, Supabase and
+showroom-placeholder details; `503` if the model cannot be loaded). The model
+is warmed up in the background after start-up. Use `--host 0.0.0.0` only
+together with `PROCESSOR_API_KEY`.
 
 ### Process one photo
 
@@ -166,9 +168,21 @@ JSON contract:
 
 Other endpoints: `POST /jobs/upload` (multipart), `GET /jobs/{id}/result`,
 `GET /jobs/{id}/debug[/{name}]` (debug mode only), `GET /health`.
-When `PROCESSOR_API_KEY` is set every endpoint except `/health` requires
-`Authorization: Bearer <key>`. Jobs are kept in memory and on disk for
-`PROCESSOR_JOB_TTL_HOURS`; a restart forgets running jobs (prototype).
+
+Security:
+
+- When `PROCESSOR_API_KEY` is set every endpoint except `/health` requires
+  `Authorization: Bearer <key>`; the check runs before any request body is
+  read (`app/guard.py`). With `SUPABASE_*` configured the service refuses to
+  start without a key (the service role bypasses RLS).
+- Request bodies are capped (`PROCESSOR_MAX_UPLOAD_MB`, also for chunked
+  uploads → `413`); only JPEG, PNG, WebP and HEIC are decoded, up to 80 MP.
+- At most 4 jobs per worker may wait or run; more → `503` "ausgelastet".
+- `/docs` and `/openapi.json` exist only with `PROCESSOR_DEBUG=true`.
+
+Jobs are kept in memory and on disk for `PROCESSOR_JOB_TTL_HOURS`; a restart
+forgets running jobs (prototype), and job folders of earlier runs are deleted
+once they are older than the TTL.
 
 ## Debugging
 

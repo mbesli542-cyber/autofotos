@@ -23,8 +23,13 @@ except Exception:  # pragma: no cover - optional dependency
     HEIF_SUPPORTED = False
 
 #: Refuse absurdly large images (decompression bombs). 80 MP covers every phone.
+#: Checked explicitly – Pillow itself only warns up to twice its limit.
 MAX_PIXELS = 80_000_000
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+
+#: Only photo formats are decoded (no TIFF/EPS/… parsers on untrusted uploads).
+#: Multi-picture JPEGs (MPO, written by many phones) open through "JPEG".
+ALLOWED_FORMATS = ("JPEG", "PNG", "WEBP") + (("HEIF",) if HEIF_SUPPORTED else ())
 
 _SRGB_PROFILE = ImageCms.createProfile("sRGB")
 
@@ -78,8 +83,12 @@ def decode_image(data: bytes) -> DecodedImage:
     if not data:
         raise DecodeError("empty upload")
     try:
-        image = Image.open(io.BytesIO(data))
+        image = Image.open(io.BytesIO(data), formats=ALLOWED_FORMATS)
+        if image.width * image.height > MAX_PIXELS:
+            raise DecodeError("image too large")
         image.load()
+    except DecodeError:
+        raise
     except Image.DecompressionBombError as error:
         raise DecodeError("image too large") from error
     except Exception as error:

@@ -67,8 +67,14 @@ export async function POST(request: NextRequest) {
   const tooLarge = () =>
     apiError(413, "file_too_large", `Das Foto ist zu groß (maximal ${DEV_TEST_MAX_UPLOAD_MB} MB).`);
 
-  const declaredLength = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > DEV_TEST_MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD_BYTES) {
+  // A declared length is required: a chunked body could not be bounded before
+  // request.formData() buffers it (browsers always send Content-Length).
+  const lengthHeader = request.headers.get("content-length");
+  const declaredLength = lengthHeader === null ? Number.NaN : Number(lengthHeader);
+  if (!Number.isFinite(declaredLength) || declaredLength < 0) {
+    return apiError(411, "length_required", "Ungültige Anfrage. Bitte wählen Sie das Foto erneut aus.");
+  }
+  if (declaredLength > DEV_TEST_MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD_BYTES) {
     return tooLarge();
   }
 
