@@ -374,34 +374,43 @@ def test_showroom_preview_is_the_branded_background(make_client):
     assert image.size == (1200, 900)
 
 
-def test_missing_master_falls_back_and_says_so(make_client, settings, photo):
+def test_missing_master_fails_every_exterior_job_with_a_clear_message(make_client, settings, photo):
     master = settings.presets_dir / "autoexperten-standard-showroom.jpg"
     master.unlink()
-    client, _ = make_client()
+    body = {"vehicleId": VEHICLE_ID, "photoId": PHOTO_ID, "preset": "autoexperten_standard"}
+    client, store = make_client()
     with client:
         health = client.get("/health").json()
+        upload = wait_for(client, client.post("/jobs/upload", files={"file": ("car.jpg", photo, "image/jpeg")}).json()["jobId"])
+        contract = wait_for(client, client.post("/jobs", json=body).json()["jobId"])
+    assert health["showroomSource"] == "fallback" and health["showroomPlaceholder"] is True
+    for done in (upload, contract):
+        assert done["status"] == "failed"
+        assert done["error"] == "AutoExperten Showroom-Master fehlt."
+    assert store.stored == []  # nothing was written to vehicle-processed
+
+
+def test_fallback_showroom_only_with_the_explicit_developer_override(make_client, settings, photo):
+    (settings.presets_dir / "autoexperten-standard-showroom.jpg").unlink()
+    client, _ = make_client(allow_fallback_showroom=True)
+    with client:
         job = client.post("/jobs/upload", files={"file": ("car.jpg", photo, "image/jpeg")}).json()
         done = wait_for(client, job["jobId"])
-    assert health["showroomSource"] == "fallback" and health["showroomPlaceholder"] is True
     assert done["status"] == "complete"
     assert done["metadata"]["showroomSource"] == "fallback"
     assert any(w["code"] == "showroom_fallback" for w in done["warnings"])
 
 
-def test_stored_results_never_use_the_fallback_showroom(make_client, settings):
+def test_interior_shots_do_not_need_the_showroom_master(make_client, settings, photo):
     (settings.presets_dir / "autoexperten-standard-showroom.jpg").unlink()
-    body = {"vehicleId": VEHICLE_ID, "photoId": PHOTO_ID, "preset": "autoexperten_standard"}
-    client, store = make_client()
+    client, _ = make_client()
     with client:
-        done = wait_for(client, client.post("/jobs", json=body).json()["jobId"])
-    assert done["status"] == "failed"
-    assert done["error"].startswith("Das finale AutoExperten-Showroom-Foto fehlt noch")
-    assert store.stored == []  # nothing was written to vehicle-processed
-
-    client, store = make_client(allow_fallback_showroom=True)  # explicit developer override
-    with client:
-        done = wait_for(client, client.post("/jobs", json=body).json()["jobId"])
-    assert done["status"] == "complete" and store.stored
+        job = client.post(
+            "/jobs/upload", files={"file": ("cockpit.jpg", photo, "image/jpeg")}, data={"shotKey": "cockpit"}
+        ).json()
+        done = wait_for(client, job["jobId"])
+    assert done["status"] == "complete"
+    assert done["metadata"]["shotKind"] == "interior_passthrough"
 
 
 def test_misconfigured_preset_is_reported_not_crashing(make_client, settings, photo):

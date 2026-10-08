@@ -1,0 +1,13 @@
+# HTTPS reverse proxy in front of the processor (certificate via Let's Encrypt).
+{$PROCESSOR_DOMAIN} {
+	encode gzip
+	# uploads: up to PROCESSOR_MAX_UPLOAD_MB (40 MB) + multipart overhead
+	request_body {
+		max_size 45MB
+	}
+	reverse_proxy processor:8000 {
+		transport http {
+			read_timeout 120s
+		}
+	}
+}

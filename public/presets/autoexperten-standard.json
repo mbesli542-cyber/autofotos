@@ -5,27 +5,27 @@
   "background": {
     "image": "autoexperten-standard-showroom.jpg",
     "fallbackImage": "fallback/autoexperten-standard-fallback.jpg",
-    "floorHorizon": 0.62,
-    "notes": "image = FINAL photorealistic master photo of the EMPTY showroom WITHOUT branding (4:3, >= 3200x2400, ideally 3840x2880). Drop it in with this exact name - it is used automatically. floorHorizon = height (0..1) of the wall/floor junction in that photo. fallbackImage is the procedural emergency fallback, used only while the master is missing."
+    "floorHorizon": 0.586,
+    "notes": "image = FINAL master photo of the EMPTY showroom WITHOUT branding (4:3, >= 3200x2400). Current master: derived from autoexperten-standard-reference.jpg by processor/scripts/prepare_showroom_master.py (baked-in lettering removed). floorHorizon = height (0..1) of the wall/floor junction. fallbackImage = procedural emergency plate, only with PROCESSOR_ALLOW_FALLBACK_SHOWROOM=true."
   },
   "branding": {
     "enabled": true,
-    "clearance": 0.03,
+    "clearance": 0.025,
     "lightMatch": 0.5,
     "logo": {
       "file": "official/AutoExperten_Logo.png",
       "centerX": 0.5,
-      "top": 0.07,
-      "maxWidth": 0.30,
-      "maxHeight": 0.08,
+      "top": 0.205,
+      "maxWidth": 0.32,
+      "maxHeight": 0.075,
       "opacity": 1.0,
       "mounted": true
     },
     "city": {
       "text": "SCHWETZINGEN",
       "centerX": 0.5,
-      "top": 0.158,
-      "capHeight": 0.0165,
+      "top": 0.292,
+      "capHeight": 0.0175,
       "tracking": 0.42,
       "color": "#403F3F",
       "weight": "semibold",
@@ -35,8 +35,8 @@
     "website": {
       "text": "www.autoexperten-rn.de",
       "centerX": 0.5,
-      "top": 0.197,
-      "capHeight": 0.0105,
+      "top": 0.33,
+      "capHeight": 0.0115,
       "tracking": 0.04,
       "color": "#4A4949",
       "weight": "medium",
@@ -46,8 +46,8 @@
     "phone": {
       "text": "+49 6202 9262357",
       "centerX": 0.5,
-      "top": 0.222,
-      "capHeight": 0.0105,
+      "top": 0.358,
+      "capHeight": 0.0115,
       "tracking": 0.04,
       "color": "#4A4949",
       "weight": "medium",
@@ -68,21 +68,37 @@
   },
   "placement": {
     "centerX": 0.5,
-    "groundLine": 0.84,
-    "widthRatio": 0.80,
-    "maxHeightRatio": 0.60,
+    "groundLine": 0.87,
+    "widthRatio": 0.8,
+    "maxHeightRatio": 0.6,
     "minMargin": 0.04,
     "maxUpscale": 2.5
   },
   "shotPlacement": {
-    "front_left_45": { "widthRatio": 0.80 },
-    "front_right_45": { "widthRatio": 0.80 },
-    "rear_left_45": { "widthRatio": 0.80 },
-    "rear_right_45": { "widthRatio": 0.80 },
-    "left_side": { "widthRatio": 0.82 },
-    "right_side": { "widthRatio": 0.82 },
-    "front": { "widthRatio": 0.60 },
-    "rear": { "widthRatio": 0.60 }
+    "front_left_45": {
+      "widthRatio": 0.8
+    },
+    "front_right_45": {
+      "widthRatio": 0.8
+    },
+    "rear_left_45": {
+      "widthRatio": 0.8
+    },
+    "rear_right_45": {
+      "widthRatio": 0.8
+    },
+    "left_side": {
+      "widthRatio": 0.82
+    },
+    "right_side": {
+      "widthRatio": 0.82
+    },
+    "front": {
+      "widthRatio": 0.6
+    },
+    "rear": {
+      "widthRatio": 0.6
+    }
   },
   "shadow": {
     "contactOpacity": 0.82,

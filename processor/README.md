@@ -83,17 +83,20 @@ limits. The code clamps every adjustment
 to `HARD_LIMITS` in `app/pipeline/light.py`, so the JSON cannot make the
 vehicle correction aggressive.
 
-**Showroom master photo (still missing)** – the final photorealistic photo of
-the EMPTY AutoExperten showroom, without any text or logo, goes to
+**Showroom master** – the EMPTY AutoExperten showroom, without any text or
+logo:
 
 ```
-public/presets/autoexperten-standard-showroom.jpg
+public/presets/autoexperten-standard-showroom.jpg   (3200 × 2400)
 ```
 
-It is used automatically as soon as the file exists (set `background.floorHorizon`
-to its wall/floor junction). Requirements, a photographer brief and an
-image-generator prompt: `public/presets/README.md`. Every exterior vehicle of
-every brand uses this same photo.
+The current master is AutoExperten's showroom design
+(`public/presets/autoexperten-standard-reference.jpg`) with its painted-in
+lettering removed by `scripts/prepare_showroom_master.py` (deterministic, no
+AI; `background.floorHorizon` = 0.586). A sharper photo of the empty showroom
+can replace it at any time (same name; set `floorHorizon`). Requirements,
+photographer brief and image-generator prompt: `public/presets/README.md`.
+Every exterior vehicle of every brand uses this same background.
 
 **Branding layer** (`app/showroom/branding.py`) – the official logo PNG from
 `public/brand/official/` (only scaled, never redrawn), `SCHWETZINGEN`,
@@ -105,18 +108,18 @@ over it. The placement keeps the vehicle roof below the branding
 `.venv/bin/python scripts/render_showroom_preview.py -o /tmp/showroom.jpg --guides`
 or `GET /showroom/autoexperten_standard.jpg?width=2400`.
 
-**Emergency fallback (not the final design)** – while the master is missing
-(or unreadable), the procedural plate
+**Emergency fallback (not the final design)** – the procedural plate
 `public/presets/fallback/autoexperten-standard-fallback.jpg`
-(`app/showroom/fallback.py`, `scripts/render_fallback_showroom.py`) is used and
-every job carries the warning `showroom_fallback` / `showroomSource: "fallback"`.
-App jobs (`POST /jobs`, results stored in Supabase) are refused on the fallback
-("Das finale AutoExperten-Showroom-Foto fehlt noch …") unless
-`PROCESSOR_ALLOW_FALLBACK_SHOWROOM=true`; upload jobs of the dev test page still
-work. `/health` (authenticated) reports `showroomSource`,
-`showroomMasterError` (master exists but cannot be read) and `presetError`
-(the preset JSON is invalid – typos, wrong types and out-of-range values are
-rejected with a clear message instead of silently using defaults).
+(`app/showroom/fallback.py`, `scripts/render_fallback_showroom.py`) is only
+used with `PROCESSOR_ALLOW_FALLBACK_SHOWROOM=true` (developers; jobs then carry
+`showroom_fallback` / `showroomSource: "fallback"`). Otherwise, while the master
+is missing or unreadable, every exterior job (app uploads, Supabase jobs, dev
+page) fails with **"AutoExperten Showroom-Master fehlt."** – no fake result is
+produced. Interior/detail shots never need the showroom. `/health`
+(authenticated) reports `showroomSource`, `showroomMasterError` (master exists
+but cannot be read) and `presetError` (the preset JSON is invalid – typos,
+wrong types and out-of-range values are rejected with a clear message instead
+of silently using defaults).
 
 ## Run locally
 
@@ -239,6 +242,36 @@ The segmentation model is downloaded and checksum-verified at build time
 (`--build-arg SEGMENTATION_MODEL=isnet-general-use` for the alternative),
 the service runs as a non-root user and stores jobs in the `/data` volume.
 
+## Deploy (so the Vercel/iPhone app can process real photos)
+
+The model needs a normal server – it never runs on Vercel. Any Linux VM with
+Docker, **≥ 12 GB RAM** (BiRefNet ≈ 7 GB per running job; with
+`--build-arg SEGMENTATION_MODEL=isnet-general-use` ≈ 4 GB is enough) and a
+public host name, e.g. a Hetzner CX42/CPX41.
+
+```bash
+git clone <repository> && cd <repository>/processor/deploy
+cp ../.env.example ../.env
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # → PROCESSOR_API_KEY in ../.env
+PROCESSOR_DOMAIN=processor.example.com docker compose up -d --build
+curl https://processor.example.com/health                         # {"status":"ok",…}
+```
+
+`docker-compose.yml` builds the image from the repository root (model, showroom
+master and official logo baked in) and puts Caddy with an automatic
+Let's-Encrypt certificate in front of it (`Caddyfile`). The DNS record of
+`PROCESSOR_DOMAIN` must point to the server, ports 80/443 open.
+
+Then set in Vercel (Project → Settings → Environment Variables) and redeploy:
+
+| Variable | Value |
+| --- | --- |
+| `IMAGE_PROCESSOR` | `real` |
+| `NEXT_PUBLIC_IMAGE_PROCESSOR` | `real` |
+| `IMAGE_PROCESSING_API_URL` | `https://processor.example.com` |
+| `IMAGE_PROCESSING_API_KEY` | the same value as `PROCESSOR_API_KEY` |
+| `PROCESSING_ACCESS_CODE` | recommended while the app runs in Demo-Modus (public URL without login) |
+
 ## Tests
 
 ```bash
@@ -260,5 +293,5 @@ synthetic vehicle and a fake segmenter – no model download needed.
 - Per-shot placement differs only in width (and the automatic headroom /
   horizon limits); per-shot ground lines can follow.
 - Jobs are in-memory (single instance); no batch processing yet.
-- **The final photorealistic showroom master photo is missing**; the
-  procedural emergency fallback is used until it is supplied.
+- The master is upscaled from a 1448 px design image, so the background is
+  soft (reads as depth of field); a 3840 × 2880 photo would be sharper.

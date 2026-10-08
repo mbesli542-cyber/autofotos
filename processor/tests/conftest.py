@@ -127,8 +127,9 @@ def assets_dir(tmp_path: Path) -> Path:
     )
     preset = json.loads((assets / "presets/autoexperten-standard.json").read_text())
     background = np.zeros((1200, 1600, 3), np.uint8)
-    background[:744] = (236, 237, 240)  # wall
-    background[744:] = (156, 112, 74)  # wooden floor tone
+    junction = int(round(preset["background"]["floorHorizon"] * 1200))
+    background[:junction] = (236, 237, 240)  # wall
+    background[junction:] = (156, 112, 74)  # wooden floor tone
     Image.fromarray(background).save(assets / "presets" / preset["background"]["image"], quality=95)
     return assets
 

@@ -38,7 +38,7 @@ ERROR_MESSAGES = {
     "storage": "Das Foto konnte nicht geladen oder gespeichert werden. Bitte später erneut versuchen.",
     "service": "Die Bildbearbeitung ist derzeit nicht verfügbar. Bitte später erneut versuchen.",
     "configuration": "Die Bildbearbeitung ist auf dem Server nicht richtig eingerichtet (Showroom/Logo). Bitte den Administrator informieren.",
-    "showroom": "Das finale AutoExperten-Showroom-Foto fehlt noch – die Bildbearbeitung ist noch nicht freigegeben.",
+    "showroom": "AutoExperten Showroom-Master fehlt.",
     "unknown": "Die Bearbeitung ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
 }
 
@@ -243,8 +243,8 @@ class JobManager:
                 shot_key=shot_key,
                 debug=debug,
                 progress=lambda value, _step: self._update(job, progress=min(0.99, max(job.progress, value))),
-                # results stored in the app never use the emergency fallback showroom
-                require_master_showroom=job.kind == "contract" and not self.settings.allow_fallback_showroom,
+                # results never use the emergency fallback showroom (unless explicitly allowed)
+                require_master_showroom=not self.settings.allow_fallback_showroom,
             )
             (job.directory / "result.jpg").write_bytes(outcome.jpeg)
             if job.kind == "contract":

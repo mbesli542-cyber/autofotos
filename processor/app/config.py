@@ -83,8 +83,8 @@ class Settings:
     #: Supabase (optional) – needed for the JSON contract used by the Next.js app.
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
-    #: Allow results on the procedural EMERGENCY fallback showroom to be stored in the
-    #: app (contract jobs). Off: such jobs fail until the master photo exists.
+    #: Allow results on the procedural EMERGENCY fallback showroom (developers only).
+    #: Off (default): exterior jobs fail with "AutoExperten Showroom-Master fehlt."
     allow_fallback_showroom: bool = False
     #: Origins allowed to call the API from a browser (comma separated). Empty = none.
     cors_origins: tuple[str, ...] = field(default_factory=tuple)

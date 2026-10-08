@@ -51,7 +51,7 @@ def test_output_is_a_4_3_jpeg_in_listing_resolution(run):
     assert "exif" not in image.info  # no camera/GPS metadata leaks
 
 
-def test_vehicle_is_placed_consistently_without_distortion(run, vehicle):
+def test_vehicle_is_placed_consistently_without_distortion(run, vehicle, settings):
     result = run()
     out = _decode(result.jpeg)
     ys, xs = np.nonzero(_navy_mask(out))
@@ -66,7 +66,8 @@ def test_vehicle_is_placed_consistently_without_distortion(run, vehicle):
     assert p["limitedBy"] == "width"
     assert p["width"] / width == pytest.approx(0.80, abs=0.005)  # preset front_left_45
     assert (p["left"] + p["width"] / 2) / width == pytest.approx(0.5, abs=0.005)
-    assert (p["top"] + p["height"]) / height == pytest.approx(0.84, abs=0.005)
+    preset = load_preset(settings, "autoexperten_standard")
+    assert (p["top"] + p["height"]) / height == pytest.approx(preset.placement.ground_line, abs=0.005)
     # nothing cropped
     assert xs.min() > 0 and xs.max() < width - 1 and ys.min() > 0
 

@@ -137,7 +137,7 @@ def test_provider_reports_an_unreadable_master_and_uses_the_fallback(settings):
 def test_provider_follows_floor_horizon_changes(settings):
     preset = load_preset(settings, "autoexperten_standard")
     provider = BackgroundProvider(settings)
-    assert provider.get(preset, 800, 600).floor_horizon == pytest.approx(0.62)
+    assert provider.get(preset, 800, 600).floor_horizon == pytest.approx(preset.floor_horizon)
     moved = replace(preset, floor_horizon=0.70)
     assert provider.get(moved, 800, 600).floor_horizon == pytest.approx(0.70)
 

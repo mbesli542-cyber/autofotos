@@ -1,0 +1,40 @@
+# AutoExperten processor on a VPS with automatic HTTPS (Caddy + Let's Encrypt).
+#
+#   git clone <this repository> && cd <repo>/processor/deploy
+#   cp ../.env.example ../.env        # set PROCESSOR_API_KEY (required!)
+#   PROCESSOR_DOMAIN=processor.example.com docker compose up -d --build
+#
+# The domain's DNS A/AAAA record must point to the server; ports 80/443 open.
+# Needs ≥ 12 GB RAM for the default BiRefNet model (≈ 7 GB per running job).
+services:
+  processor:
+    build:
+      context: ../..
+      dockerfile: processor/Dockerfile
+    image: autoexperten-processor
+    env_file: ../.env
+    restart: unless-stopped
+    volumes:
+      - processor-data:/data
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - processor
+    environment:
+      PROCESSOR_DOMAIN: ${PROCESSOR_DOMAIN:?set PROCESSOR_DOMAIN to the public host name}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  processor-data:
+  caddy-data:
+  caddy-config:
