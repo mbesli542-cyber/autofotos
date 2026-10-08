@@ -64,6 +64,13 @@ def output_size(bbox: BBox, output: OutputConfig, placement: Placement) -> tuple
 
 #: Highest tyre contact stays at least this far (× image height) below the horizon.
 HORIZON_CLEARANCE = 0.02
+#: The vehicle needs at least this much height (× image height) – less means the
+#: preset is misconfigured (branding or horizon too low), not a small car.
+MIN_ROOM = 0.2
+
+
+class PlacementError(ValueError):
+    """The preset leaves no sensible room for the vehicle."""
 
 
 def compute_placement(
@@ -94,10 +101,16 @@ def compute_placement(
         "upscale": placement.max_upscale,
     }
     if min_top is not None:
-        candidates["headroom"] = max(ground_y - min_top * height, 1.0) / bbox.height
-    if floor_horizon is not None and contact_rise > 0:
+        room = ground_y - min_top * height
+        if room < MIN_ROOM * height:
+            raise PlacementError(f"only {room / height:.0%} of the height between branding and ground line")
+        candidates["headroom"] = room / bbox.height
+    if floor_horizon is not None:
         room = ground_y - (floor_horizon + HORIZON_CLEARANCE) * height
-        candidates["horizon"] = max(room, 1.0) / contact_rise
+        if room <= 0:
+            raise PlacementError("ground line is not below the floor horizon")
+        if contact_rise > 0:
+            candidates["horizon"] = room / contact_rise
     limited_by = min(candidates, key=lambda key: candidates[key])
     scale = candidates[limited_by]
     if not math.isfinite(scale) or scale <= 0:

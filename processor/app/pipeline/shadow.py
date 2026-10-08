@@ -102,9 +102,32 @@ def contact_rise(bottom: np.ndarray, has: np.ndarray, vehicle_height: float) -> 
     contacts = floor_contacts(bottom, has, vehicle_height)
     hull_rise = lowest - min(y for _, y in contacts) if contacts else 0.0
     zone = max(1, int(0.15 * len(columns)))
-    left = float(bottom[columns[:zone]].max())
-    right = float(bottom[columns[-zone:]].max())
+    left = _outer_tyre_contact(bottom[columns[:zone]], from_end=False, window=max(2, int(0.03 * len(columns))))
+    right = _outer_tyre_contact(bottom[columns[-zone:]], from_end=True, window=max(2, int(0.03 * len(columns))))
     return float(max(hull_rise, lowest - min(left, right)))
+
+
+def _outer_tyre_contact(profile: np.ndarray, *, from_end: bool, window: int) -> float:
+    """Lowest point of the outermost tyre in an outer zone of the bottom profile.
+
+    A tyre shows up as a local maximum (lowest image point) of the bottom
+    profile. The sill next to it may sit even lower in the image when the photo
+    is taken from above, so the outermost local maximum is used, not the zone
+    maximum (which is only the fallback when no local maximum exists).
+    """
+    n = len(profile)
+    if n == 0:
+        return 0.0
+    padded = np.pad(profile.astype(np.float32), window, mode="edge")
+    local_max = np.array([profile[i] >= padded[i : i + 2 * window + 1].max() for i in range(n)])
+    # ignore plateaus touching the zone's inner border (that is the sill/body)
+    inner = slice(window, n) if from_end else slice(0, n - window)
+    candidates = np.flatnonzero(local_max)
+    candidates = [i for i in candidates if (i >= window if from_end else i < n - window)]
+    if not candidates:
+        return float(profile[inner].max() if len(profile[inner]) else profile.max())
+    index = candidates[-1] if from_end else candidates[0]
+    return float(profile[index])
 
 
 def floor_contact_line(bottom: np.ndarray, has: np.ndarray, vehicle_height: float) -> np.ndarray:

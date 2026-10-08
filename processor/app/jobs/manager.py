@@ -21,6 +21,7 @@ from ..config import Settings
 from ..pipeline.debug import DEBUG_FILE_NAMES, NULL_DEBUG, DebugSink
 from ..pipeline.decode import DecodeError
 from ..pipeline.pipeline import ShowroomNotReleasedError, process_photo
+from ..pipeline.placement import PlacementError
 from ..pipeline.segmentation import ModelUnavailableError, SegmentationError, VehicleSegmenter
 from ..presets import BackgroundProvider, PresetConfigError, PresetError, load_preset
 from ..storage.base import PhotoNotFoundError, PhotoStore, StorageError
@@ -290,7 +291,7 @@ def _error_code(error: Exception) -> str:
         return "service"
     if isinstance(error, ShowroomNotReleasedError):
         return "showroom"
-    if isinstance(error, PresetConfigError):
+    if isinstance(error, (PresetConfigError, PlacementError)):
         return "configuration"
     if isinstance(error, DecodeError):
         return "decode"

@@ -89,3 +89,29 @@ def test_tall_vehicles_stay_below_the_branding():
     assert p.limited_by == "headroom"
     assert p.top >= 0.27 * 2400 - 1e-6  # roof below the logo and texts
     assert p.bottom == pytest.approx(0.84 * 2400)  # still standing on the ground line
+
+
+def test_no_room_for_the_vehicle_is_an_error_not_a_one_pixel_car():
+    from app.pipeline.placement import PlacementError
+
+    with pytest.raises(PlacementError):
+        compute_placement(BBox(0, 0, 900, 400), 2400, 1800, STANDARD, min_top=0.80)
+    with pytest.raises(PlacementError):
+        compute_placement(BBox(0, 0, 900, 400), 2400, 1800, STANDARD, floor_horizon=0.84, contact_rise=10)
+
+
+def test_far_tyre_hidden_behind_a_lower_sill_is_found():
+    """Photo from above: the sill descends towards the middle and sits lower in the
+    image than the far rear tyre at the right end (car7-like profile)."""
+    import numpy as np
+
+    from app.pipeline.shadow import contact_rise
+
+    x = np.arange(1000)
+    bottom = np.full(1000, 640.0)  # near wheels / body at the bottom
+    bottom[700:880] = 640 - (x[700:880] - 700) * (262 / 180)  # sill rising towards the rear
+    bottom[880:905] = 378  # end of the sill below the wheel arch
+    bottom[905:916] = [379, 380, 381, 382, 382, 382, 381, 380, 379, 376, 372]  # far rear tyre
+    bottom[916:] = 370 - (x[916:] - 916) * 1.5  # rear corner rising steeply
+    rise = contact_rise(bottom, np.ones(1000, bool), vehicle_height=571)
+    assert rise == pytest.approx(640 - 382, abs=1)

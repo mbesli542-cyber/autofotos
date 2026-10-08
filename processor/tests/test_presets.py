@@ -62,3 +62,16 @@ def test_broken_json_is_a_configuration_error(settings):
     (settings.presets_dir / "autoexperten-standard.json").write_text('{"id": "x",, }', encoding="utf-8")
     with pytest.raises(PresetConfigError, match="autoexperten-standard.json"):
         load_preset(settings, "autoexperten_standard")
+
+
+@pytest.mark.parametrize(
+    "path, value",
+    [
+        (["branding", "phone", "top"], 0.90),  # phone number moved onto the floor
+        (["branding", "clearance"], 0.62),
+        (["placement", "groundLine"], 0.60),  # tyres above the wall/floor junction
+    ],
+)
+def test_layouts_that_leave_no_room_for_the_vehicle_are_rejected(path, value):
+    with pytest.raises(PresetConfigError):
+        parse_preset(_with(path, value))

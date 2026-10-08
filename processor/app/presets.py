@@ -273,13 +273,26 @@ def parse_preset(data: dict) -> Preset:
         if not isinstance(value, dict):
             raise PresetConfigError(f"shotPlacement.{key} must be an object")
         shots[key] = _merge(base_placement, value, f"shotPlacement.{key}")
+    branding = parse_branding(data.get("branding"))
+    for name, placement in [("placement", base_placement), *((f"shotPlacement.{k}", v) for k, v in shots.items())]:
+        if placement.ground_line < horizon + 0.1:
+            raise PresetConfigError(
+                f"{name}.groundLine ({placement.ground_line}) must be well below background.floorHorizon ({horizon})"
+            )
+    if branding.enabled:
+        lowest = max(
+            branding.logo.top + branding.logo.max_height,
+            *(t.top + 2 * t.cap_height for t in (branding.city, branding.website, branding.phone) if t.text.strip()),
+        )
+        if lowest + branding.clearance > horizon:
+            raise PresetConfigError("branding must stay on the wall above background.floorHorizon")
     return Preset(
         id=data["id"],
         name=data["name"],
         background_image=background["image"],
         fallback_image=fallback,
         floor_horizon=horizon,
-        branding=parse_branding(data.get("branding")),
+        branding=branding,
         output=_build(OutputConfig, data.get("output"), "output"),
         placement=base_placement,
         shot_placement=shots,

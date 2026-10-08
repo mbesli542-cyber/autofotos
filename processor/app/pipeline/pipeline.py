@@ -140,9 +140,9 @@ def process_photo(
     showroom = backgrounds.get(preset, width, height)
     if require_master_showroom and showroom.is_fallback:  # master turned out unreadable
         raise ShowroomNotReleasedError("final showroom master photo unusable")
-    min_top = None
-    if showroom.branding.boxes:
-        min_top = showroom.branding.bottom / height + preset.branding.clearance
+    # only signage on the wall limits the roof (anything placed on the floor does not)
+    wall_boxes = [b for b in showroom.branding.boxes if b[4] < showroom.floor_horizon * height]
+    min_top = max(b[4] for b in wall_boxes) / height + preset.branding.clearance if wall_boxes else None
     profile, has_profile = bottom_profile(alpha, bbox.x0, bbox.x1)
     rise = contact_rise(profile, has_profile, bbox.height)
     placement = compute_placement(
