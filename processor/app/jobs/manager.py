@@ -231,10 +231,10 @@ class JobManager:
 
     def _run(self, job: Job, load: Callable[[], tuple[bytes, str | None]]) -> None:
         self._update(job, status="processing", progress=0.01)
+        debug = DebugSink(job.directory / "debug") if self.settings.debug else NULL_DEBUG
         try:
             preset = load_preset(self.settings, job.preset)
             data, shot_key = load()
-            debug = DebugSink(job.directory / "debug") if self.settings.debug else NULL_DEBUG
             outcome = process_photo(
                 data,
                 preset=preset,
@@ -283,7 +283,14 @@ class JobManager:
                 log.exception("Job %s failed (%s)", job.id, code)
             else:
                 log.warning("Job %s failed: %s (%s)", job.id, code, error)
-            self._update(job, status="failed", error=ERROR_MESSAGES[code], metadata={"errorCode": code})
+            # debug images written before the failure help to find the cause
+            debug_files = [name for name in debug.files if name in DEBUG_FILE_NAMES] if debug.enabled else []
+            self._update(
+                job,
+                status="failed",
+                error=ERROR_MESSAGES[code],
+                metadata={"errorCode": code, "debugFiles": debug_files},
+            )
 
 
 def _error_code(error: Exception) -> str:

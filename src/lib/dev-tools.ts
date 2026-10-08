@@ -138,15 +138,24 @@ export async function callProcessor(
   }
 }
 
+/** Code and German message from a processor error body ({ error: { code, message } }). */
+async function readProcessorError(response: Response): Promise<{ code: string | null; message: string | null }> {
+  try {
+    const body = (await response.json()) as { error?: { code?: unknown; message?: unknown } } | null;
+    const code = body?.error?.code;
+    const message = body?.error?.message;
+    return {
+      code: typeof code === "string" && /^[a-z_]{1,40}$/.test(code) ? code : null,
+      message: typeof message === "string" && message.length > 0 && message.length <= 300 ? message : null,
+    };
+  } catch {
+    return { code: null, message: null };
+  }
+}
+
 /** German message from a processor error body ({ error: { message } }), if usable. */
 async function readProcessorMessage(response: Response): Promise<string | null> {
-  try {
-    const body = (await response.json()) as { error?: { message?: unknown } } | null;
-    const message = body?.error?.message;
-    return typeof message === "string" && message.length > 0 && message.length <= 300 ? message : null;
-  } catch {
-    return null;
-  }
+  return (await readProcessorError(response)).message;
 }
 
 /**
@@ -195,10 +204,16 @@ async function mapProcessorError(
     );
   }
   if (status === 429 || status === 503) {
+    // 503 is also used for configuration problems (e.g. a broken showroom
+    // preset) – keep the processor's own German message and code then.
+    const { code, message } = await readProcessorError(response);
+    if (status === 503 && code === "configuration" && message) {
+      return apiError(503, "processor_configuration", message);
+    }
     return apiError(
       503,
       "processor_busy",
-      "Der Bildverarbeitungs-Service ist ausgelastet. Bitte versuchen Sie es gleich erneut.",
+      message ?? "Der Bildverarbeitungs-Service ist ausgelastet. Bitte versuchen Sie es gleich erneut.",
     );
   }
   return apiError(

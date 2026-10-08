@@ -5,6 +5,7 @@ import threading
 import time
 from dataclasses import replace
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -414,3 +415,15 @@ def test_misconfigured_preset_is_reported_not_crashing(make_client, settings, ph
     assert health["presetError"] and health["showroomSource"] is None
     assert showroom.status_code == 503
     assert done["status"] == "failed" and "nicht richtig eingerichtet" in done["error"]
+
+
+def test_failed_jobs_still_list_their_debug_files(make_client):
+    client, _ = make_client(debug=True)
+    with client:
+        # a photo without a car: decoding works, segmentation finds nothing
+        job = client.post(
+            "/jobs/upload", files={"file": ("wall.jpg", encode_jpeg(np.full((600, 800, 3), 200, np.uint8)), "image/jpeg")}
+        ).json()
+        done = wait_for(client, job["jobId"])
+    assert done["status"] == "failed"
+    assert "original.jpg" in done["metadata"]["debugFiles"]
