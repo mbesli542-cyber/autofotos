@@ -495,8 +495,9 @@ export function ProcessingTestScreen() {
   const resultFailed = job !== null && failedImages.has(DEV_TEST_API.result(job.jobId));
   const debugFiles = job?.metadata.debugFiles.filter(isValidDebugFileName) ?? [];
   const timings = job ? Object.entries(job.metadata.timingsMs) : [];
-  const showroomSource: ShowroomSource | null =
-    job?.metadata.showroomSource ?? (health.status === "ok" ? health.health.showroomSource : null);
+  // Only the job's own value: interior shots are not composited, failed jobs may
+  // not have reached the showroom step – the service status line shows /health.
+  const showroomSource: ShowroomSource | null = job ? job.metadata.showroomSource : null;
   // Debug files exist only once the job has ended (complete, or failed mid-way).
   const comparisonTiles =
     job && (job.status === "complete" || (job.status === "failed" && debugFiles.length > 0))

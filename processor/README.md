@@ -105,10 +105,18 @@ over it. The placement keeps the vehicle roof below the branding
 `.venv/bin/python scripts/render_showroom_preview.py -o /tmp/showroom.jpg --guides`
 or `GET /showroom/autoexperten_standard.jpg?width=2400`.
 
-**Emergency fallback (not the final design)** – while the master is missing,
-the procedural plate `public/presets/fallback/autoexperten-standard-fallback.jpg`
+**Emergency fallback (not the final design)** – while the master is missing
+(or unreadable), the procedural plate
+`public/presets/fallback/autoexperten-standard-fallback.jpg`
 (`app/showroom/fallback.py`, `scripts/render_fallback_showroom.py`) is used and
 every job carries the warning `showroom_fallback` / `showroomSource: "fallback"`.
+App jobs (`POST /jobs`, results stored in Supabase) are refused on the fallback
+("Das finale AutoExperten-Showroom-Foto fehlt noch …") unless
+`PROCESSOR_ALLOW_FALLBACK_SHOWROOM=true`; upload jobs of the dev test page still
+work. `/health` (authenticated) reports `showroomSource`,
+`showroomMasterError` (master exists but cannot be read) and `presetError`
+(the preset JSON is invalid – typos, wrong types and out-of-range values are
+rejected with a clear message instead of silently using defaults).
 
 ## Run locally
 

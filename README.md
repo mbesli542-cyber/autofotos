@@ -356,7 +356,7 @@ original photo
  → full-resolution alpha (guided filter), mask clean-up
  → cut-out of the ORIGINAL vehicle pixels
  → conservative light matching (tiny exposure / white balance, colour guard)
- → bbox-based placement (no distortion, ~78 % width, centred, ground line 84 %)
+ → bbox-based placement (no distortion, 80–82 % width for 3/4 and side views, 60 % front/rear, centred, ground line 84 %, roof below the branding)
  → fixed AutoExperten showroom photo + official branding layer
  → contact + ambient shadow from the mask
  → edge harmonisation (decontamination, light wrap)

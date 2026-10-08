@@ -44,6 +44,10 @@ SYSTEM_FONT_CANDIDATES = (
 SUPERSAMPLE = 3
 
 
+class BrandingAssetError(Exception):
+    """A configured branding asset (the official logo) cannot be loaded."""
+
+
 @dataclass(frozen=True)
 class LogoConfig:
     #: Official logo file, relative to the brand directory.
@@ -157,19 +161,37 @@ def _hex_to_linear(value: str) -> np.ndarray:
 # --------------------------------------------------------------------------- assets
 
 
+def logo_stamp(path: Path) -> int:
+    """mtime of the logo file (0 if missing) – part of the background cache key."""
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _official_logo(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Official logo trimmed to its alpha bbox: (linear premultiplied RGB, alpha).
+
+    Raises BrandingAssetError if the file is missing or unreadable – listing
+    photos must never silently go out without the official logo.
+    """
+    stamp = logo_stamp(path)
+    if stamp == 0:
+        raise BrandingAssetError(f"official logo missing: {path}")
+    return _load_logo(str(path), stamp)
+
+
 @lru_cache(maxsize=4)
-def _official_logo(path: str) -> tuple[np.ndarray, np.ndarray] | None:
-    """Official logo trimmed to its alpha bbox: (linear premultiplied RGB, alpha)."""
+def _load_logo(path: str, _stamp: int) -> tuple[np.ndarray, np.ndarray]:
     try:
         with Image.open(path) as image:
             rgba = np.asarray(image.convert("RGBA"), np.float32) / 255.0
     except (OSError, ValueError) as error:
-        log.warning("Branding: official logo not available (%s): %s", path, error)
-        return None
+        raise BrandingAssetError(f"official logo unreadable: {path}: {error}") from None
     alpha = rgba[..., 3]
     ys, xs = np.nonzero(alpha > 8.0 / 255.0)
     if len(ys) == 0:
-        return None
+        raise BrandingAssetError(f"official logo is empty: {path}")
     rgba = rgba[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
     alpha = np.ascontiguousarray(rgba[..., 3])
     premul = np.ascontiguousarray(_srgb_to_linear(rgba[..., :3]) * alpha[..., None])
@@ -185,7 +207,9 @@ def _font(weight: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFon
     for path in candidates:
         if path.is_file():
             try:
-                return ImageFont.truetype(str(path), size)
+                # BASIC layout everywhere: identical glyph placement with or without
+                # libraqm (the Docker image has none), no environment-dependent kerning
+                return ImageFont.truetype(str(path), size, layout_engine=ImageFont.Layout.BASIC)
             except OSError:
                 continue
     log.warning("Branding: no TrueType font found – falling back to Pillow's default font")
@@ -211,7 +235,7 @@ def _text_mask(cfg: TextConfig, height: int) -> np.ndarray | None:
     size = max(4, int(round(cap_px / _cap_ratio(probe))))
     font = _font(cfg.weight, size)
     tracking_px = cfg.tracking * size
-    # cumulative advances keep the font's kerning, tracking is added per glyph
+    # advance widths of the BASIC layout + tracking per glyph
     positions = [font.getlength(text[:i]) + i * tracking_px for i in range(len(text))]
     width = int(np.ceil(font.getlength(text) + max(len(text) - 1, 0) * tracking_px)) + 4 * SUPERSAMPLE
     ascent, descent = font.getmetrics()
@@ -245,10 +269,7 @@ class _Element:
 
 
 def _logo_element(cfg: LogoConfig, brand_dir: Path, width: int, height: int) -> _Element | None:
-    logo = _official_logo(str(brand_dir / cfg.file))
-    if logo is None:
-        return None
-    premul, alpha = logo
+    premul, alpha = _official_logo(brand_dir / cfg.file)
     lh, lw = alpha.shape
     scale = min(cfg.max_width * width / lw, cfg.max_height * height / lh)
     tw, th = max(2, int(round(lw * scale))), max(2, int(round(lh * scale)))
@@ -304,15 +325,25 @@ def apply_branding(
     if not elements:
         return rgb, BrandingLayout(boxes=())
 
-    linear = _srgb_to_linear(rgb.astype(np.float32) / 255.0)
-    # Wall light around the branding (brightness only), used by lightMatch.
+    # Only the band that contains the branding (plus shadow and light-map
+    # margins) is processed; all other rows are copied unchanged.
+    mount = cfg.mount
+    sigma = max(2.0, 0.02 * height)
+    shadow_pad = int(np.ceil(4 * mount.shadow_blur * height + abs(mount.shadow_offset) * height)) + 2
+    band = min(height, max(e.y + e.alpha.shape[0] for e in elements) + shadow_pad + int(3 * sigma) + 1)
+    if band <= 0:
+        return rgb, BrandingLayout(boxes=())
+    linear = _srgb_to_linear(rgb[:band].astype(np.float32) / 255.0)
+    # Wall light around the branding (brightness only), used by lightMatch;
+    # computed on a 4x smaller luminance map (it is very smooth anyway).
     luminance = linear @ np.array([0.2126, 0.7152, 0.0722], np.float32)
-    light = cv2.GaussianBlur(luminance, (0, 0), max(2.0, 0.02 * height))
+    small = cv2.resize(luminance, (max(1, width // 4), max(1, band // 4)), interpolation=cv2.INTER_AREA)
+    small = cv2.GaussianBlur(small, (0, 0), max(0.5, sigma / 4))
+    light = cv2.resize(small, (width, band), interpolation=cv2.INTER_LINEAR)
 
     boxes = []
-    mount = cfg.mount
     for element in elements:
-        clipped = _clip(element, width, height)
+        clipped = _clip(element, width, band)
         if clipped is None:
             continue
         x0, y0, x1, y1, sx, sy = clipped
@@ -320,15 +351,15 @@ def apply_branding(
         premul = element.premul[sy : sy + (y1 - y0), sx : sx + (x1 - x0)]
 
         if element.mounted and mount.shadow_opacity > 0:
-            pad = int(np.ceil(4 * mount.shadow_blur * height + abs(mount.shadow_offset) * height)) + 2
+            pad = shadow_pad
             sx0, sy0 = max(x0 - pad, 0), max(y0 - pad, 0)
-            sx1, sy1 = min(x1 + pad, width), min(y1 + pad, height)
+            sx1, sy1 = min(x1 + pad, width), min(y1 + pad, band)
             shadow = np.zeros((sy1 - sy0, sx1 - sx0), np.float32)
             offset = int(round(mount.shadow_offset * height))
-            ty0 = y0 - sy0 + offset
-            ty1 = min(ty0 + alpha.shape[0], shadow.shape[0])
-            if ty1 > ty0:
-                shadow[ty0:ty1, x0 - sx0 : x0 - sx0 + alpha.shape[1]] = alpha[: ty1 - ty0]
+            ty0 = y0 - sy0 + offset  # may be < 0 for an upward offset at the top edge
+            d0, d1 = max(ty0, 0), min(ty0 + alpha.shape[0], shadow.shape[0])
+            if d1 > d0:
+                shadow[d0:d1, x0 - sx0 : x0 - sx0 + alpha.shape[1]] = alpha[d0 - ty0 : d1 - ty0]
             shadow = cv2.GaussianBlur(shadow, (0, 0), max(0.8, mount.shadow_blur * height))
             linear[sy0:sy1, sx0:sx1] *= (1.0 - float(np.clip(mount.shadow_opacity, 0, 1)) * shadow)[..., None]
 
@@ -343,5 +374,6 @@ def apply_branding(
         linear[y0:y1, x0:x1] = premul + area * (1.0 - alpha[..., None])
         boxes.append((element.name, x0, y0, x1, y1))
 
-    out = _linear_to_srgb_u8(linear)
+    out = rgb.copy()
+    out[:band] = _linear_to_srgb_u8(linear)
     return out, BrandingLayout(boxes=tuple(boxes))

@@ -7,7 +7,7 @@ Assets of the AutoExperten showroom processing (used by the processor in
 | --- | --- |
 | `autoexperten-standard.json` | Preset "AutoExperten Standard": background, **branding layout**, output size, vehicle placement per shot, shadow, adjustment limits. |
 | `autoexperten-standard-showroom.jpg` | **FINAL master showroom photo – still missing.** The one fixed background every exterior vehicle photo is placed on. |
-| `fallback/autoexperten-standard-fallback.jpg` | Procedural **emergency fallback** (programmer placeholder, not the AutoExperten design). Used only while the master is missing; every job then carries the warning `showroom_fallback`. |
+| `fallback/autoexperten-standard-fallback.jpg` | Procedural **emergency fallback** (programmer placeholder, not the AutoExperten design). Used only while the master is missing (or unreadable); every job then carries the warning `showroom_fallback`. Results for the app (stored in Supabase) are **refused** on the fallback unless `PROCESSOR_ALLOW_FALLBACK_SHOWROOM=true` – only the dev test page shows fallback composites. |
 
 ## How the background is built
 
@@ -35,8 +35,11 @@ master is missing, the fallback plate gets exactly the same branding.
 3. Check the result without a vehicle:
    `cd processor && .venv/bin/python scripts/render_showroom_preview.py -o /tmp/showroom.jpg --guides`
    (cyan = floor horizon, orange = tyre line, magenta = branding boxes and the
-   highest point a vehicle roof may reach) – or open `/dev/processing-test`
-   ("Showroom ohne Fahrzeug").
+   highest point a vehicle roof may reach), or `GET /showroom/autoexperten_standard.jpg?width=2400`
+   on the processor; `/dev/processing-test` shows the tile "Showroom ohne
+   Fahrzeug" after a photo has been processed.
+   Note: a master that is not 4:3 is centre-cropped to 4:3 – measure
+   `floorHorizon` on that crop (the service logs a warning).
 4. Tune the branding positions in `branding` if needed (all values are
    fractions of width/height): `logo.top`, `logo.maxWidth`, `city.top`,
    `website.top`, `phone.top`, `capHeight`, `color`, `opacity`, `lightMatch`.

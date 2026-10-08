@@ -13,11 +13,11 @@ contains NO branding – the official logo and texts are added by
 ``app/showroom/branding.py`` for every background.
 
 The plate is rendered procedurally with numpy / OpenCV / Pillow only – no
-downloads and no generative AI. It shows an empty, bright premium dealership:
+downloads and no generative AI. It shows an empty, bright dealership:
 
-* white plaster brand wall lit by warm ceiling downlights (light scallops),
-* the official AutoExperten logo (official PNG pixels, only scaled) mounted as
-  stand-off letters, "SCHWETZINGEN" in spaced capitals and the contact line,
+* white plaster wall lit by warm ceiling downlights (light scallops), EMPTY –
+  the branding is added by app/showroom/branding.py (the old built-in sign
+  rendering below is only used when logo_path and brand are passed),
 * vertical wooden slat panels and blue LED light strips at the sides,
 * a warm oak plank floor in one-point perspective with a satin sheen that
   reflects the wall,
@@ -28,7 +28,6 @@ Composition contract (relied on by the processing pipeline):
 * wall/floor junction (baseboard) at ``y = floor_horizon * height``,
 * the area ``x in [8 %, 92 %]``, ``y in [28 %, 97 %]`` contains only wall and
   floor (no objects) – the vehicle is placed there,
-* all brand texts stay above ``y = 27 %``,
 * identical inputs always give identical pixels (seeded RNG, no clock).
 
 Everything is computed in display-linear light (sRGB primaries) and encoded
@@ -414,7 +413,7 @@ def _load_logo(logo_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
         with Image.open(logo_path) as im:
             rgba = np.asarray(im.convert("RGBA"), dtype=np.float32) / 255.0
     except (OSError, ValueError) as exc:
-        logger.warning("Showroom placeholder: logo not available (%s): %s", logo_path, exc)
+        logger.warning("Showroom fallback: logo not available (%s): %s", logo_path, exc)
         return None
     alpha = rgba[..., 3]
     ys, xs = np.where(alpha > 8.0 / 255.0)

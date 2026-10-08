@@ -38,7 +38,7 @@ from .jobs.manager import JobManager, QueueFullError, StoreUnavailableError
 from .pipeline.export import encode_jpeg
 from .pipeline.pipeline import PIPELINE_VERSION
 from .pipeline.segmentation import VehicleSegmenter, create_segmenter
-from .presets import PRESET_FILES, BackgroundProvider, PresetError, load_preset
+from .presets import PRESET_FILES, BackgroundProvider, PresetConfigError, PresetError, load_preset
 from .storage.base import PhotoStore
 
 log = logging.getLogger("autoexperten.processor")
@@ -166,8 +166,10 @@ def create_app(
         try:
             preset = load_preset(settings, "autoexperten_standard")
             source = backgrounds.source(preset)
-        except PresetError:
-            source = None
+            master_error = backgrounds.master_error(preset)
+            preset_error = None
+        except PresetError as error:
+            source, master_error, preset_error = None, None, str(error)
         body = {
             "status": "error" if failed else "ok",
             "version": PIPELINE_VERSION,
@@ -179,6 +181,9 @@ def create_app(
             "auth": bool(settings.api_key),
             "supabase": store is not None,
             "showroomSource": source,
+            "showroomMasterError": master_error,
+            "presetError": preset_error,
+            "fallbackShowroomAllowed": settings.allow_fallback_showroom,
             "showroomPlaceholder": None if source is None else source == "fallback",
         }
         return JSONResponse(status_code=status, content=body)
@@ -262,13 +267,18 @@ def create_app(
             return error_response(404, "not_found", "Dieser Bearbeitungsstil ist noch nicht verfügbar.")
         try:
             preset = load_preset(settings, preset_id)
+            aw, ah = preset.output.aspect
+            out_w = width - width % 2
+            out_h = int(round(out_w * ah / aw))
+            out_h -= out_h % 2
+            showroom = backgrounds.get(preset, out_w, out_h)
+        except PresetConfigError:
+            log.exception("Showroom preset %s is misconfigured", preset_id)
+            return error_response(
+                503, "configuration", "Der Showroom ist auf dem Server nicht richtig eingerichtet."
+            )
         except PresetError:
             return error_response(404, "not_found", "Dieser Bearbeitungsstil ist noch nicht verfügbar.")
-        aw, ah = preset.output.aspect
-        out_w = width - width % 2
-        out_h = int(round(out_w * ah / aw))
-        out_h -= out_h % 2
-        showroom = backgrounds.get(preset, out_w, out_h)
         return Response(
             encode_jpeg(np.asarray(showroom.rgb), 90),
             media_type="image/jpeg",

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from ..presets import EXTERIOR_SHOTS, BackgroundProvider, Preset
+from ..presets import EXTERIOR_SHOTS, SHOWROOM_FALLBACK, BackgroundProvider, Preset
 from .color import linear_to_u8, srgb_to_linear
 from .composite import extract_vehicle, feather_layer, over, place_layer, resample_layer
 from .debug import NULL_DEBUG, DebugSink
@@ -60,6 +60,10 @@ class _Timer:
         self._start = now
 
 
+class ShowroomNotReleasedError(Exception):
+    """Only the emergency fallback showroom exists – results must not be stored."""
+
+
 def process_photo(
     data: bytes,
     *,
@@ -69,7 +73,10 @@ def process_photo(
     shot_key: str | None = None,
     debug: DebugSink = NULL_DEBUG,
     progress: ProgressFn = _noop,
+    require_master_showroom: bool = False,
 ) -> ProcessResult:
+    """`require_master_showroom`: refuse exterior shots while only the emergency
+    fallback showroom is available (used for results stored in the app)."""
     timer = _Timer()
     progress(0.02, "decode")
     decoded = decode_image(data)
@@ -91,6 +98,8 @@ def process_photo(
 
     if shot_key is not None and shot_key not in EXTERIOR_SHOTS:
         return _passthrough(decoded.rgb, preset, debug, timer, base_meta, progress)
+    if require_master_showroom and backgrounds.source(preset) == SHOWROOM_FALLBACK:
+        raise ShowroomNotReleasedError("final showroom master photo missing")
 
     # STEP 2 – segmentation
     progress(0.08, "segment")
@@ -129,6 +138,8 @@ def process_photo(
     width, height = output_size(bbox, preset.output, placement_cfg)
     # the branded showroom decides how high the vehicle may reach (logo stays visible)
     showroom = backgrounds.get(preset, width, height)
+    if require_master_showroom and showroom.is_fallback:  # master turned out unreadable
+        raise ShowroomNotReleasedError("final showroom master photo unusable")
     min_top = None
     if showroom.branding.boxes:
         min_top = showroom.branding.bottom / height + preset.branding.clearance

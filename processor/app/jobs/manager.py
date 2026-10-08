@@ -20,9 +20,9 @@ from pathlib import Path
 from ..config import Settings
 from ..pipeline.debug import DEBUG_FILE_NAMES, NULL_DEBUG, DebugSink
 from ..pipeline.decode import DecodeError
-from ..pipeline.pipeline import process_photo
+from ..pipeline.pipeline import ShowroomNotReleasedError, process_photo
 from ..pipeline.segmentation import ModelUnavailableError, SegmentationError, VehicleSegmenter
-from ..presets import BackgroundProvider, PresetError, load_preset
+from ..presets import BackgroundProvider, PresetConfigError, PresetError, load_preset
 from ..storage.base import PhotoNotFoundError, PhotoStore, StorageError
 
 log = logging.getLogger(__name__)
@@ -36,6 +36,8 @@ ERROR_MESSAGES = {
     "not_found": "Das Originalfoto wurde nicht gefunden.",
     "storage": "Das Foto konnte nicht geladen oder gespeichert werden. Bitte später erneut versuchen.",
     "service": "Die Bildbearbeitung ist derzeit nicht verfügbar. Bitte später erneut versuchen.",
+    "configuration": "Die Bildbearbeitung ist auf dem Server nicht richtig eingerichtet (Showroom/Logo). Bitte den Administrator informieren.",
+    "showroom": "Das finale AutoExperten-Showroom-Foto fehlt noch – die Bildbearbeitung ist noch nicht freigegeben.",
     "unknown": "Die Bearbeitung ist fehlgeschlagen. Bitte versuchen Sie es erneut.",
 }
 
@@ -240,6 +242,8 @@ class JobManager:
                 shot_key=shot_key,
                 debug=debug,
                 progress=lambda value, _step: self._update(job, progress=min(0.99, max(job.progress, value))),
+                # results stored in the app never use the emergency fallback showroom
+                require_master_showroom=job.kind == "contract" and not self.settings.allow_fallback_showroom,
             )
             (job.directory / "result.jpg").write_bytes(outcome.jpeg)
             if job.kind == "contract":
@@ -274,7 +278,7 @@ class JobManager:
             )
         except Exception as error:  # noqa: BLE001 - mapped to user-facing messages
             code = _error_code(error)
-            if code in ("unknown", "service"):
+            if code in ("unknown", "service", "configuration"):
                 log.exception("Job %s failed (%s)", job.id, code)
             else:
                 log.warning("Job %s failed: %s (%s)", job.id, code, error)
@@ -284,6 +288,10 @@ class JobManager:
 def _error_code(error: Exception) -> str:
     if isinstance(error, ModelUnavailableError):
         return "service"
+    if isinstance(error, ShowroomNotReleasedError):
+        return "showroom"
+    if isinstance(error, PresetConfigError):
+        return "configuration"
     if isinstance(error, DecodeError):
         return "decode"
     if isinstance(error, SegmentationError):

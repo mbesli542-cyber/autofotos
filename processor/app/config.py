@@ -83,6 +83,9 @@ class Settings:
     #: Supabase (optional) – needed for the JSON contract used by the Next.js app.
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
+    #: Allow results on the procedural EMERGENCY fallback showroom to be stored in the
+    #: app (contract jobs). Off: such jobs fail until the master photo exists.
+    allow_fallback_showroom: bool = False
     #: Origins allowed to call the API from a browser (comma separated). Empty = none.
     cors_origins: tuple[str, ...] = field(default_factory=tuple)
 
@@ -116,6 +119,7 @@ class Settings:
             threads=max(0, _env_int("PROCESSOR_THREADS", 0)),
             job_ttl_hours=max(1, _env_int("PROCESSOR_JOB_TTL_HOURS", 24)),
             max_upload_bytes=_env_int("PROCESSOR_MAX_UPLOAD_MB", 40) * 1024 * 1024,
+            allow_fallback_showroom=_env_bool("PROCESSOR_ALLOW_FALLBACK_SHOWROOM", False),
             supabase_url=_env("SUPABASE_URL"),
             supabase_service_role_key=_env("SUPABASE_SERVICE_ROLE_KEY"),
             cors_origins=tuple(o.strip() for o in cors.split(",") if o.strip()),

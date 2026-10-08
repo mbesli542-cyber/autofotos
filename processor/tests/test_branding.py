@@ -82,10 +82,27 @@ def test_wall_outside_the_branding_is_untouched():
     assert np.abs(out[below:].astype(int) - wall[below:].astype(int)).max() <= 1
 
 
-def test_missing_logo_file_only_drops_the_logo(tmp_path):
-    cfg = replace(BrandingConfig(), logo=LogoConfig(file="official/missing.png"))
-    _, layout = apply_branding(_wall(), cfg, BRAND_DIR)
-    assert [b[0] for b in layout.boxes] == ["city", "website", "phone"]
+def test_a_missing_official_logo_is_an_error_not_a_silent_omission(tmp_path):
+    import shutil
+
+    from app.showroom.branding import BrandingAssetError
+
+    brand = tmp_path / "brand"
+    (brand / "official").mkdir(parents=True)
+    with pytest.raises(BrandingAssetError):
+        apply_branding(_wall(), BrandingConfig(), brand)
+    # once the file is (re)placed it is picked up without a restart
+    shutil.copy(BRAND_DIR / "official/AutoExperten_Logo.png", brand / "official/AutoExperten_Logo.png")
+    _, layout = apply_branding(_wall(), BrandingConfig(), brand)
+    assert layout.box("logo") is not None
+
+
+def test_upward_shadow_offset_at_the_top_edge_does_not_crash():
+    from app.showroom.branding import MountConfig
+
+    cfg = replace(BrandingConfig(), mount=MountConfig(shadow_offset=-0.004), logo=replace(BrandingConfig().logo, top=0.001))
+    out, layout = apply_branding(_wall(), cfg, BRAND_DIR)
+    assert layout.box("logo")[1] == 2
 
 
 def test_preset_json_branding_is_parsed_and_tunable():
@@ -106,3 +123,29 @@ def test_background_provider_brands_master_and_fallback_identically(settings):
     assert fallback.source == "fallback"
     assert master.branding.boxes == fallback.branding.boxes  # same brand wall on every background
     assert not master.rgb.flags.writeable
+
+
+def test_provider_reports_an_unreadable_master_and_uses_the_fallback(settings):
+    preset = load_preset(settings, "autoexperten_standard")
+    (settings.presets_dir / preset.background_image).write_bytes(b"half-copied")
+    provider = BackgroundProvider(settings)
+    showroom = provider.get(preset, 800, 600)
+    assert showroom.source == "fallback"
+    assert provider.source(preset) == "fallback" and provider.master_error(preset)
+
+
+def test_provider_follows_floor_horizon_changes(settings):
+    preset = load_preset(settings, "autoexperten_standard")
+    provider = BackgroundProvider(settings)
+    assert provider.get(preset, 800, 600).floor_horizon == pytest.approx(0.62)
+    moved = replace(preset, floor_horizon=0.70)
+    assert provider.get(moved, 800, 600).floor_horizon == pytest.approx(0.70)
+
+
+def test_missing_logo_fails_the_background_with_a_configuration_error(settings):
+    from app.presets import PresetConfigError
+
+    preset = load_preset(settings, "autoexperten_standard")
+    (settings.brand_dir / preset.branding.logo.file).unlink()
+    with pytest.raises(PresetConfigError):
+        BackgroundProvider(settings).get(preset, 800, 600)
