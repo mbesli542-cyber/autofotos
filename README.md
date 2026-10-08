@@ -357,7 +357,7 @@ original photo
  → cut-out of the ORIGINAL vehicle pixels
  → conservative light matching (tiny exposure / white balance, colour guard)
  → bbox-based placement (no distortion, ~78 % width, centred, ground line 84 %)
- → fixed AutoExperten showroom plate
+ → fixed AutoExperten showroom photo + official branding layer
  → contact + ambient shadow from the mask
  → edge harmonisation (decontamination, light wrap)
  → JPEG 4:3, 2400–3200 px, quality 92, sRGB, no EXIF
@@ -411,19 +411,27 @@ shown on the dev test page). Never enable it on a public instance.
 
 ### AutoExperten showroom preset
 
-`public/presets/autoexperten-standard.json` is the processing preset (output
-size, placement, shadow, adjustment limits) – used by the processor and
-referenced from `src/lib/processing/presets.ts`.
+`public/presets/autoexperten-standard.json` is the processing preset
+(background, branding layout, output size, per-shot placement, shadow,
+adjustment limits) – used by the processor and referenced from
+`src/lib/processing/presets.ts`.
 
-**Showroom master image:** the background is one fixed image,
-`public/presets/autoexperten-standard-showroom.jpg` (4:3, ≥ 3200×2400, empty
-showroom, wall/floor junction at ~62 % of the height). The current file is a
-deterministic **placeholder** rendered by
-`processor/scripts/render_showroom_placeholder.py` (white wall, parquet,
-spotlights, blue LED strips, wood slats, plants, brand wall with the official
-logo, "SCHWETZINGEN", www.autoexperten-rn.de, +49 6202 9262357). To use the
-real showroom photo: replace that JPG (same name) and set
-`"placeholder": false` in `autoexperten-standard.json`. No code changes.
+**Showroom master photo – still missing.** Every exterior vehicle is placed on
+ONE fixed photo of the empty showroom, `public/presets/autoexperten-standard-showroom.jpg`
+(photorealistic, 4:3, ≥ 3200×2400, ideally 3840×2880, no vehicle, **no text or
+logo**). Drop the file in – it is used automatically; then set
+`background.floorHorizon`. Requirements, photographer brief and an
+image-generator prompt: [`public/presets/README.md`](public/presets/README.md).
+
+**Branding:** the official logo PNG, "SCHWETZINGEN", www.autoexperten-rn.de and
++49 6202 9262357 are composited deterministically onto the background
+(`processor/app/showroom/branding.py`, positions in the JSON `branding`
+section) – never AI-generated, never over the vehicle; the vehicle roof stays
+below them.
+
+**Fallback:** until the master exists the processor uses a procedural
+emergency plate (`public/presets/fallback/`), clearly reported as
+`showroom_fallback` – it is not the AutoExperten Standard design.
 
 The look of `autoexperten_standard` (default):
 
@@ -474,13 +482,13 @@ src/
 public/
   overlays/  camera framing guides (SVG)    demo/shots/  demo placeholder photos
   icons/     PWA icons (official monogram)  brand/       official logo (+ official/ originals)
-  presets/   showroom preset JSON + master  sw.js        service worker
+  presets/   showroom preset JSON (+ master photo, fallback/)  sw.js  service worker
 supabase/migrations/   schema, RLS, storage
 scripts/generate-demo-assets.mjs
 processor/             Python image processor (FastAPI) – see processor/README.md
   app/pipeline/        decode, segmentation, mask, placement, light, shadow, composite, export
   app/jobs/ storage/   job manager, Supabase photo store
-  app/showroom/        placeholder showroom renderer
+  app/showroom/        branding layer (official logo + texts), emergency fallback plate
   tests/               pytest
 ```
 
@@ -502,7 +510,7 @@ processor/             Python image processor (FastAPI) – see processor/README
 
 `cd processor && .venv/bin/python -m pytest` runs the processor tests (API
 validation/auth, job lifecycle, mask, placement, compositing output, colour
-guard, decoding, debug output, showroom placeholder, Supabase store).
+guard, decoding, debug output, branding layer, showroom fallback, Supabase store).
 
 The full acceptance flow (login → create vehicle → 15 guided captures →
 review → retake → complete → process → Original/Bearbeitet) was verified in

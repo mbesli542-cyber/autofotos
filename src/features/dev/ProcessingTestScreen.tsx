@@ -4,9 +4,11 @@ import {
   Bug,
   CircleCheck,
   Download,
+  EyeOff,
   FileJson,
+  Image as ImageIcon,
   ImageUp,
-  Info,
+  Maximize2,
   ServerCrash,
   ShieldCheck,
   TriangleAlert,
@@ -31,10 +33,12 @@ import {
   DEV_TEST_PRESETS,
   isDevTestPresetId,
   isValidDebugFileName,
+  showroomPreviewWidth,
   type DevTestPresetId,
   type ProcessorErrorBody,
   type ProcessorHealth,
   type ProcessorJob,
+  type ShowroomSource,
 } from "@/lib/processing/dev-test-types";
 import { PROCESSING_JOB_STATUS_LABELS, isTerminalJobStatus } from "@/lib/processing/types";
 import { getOrderedShots } from "@/lib/shots/shot-template";
@@ -46,6 +50,21 @@ const MAX_POLL_ERRORS = 3;
 
 const SELECT_CLASSES =
   "h-12 w-full appearance-none rounded-xl border border-ae-border bg-ae-surface-2 bg-[url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%23a3aab5' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E\")] bg-[length:16px] bg-[right_14px_center] bg-no-repeat pr-10 pl-3.5 text-base text-ae-text transition-colors focus:border-ae-blue focus:ring-2 focus:ring-ae-blue/30 focus:outline-none disabled:opacity-60";
+
+/** Debug files shown as comparison tiles (everything else is a secondary link). */
+const COMPARISON_DEBUG_FILES = {
+  original: "original.jpg",
+  mask: "mask.png",
+  vehicle: "vehicle-transparent.png",
+  background: "background.jpg",
+} as const;
+
+const COMPARISON_DEBUG_NAMES: ReadonlySet<string> = new Set(Object.values(COMPARISON_DEBUG_FILES));
+
+/** Secondary debug files listed first, in this order. */
+const SECONDARY_DEBUG_ORDER = ["shadow.png", "composite-before-shadow.jpg", "metadata.json"];
+
+const DEBUG_ONLY_MESSAGE = "Nur mit PROCESSOR_DEBUG=true verfügbar";
 
 const DEBUG_LABELS: Record<string, string> = {
   "original.jpg": "Original (normalisiert)",
@@ -166,12 +185,163 @@ function isImageName(name: string): boolean {
 }
 
 /* ------------------------------------------------------------------------ */
+/* Comparison (Original → Maske → Freigestellt → Showroom → Endergebnis)     */
+/* ------------------------------------------------------------------------ */
+
+interface ComparisonTile {
+  key: string;
+  caption: string;
+  /** Shown image, or null → `message` placeholder. */
+  image: { src: string; alt: string; source: string } | null;
+  message: string;
+  tone?: "muted" | "danger";
+  /** Checkerboard behind the image so transparency is visible. */
+  transparent?: boolean;
+  highlight?: boolean;
+}
+
+/**
+ * The five comparison tiles in their fixed order. Pure: image URLs that
+ * failed to load (`failedImages`) fall back to the next source or a message.
+ */
+function buildComparisonTiles({
+  job,
+  previewUrl,
+  previewFailed,
+  failedImages,
+  busy,
+}: {
+  job: ProcessorJob;
+  previewUrl: string | null;
+  previewFailed: boolean;
+  failedImages: ReadonlySet<string>;
+  busy: boolean;
+}): ComparisonTile[] {
+  const available = new Set(job.metadata.debugFiles.filter(isValidDebugFileName));
+  const debugEnabled = available.size > 0;
+  const missingMessage = debugEnabled ? "Datei nicht vorhanden." : DEBUG_ONLY_MESSAGE;
+  const loadFailedMessage = "Bild konnte nicht geladen werden.";
+
+  /** Debug file URL if listed and loadable, else null. */
+  const debugUrl = (name: string): string | null => {
+    if (!available.has(name)) return null;
+    const url = DEV_TEST_API.debug(job.jobId, name);
+    return failedImages.has(url) ? null : url;
+  };
+  const debugFailed = (name: string) =>
+    available.has(name) && failedImages.has(DEV_TEST_API.debug(job.jobId, name));
+
+  const debugTile = (
+    key: string,
+    caption: string,
+    name: string,
+    alt: string,
+    transparent = false,
+  ): ComparisonTile => {
+    const src = debugUrl(name);
+    return {
+      key,
+      caption,
+      image: src ? { src, alt, source: name } : null,
+      message: debugFailed(name) ? loadFailedMessage : missingMessage,
+      tone: debugFailed(name) ? "danger" : "muted",
+      transparent,
+    };
+  };
+
+  // 1. Original: normalised debug original, else the local preview.
+  const originalDebug = debugUrl(COMPARISON_DEBUG_FILES.original);
+  const original: ComparisonTile = originalDebug
+    ? {
+        key: "original",
+        caption: "Original",
+        image: { src: originalDebug, alt: "Originalfoto (normalisiert)", source: COMPARISON_DEBUG_FILES.original },
+        message: "",
+      }
+    : {
+        key: "original",
+        caption: "Original",
+        image:
+          previewUrl && !previewFailed && !failedImages.has(previewUrl)
+            ? { src: previewUrl, alt: "Originalfoto", source: "Lokale Vorschau" }
+            : null,
+        message: previewUrl ? "Dieses Format kann der Browser nicht anzeigen." : "Kein Original vorhanden.",
+      };
+
+  // 4. Showroom: debug background, else the processor's showroom preview.
+  const backgroundDebug = debugUrl(COMPARISON_DEBUG_FILES.background);
+  const preset = isDevTestPresetId(job.preset) ? job.preset : DEFAULT_DEV_TEST_PRESET;
+  const resultFile = job.result?.kind === "file" ? job.result : null;
+  const showroomUrl = DEV_TEST_API.showroom(preset, showroomPreviewWidth(resultFile?.width));
+  const showroomSrc = backgroundDebug ?? (failedImages.has(showroomUrl) ? null : showroomUrl);
+  const showroom: ComparisonTile = {
+    key: "showroom",
+    caption: "Showroom ohne Fahrzeug",
+    image: showroomSrc
+      ? {
+          src: showroomSrc,
+          alt: "Showroom-Hintergrund ohne Fahrzeug",
+          source: backgroundDebug ? COMPARISON_DEBUG_FILES.background : "Showroom-Vorschau",
+        }
+      : null,
+    message: "Showroom konnte nicht geladen werden.",
+    tone: "danger",
+  };
+
+  // 5. Final result.
+  const resultUrl = DEV_TEST_API.result(job.jobId);
+  const resultReady = job.status === "complete" && resultFile !== null && !failedImages.has(resultUrl);
+  const result: ComparisonTile = {
+    key: "result",
+    caption: "Endergebnis",
+    image: resultReady ? { src: resultUrl, alt: "Endergebnis", source: "Ergebnis" } : null,
+    message:
+      job.status === "complete" && resultFile
+        ? "Das Ergebnis konnte nicht geladen werden."
+        : job.result?.kind === "stored"
+          ? "Ergebnis wurde im Speicher abgelegt."
+          : job.status === "failed"
+            ? "Bearbeitung fehlgeschlagen."
+            : busy
+              ? "Wird verarbeitet…"
+              : "Kein Ergebnis vorhanden.",
+    tone: job.status === "failed" || (job.status === "complete" && resultFile) ? "danger" : "muted",
+    highlight: resultReady,
+  };
+
+  return [
+    original,
+    debugTile("mask", "Maske", COMPARISON_DEBUG_FILES.mask, "Maske der Freistellung"),
+    debugTile(
+      "vehicle",
+      "Fahrzeug freigestellt",
+      COMPARISON_DEBUG_FILES.vehicle,
+      "Freigestelltes Fahrzeug",
+      true,
+    ),
+    showroom,
+    result,
+  ];
+}
+
+/** Debug files that are not comparison tiles (shadow, composition, metadata, …). */
+function secondaryDebugFiles(debugFiles: readonly string[]): string[] {
+  const rest = debugFiles.filter((name) => !COMPARISON_DEBUG_NAMES.has(name));
+  const rank = (name: string) => {
+    const index = SECONDARY_DEBUG_ORDER.indexOf(name);
+    return index === -1 ? SECONDARY_DEBUG_ORDER.length : index;
+  };
+  return [...rest].sort((a, b) => rank(a) - rank(b));
+}
+
+/* ------------------------------------------------------------------------ */
 /* Screen                                                                    */
 /* ------------------------------------------------------------------------ */
 
 /**
  * Developer test page (`/dev/processing-test`): upload one photo, process it
- * with the Python processor and compare Original | Bearbeitet.
+ * with the Python processor and compare Original | Bearbeitet, plus the
+ * intermediate steps (Original → Maske → Freigestellt → Showroom → Ergebnis).
  * Not linked from the app navigation.
  */
 export function ProcessingTestScreen() {
@@ -184,7 +354,8 @@ export function ProcessingTestScreen() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [job, setJob] = useState<ProcessorJob | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [resultFailed, setResultFailed] = useState(false);
+  /** Image URLs (result, debug files, showroom preview) that failed to load. */
+  const [failedImages, setFailedImages] = useState<ReadonlySet<string>>(() => new Set());
   const [health, setHealth] = useState<HealthState>({ status: "loading" });
 
   const runRef = useRef<AbortController | null>(null);
@@ -225,7 +396,11 @@ export function ProcessingTestScreen() {
     setPhase("idle");
     setJob(null);
     setError(null);
-    setResultFailed(false);
+    setFailedImages(new Set());
+  }
+
+  function markImageFailed(url: string) {
+    setFailedImages((current) => (current.has(url) ? current : new Set(current).add(url)));
   }
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -259,7 +434,7 @@ export function ProcessingTestScreen() {
     runRef.current = controller;
     setError(null);
     setJob(null);
-    setResultFailed(false);
+    setFailedImages(new Set());
     setPhase("uploading");
 
     try {
@@ -317,8 +492,16 @@ export function ProcessingTestScreen() {
 
   const resultFile = job?.status === "complete" && job.result?.kind === "file" ? job.result : null;
   const storedResult = job?.status === "complete" && job.result?.kind === "stored" ? job.result : null;
+  const resultFailed = job !== null && failedImages.has(DEV_TEST_API.result(job.jobId));
   const debugFiles = job?.metadata.debugFiles.filter(isValidDebugFileName) ?? [];
   const timings = job ? Object.entries(job.metadata.timingsMs) : [];
+  const showroomSource: ShowroomSource | null =
+    job?.metadata.showroomSource ?? (health.status === "ok" ? health.health.showroomSource : null);
+  // Debug files exist only once the job has ended (complete, or failed mid-way).
+  const comparisonTiles =
+    job && (job.status === "complete" || (job.status === "failed" && debugFiles.length > 0))
+      ? buildComparisonTiles({ job, previewUrl, previewFailed, failedImages, busy })
+      : null;
 
   return (
     <>
@@ -483,7 +666,7 @@ export function ProcessingTestScreen() {
                         src={DEV_TEST_API.result(job.jobId)}
                         alt="Bearbeitetes Foto"
                         className="size-full object-contain"
-                        onError={() => setResultFailed(true)}
+                        onError={() => markImageFailed(DEV_TEST_API.result(job.jobId))}
                       />
                     </a>
                   ) : resultFailed ? (
@@ -526,15 +709,7 @@ export function ProcessingTestScreen() {
               </div>
             )}
 
-            {job?.metadata.showroomPlaceholder && (
-              <Notice tone="info" icon={<Info className="size-5 shrink-0 text-ae-blue" aria-hidden />}>
-                Showroom-Platzhalter aktiv – finales Showroom-Bild unter{" "}
-                <code className="text-ae-text [overflow-wrap:anywhere]">
-                  public/<wbr />presets/<wbr />autoexperten-standard-showroom.jpg
-                </code>{" "}
-                ablegen.
-              </Notice>
-            )}
+            {job && showroomSource && <ShowroomStatus source={showroomSource} />}
 
             {job && job.warnings.length > 0 && (
               <Notice tone="warning" icon={<TriangleAlert className="size-5 shrink-0 text-ae-warning" aria-hidden />}>
@@ -589,21 +764,6 @@ export function ProcessingTestScreen() {
               </details>
             )}
 
-            {job && debugFiles.length > 0 && (
-              <section aria-labelledby="debug-title">
-                <h2 id="debug-title" className="mb-2 text-sm font-semibold text-ae-muted">
-                  Debug-Dateien
-                </h2>
-                <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
-                  {debugFiles.map((name) => (
-                    <li key={name}>
-                      <DebugFileCard url={DEV_TEST_API.debug(job.jobId, name)} name={name} />
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
-
             {!job && !busy && !error && (
               <div className="flex flex-col items-center rounded-2xl border border-dashed border-ae-border-strong bg-ae-surface/60 px-6 py-10 text-center">
                 <div className="mb-3 flex size-12 items-center justify-center rounded-2xl bg-ae-blue-soft text-ae-blue">
@@ -618,6 +778,17 @@ export function ProcessingTestScreen() {
             )}
           </section>
         </div>
+
+        {job && comparisonTiles && (
+          <ComparisonSection
+            tiles={comparisonTiles}
+            secondaryFiles={secondaryDebugFiles(debugFiles).map((name) => ({
+              name,
+              url: DEV_TEST_API.debug(job.jobId, name),
+            }))}
+            onImageError={markImageFailed}
+          />
+        )}
       </PageContainer>
     </>
   );
@@ -679,7 +850,44 @@ function ServiceStatus({ state }: { state: HealthState }) {
       <span className="mt-1 size-2 shrink-0 rounded-full bg-ae-success" aria-hidden />
       <p className="min-w-0">
         <span className="font-semibold text-ae-success">Service verbunden</span>
-        <span className="block text-ae-muted">{details.join(" · ")}</span>
+        <span className="block text-ae-muted">
+          {details.join(" · ")}
+          {health.showroomSource && (
+            <>
+              {" · "}
+              <span className={cn(health.showroomSource === "fallback" && "font-semibold text-ae-warning")}>
+                {health.showroomSource === "master" ? "Showroom: finales Master-Foto" : "Showroom: Fallback"}
+              </span>
+            </>
+          )}
+        </span>
+      </p>
+    </div>
+  );
+}
+
+/** Which showroom the job was composited onto (fallback → clear amber notice). */
+function ShowroomStatus({ source }: { source: ShowroomSource }) {
+  if (source === "master") {
+    return (
+      <p>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-ae-border-strong bg-ae-surface-2 px-2.5 py-0.5 text-xs font-semibold text-ae-muted">
+          <span className="size-1.5 rounded-full bg-current" aria-hidden />
+          Showroom: finales Master-Foto
+        </span>
+      </p>
+    );
+  }
+  return (
+    <div className="flex gap-3 rounded-xl border border-ae-warning/45 bg-ae-warning/10 p-4 text-sm text-ae-text">
+      <TriangleAlert className="size-5 shrink-0 text-ae-warning" aria-hidden />
+      <p className="min-w-0">
+        <strong className="font-semibold text-ae-warning">Fallback-Showroom aktiv</strong> – das finale
+        AutoExperten-Showroom-Foto fehlt. Bitte die Datei{" "}
+        <code className="rounded bg-ae-bg/60 px-1 py-px text-[13px] [overflow-wrap:anywhere]">
+          public/<wbr />presets/<wbr />autoexperten-standard-showroom.jpg
+        </code>{" "}
+        ablegen.
       </p>
     </div>
   );
@@ -788,33 +996,122 @@ function TimingRow({ step, ms }: { step: string; ms: number }) {
   );
 }
 
-function DebugFileCard({ url, name }: { url: string; name: string }) {
-  const image = isImageName(name);
+function ComparisonSection({
+  tiles,
+  secondaryFiles,
+  onImageError,
+}: {
+  tiles: ComparisonTile[];
+  secondaryFiles: Array<{ name: string; url: string }>;
+  onImageError: (url: string) => void;
+}) {
   return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noreferrer"
-      className="block overflow-hidden rounded-xl border border-ae-border bg-ae-surface transition-colors hover:border-ae-border-strong"
-    >
-      <span
+    <section aria-labelledby="comparison-title" className="mt-8">
+      <h2 id="comparison-title" className="text-lg font-semibold tracking-tight">
+        Vergleich der Bearbeitungsschritte
+      </h2>
+      <p className="mt-0.5 text-sm text-ae-muted">
+        Bild antippen, um es in voller Größe in einem neuen Tab zu öffnen.
+        <span className="sm:hidden"> Seitlich wischen für alle fünf Bilder.</span>
+      </p>
+      {/* Phones: swipeable strip (bleeds to the screen edge); larger screens: grid. */}
+      <ol className="-mx-4 mt-3 flex snap-x snap-mandatory scroll-px-4 gap-3 overflow-x-auto px-4 pb-2 sm:mx-0 sm:grid sm:grid-cols-3 sm:overflow-visible sm:px-0 sm:pb-0 xl:grid-cols-5">
+        {tiles.map((tile) => (
+          <li key={tile.key} className="w-[78%] shrink-0 snap-start sm:w-auto">
+            <ComparisonTileView tile={tile} onImageError={onImageError} />
+          </li>
+        ))}
+      </ol>
+
+      {secondaryFiles.length > 0 && (
+        <div className="mt-4">
+          <h3 className="mb-2 text-xs font-semibold text-ae-muted">Weitere Debug-Dateien</h3>
+          <ul className="flex flex-wrap gap-2">
+            {secondaryFiles.map((file) => (
+              <li key={file.name} className="min-w-0 max-w-full">
+                <a
+                  href={file.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={file.name}
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-ae-border bg-ae-surface px-2.5 py-1.5 text-xs transition-colors hover:border-ae-border-strong"
+                >
+                  {isImageName(file.name) ? (
+                    <ImageIcon className="size-3.5 shrink-0 text-ae-muted" aria-hidden />
+                  ) : (
+                    <FileJson className="size-3.5 shrink-0 text-ae-muted" aria-hidden />
+                  )}
+                  <span className="whitespace-nowrap font-semibold">{DEBUG_LABELS[file.name] ?? file.name}</span>
+                  <span className="min-w-0 truncate font-mono text-[11px] text-ae-subtle">{file.name}</span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ComparisonTileView({
+  tile,
+  onImageError,
+}: {
+  tile: ComparisonTile;
+  onImageError: (url: string) => void;
+}) {
+  const { image } = tile;
+  return (
+    <figure className="min-w-0">
+      <figcaption className="mb-1.5 truncate text-xs font-semibold tracking-wide text-ae-muted uppercase">
+        {tile.caption}
+      </figcaption>
+      <div
         className={cn(
-          "flex aspect-[4/3] items-center justify-center",
-          // Checkerboard so transparent PNGs (mask, cut-out, shadow) are readable.
+          "relative aspect-[4/3] overflow-hidden rounded-xl border bg-ae-bg",
+          tile.highlight ? "border-ae-blue/50" : "border-ae-border",
+          // Light/dark checkerboard so the transparent cut-out is readable.
           image &&
-            "bg-[conic-gradient(#2a2e35_25%,#1c1f24_0_50%,#2a2e35_0_75%,#1c1f24_0)] bg-[length:16px_16px]",
+            tile.transparent &&
+            "bg-[conic-gradient(#d5d9df_25%,#9aa1ab_0_50%,#d5d9df_0_75%,#9aa1ab_0)] bg-[length:16px_16px]",
         )}
       >
         {image ? (
-          <img src={url} alt="" loading="lazy" className="size-full object-contain" />
+          <a
+            href={image.src}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={`${tile.caption} in voller Größe öffnen`}
+            className="group block size-full"
+          >
+            <img
+              key={image.src}
+              src={image.src}
+              alt={image.alt}
+              decoding="async"
+              className="size-full object-contain"
+              onError={() => onImageError(image.src)}
+            />
+            <span
+              className="absolute right-1.5 bottom-1.5 flex size-7 items-center justify-center rounded-lg bg-black/55 text-white opacity-80 transition-opacity group-hover:opacity-100"
+              aria-hidden
+            >
+              <Maximize2 className="size-3.5" />
+            </span>
+          </a>
         ) : (
-          <FileJson className="size-8 text-ae-muted" aria-hidden />
+          <div
+            className={cn(
+              "flex size-full flex-col items-center justify-center gap-2 px-3 text-center text-xs",
+              tile.tone === "danger" ? "text-ae-danger" : "text-ae-subtle",
+            )}
+          >
+            {tile.message === DEBUG_ONLY_MESSAGE && <EyeOff className="size-5" aria-hidden />}
+            <span>{tile.message}</span>
+          </div>
         )}
-      </span>
-      <span className="block px-2.5 py-2">
-        <span className="block truncate text-xs font-semibold">{DEBUG_LABELS[name] ?? name}</span>
-        <span className="block truncate font-mono text-[11px] text-ae-subtle">{name}</span>
-      </span>
-    </a>
+      </div>
+      <p className="mt-1 truncate font-mono text-[11px] text-ae-subtle">{image ? image.source : "\u00a0"}</p>
+    </figure>
   );
 }

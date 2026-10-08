@@ -1,25 +1,34 @@
 """Processing presets ("Bearbeitungsstile") and their showroom background.
 
 A preset is a JSON file in `<assets>/presets/` (default: the Next.js
-`public/presets/` folder), e.g. `autoexperten-standard.json`. It references a
-fixed, reusable master showroom image. Replacing that image (same file name)
-changes the look of every future result without touching code.
+`public/presets/` folder), e.g. `autoexperten-standard.json`. It references ONE
+fixed master showroom photo (`background.image`, e.g.
+`autoexperten-standard-showroom.jpg`) that every exterior vehicle of the preset
+is placed on. The master is the EMPTY showroom without branding; the official
+logo and the texts are composited deterministically on top
+(`app/showroom/branding.py`, `branding` section of the JSON).
 
-If the master image does not exist yet, a deterministic placeholder showroom is
-rendered (app/showroom/placeholder.py) so the pipeline still works.
+If the master photo is missing, the procedural emergency fallback
+(`background.fallbackImage`, rendered by app/showroom/fallback.py) is used and
+every job carries the `showroom_fallback` warning. As soon as the master file
+exists it is always used.
 """
 
 from __future__ import annotations
 
 import json
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageOps
 
 from .config import Settings
+from .showroom.branding import BrandingConfig, BrandingLayout, apply_branding
+
+SHOWROOM_MASTER = "master"
+SHOWROOM_FALLBACK = "fallback"
 
 
 class PresetError(Exception):
@@ -87,14 +96,13 @@ class OutputConfig:
 class Preset:
     id: str
     name: str
-    #: Master showroom image, relative to the presets directory.
+    #: FINAL master showroom photo (empty, no branding), relative to the presets directory.
     background_image: str
-    #: True while the background is the procedural placeholder.
-    background_is_placeholder: bool
-    #: Official logo for the brand wall, relative to the brand directory.
-    logo_image: str
-    #: Fraction of the frame height where wall meets floor (used by the placeholder).
+    #: Procedural emergency fallback, used only while the master is missing.
+    fallback_image: str | None
+    #: Fraction of the frame height where wall meets floor in the background.
     floor_horizon: float
+    branding: BrandingConfig = field(default_factory=BrandingConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     placement: Placement = field(default_factory=Placement)
     shot_placement: dict[str, Placement] = field(default_factory=dict)
@@ -149,8 +157,37 @@ def _build(cls, data: dict | None):
     return cls(**kwargs)
 
 
+def _merge(default, data: dict | None):
+    """Dataclass `default` with the camelCase fields of `data` applied."""
+    if not data:
+        return default
+    names = {f.name for f in fields(default)}
+    changes = {}
+    for key, value in data.items():
+        snake = _camel_to_snake(key)
+        if snake not in names:
+            raise PresetError(f"Unknown preset field '{key}' for {type(default).__name__}")
+        changes[snake] = value
+    return replace(default, **changes)
+
+
+def parse_branding(data: dict | None) -> BrandingConfig:
+    default = BrandingConfig()
+    if not data:
+        return default
+    nested = {"logo", "city", "website", "phone", "mount"}
+    flat = {k: v for k, v in data.items() if k not in nested}
+    config = _merge(default, flat)
+    return replace(
+        config,
+        **{name: _merge(getattr(default, name), data.get(name)) for name in nested if name in data},
+    )
+
+
 def parse_preset(data: dict) -> Preset:
     background = data.get("background", {})
+    if "image" not in background:
+        raise PresetError("Preset without background.image")
     base_placement = _build(Placement, data.get("placement"))
     shots = {
         key: Placement(**{**base_placement.__dict__, **_build_dict(Placement, value)})
@@ -160,9 +197,9 @@ def parse_preset(data: dict) -> Preset:
         id=data["id"],
         name=data["name"],
         background_image=background["image"],
-        background_is_placeholder=bool(background.get("placeholder", False)),
-        logo_image=data.get("logo", "official/AutoExperten_Logo.png"),
-        floor_horizon=float(data.get("floorHorizon", 0.62)),
+        fallback_image=background.get("fallbackImage"),
+        floor_horizon=float(background.get("floorHorizon", 0.62)),
+        branding=parse_branding(data.get("branding")),
         output=_build(OutputConfig, data.get("output")),
         placement=base_placement,
         shot_placement=shots,
@@ -189,46 +226,98 @@ def load_preset(settings: Settings, preset_id: str) -> Preset:
     return parse_preset(json.loads(path.read_text(encoding="utf-8")))
 
 
+@dataclass(frozen=True)
+class Showroom:
+    """The branded background for one output size."""
+
+    #: sRGB uint8 (H, W, 3), read-only.
+    rgb: np.ndarray
+    #: "master" (final showroom photo) or "fallback" (procedural emergency plate).
+    source: str
+    #: Where the branding elements were drawn.
+    branding: BrandingLayout
+    floor_horizon: float
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.source == SHOWROOM_FALLBACK
+
+
 class BackgroundProvider:
-    """Loads (or renders) the showroom background and caches it per output size."""
+    """Loads the showroom (master, else fallback), brands it, caches per size."""
 
     def __init__(self, settings: Settings):
         self._settings = settings
-        self._cache: dict[tuple[str, int, int], np.ndarray] = {}
+        self._cache: dict[tuple, Showroom] = {}
         self._lock = threading.Lock()
 
     def master_path(self, preset: Preset) -> Path:
         return self._settings.presets_dir / preset.background_image
 
-    def is_placeholder(self, preset: Preset) -> bool:
-        return preset.background_is_placeholder or not self.master_path(preset).is_file()
+    def fallback_path(self, preset: Preset) -> Path | None:
+        if not preset.fallback_image:
+            return None
+        return self._settings.presets_dir / preset.fallback_image
 
-    def get(self, preset: Preset, width: int, height: int) -> np.ndarray:
-        """Background as sRGB uint8 array (H, W, 3), cover-fitted to the size."""
-        key = (preset.id, width, height)
+    def source(self, preset: Preset) -> str:
+        return SHOWROOM_MASTER if self.master_path(preset).is_file() else SHOWROOM_FALLBACK
+
+    def is_placeholder(self, preset: Preset) -> bool:
+        """True while the procedural fallback is used (kept for API compatibility)."""
+        return self.source(preset) == SHOWROOM_FALLBACK
+
+    def get(self, preset: Preset, width: int, height: int) -> Showroom:
+        """Branded showroom background, cover-fitted to (width, height)."""
+        master = self.master_path(preset)
+        source = self.source(preset)
+        path = master if source == SHOWROOM_MASTER else self.fallback_path(preset)
+        stamp = path.stat().st_mtime_ns if path is not None and path.is_file() else 0
+        key = (preset.id, width, height, source, stamp, repr(preset.branding))
         with self._lock:
             cached = self._cache.get(key)
             if cached is not None:
                 return cached
-            image = self._load_master(preset, width, height)
-            array = np.asarray(image.convert("RGB"), dtype=np.uint8)
-            array.setflags(write=False)
+            base = self._load_base(preset, path, width, height)
+            rgb = np.ascontiguousarray(np.asarray(base.convert("RGB"), dtype=np.uint8))
+            rgb, layout = apply_branding(rgb, preset.branding, self._settings.brand_dir)
+            rgb.setflags(write=False)
+            showroom = Showroom(rgb=rgb, source=source, branding=layout, floor_horizon=preset.floor_horizon)
             if len(self._cache) > 8:
                 self._cache.clear()
-            self._cache[key] = array
-            return array
+            self._cache[key] = showroom
+            return showroom
 
-    def _load_master(self, preset: Preset, width: int, height: int) -> Image.Image:
-        path = self.master_path(preset)
-        if path.is_file():
-            master = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
-            return ImageOps.fit(master, (width, height), Image.LANCZOS, centering=(0.5, 0.5))
-        from .showroom.placeholder import ShowroomBrandText, render_placeholder_showroom
+    def _load_base(self, preset: Preset, path: Path | None, width: int, height: int) -> Image.Image:
+        if path is not None and path.is_file():
+            with Image.open(path) as image:
+                photo = ImageOps.exif_transpose(image)
+                photo = _to_srgb(photo).convert("RGB")
+            return ImageOps.fit(photo, (width, height), Image.LANCZOS, centering=(0.5, 0.5))
+        # neither master nor stored fallback: render the emergency plate
+        from .showroom.fallback import render_fallback_showroom
 
-        return render_placeholder_showroom(
-            width,
-            height,
-            logo_path=self._settings.brand_dir / preset.logo_image,
-            brand=ShowroomBrandText(),
-            floor_horizon=preset.floor_horizon,
+        return render_fallback_showroom(width, height, floor_horizon=preset.floor_horizon)
+
+
+def _to_srgb(image: Image.Image) -> Image.Image:
+    """Convert an embedded colour profile (e.g. Display P3, Adobe RGB) to sRGB."""
+    icc = image.info.get("icc_profile")
+    if not icc:
+        return image
+    try:
+        import io
+
+        from PIL import ImageCms
+
+        source = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+        if "srgb" in (ImageCms.getProfileDescription(source) or "").lower():
+            return image
+        return ImageCms.profileToProfile(
+            image.convert("RGB"),
+            source,
+            ImageCms.createProfile("sRGB"),
+            renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+            outputMode="RGB",
         )
+    except Exception:
+        return image

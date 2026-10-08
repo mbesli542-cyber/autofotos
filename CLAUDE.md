@@ -49,9 +49,12 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
   Midjourney, Generative Fill, image-to-image). The processor composites the
   ORIGINAL vehicle pixels; vehicle corrections stay within `HARD_LIMITS` and
   the colour guard in `processor/app/pipeline/light.py`. Never loosen them.
-- **One fixed showroom.** The background is the master image
-  `public/presets/autoexperten-standard-showroom.jpg` (+ preset JSON); it is
-  never generated per photo.
+- **One fixed showroom.** The background is the master photo
+  `public/presets/autoexperten-standard-showroom.jpg` (empty showroom, no text;
+  still to be supplied) + preset JSON; it is never generated per photo. The
+  official logo/texts are composited by `processor/app/showroom/branding.py`
+  (positions in the JSON `branding`). `app/showroom/fallback.py` is only an
+  emergency fallback – never present it as the final design or improve it.
 - **Official logo only** (`public/brand/official/`); never redraw or
   approximate it.
 
@@ -74,7 +77,7 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Client service container | `src/lib/app-services.ts` |
 | DB schema, RLS, storage policies | `supabase/migrations/` |
 | Brand config / official logo | `src/config/brand.ts`, `src/components/brand/BrandLogo.tsx`, `public/brand/` |
-| Showroom preset + master image | `public/presets/autoexperten-standard.json`, `…-showroom.jpg` |
+| Showroom preset, master photo, branding layer | `public/presets/` (README = master brief), `processor/app/showroom/branding.py` |
 | Image processor (Python/FastAPI) | `processor/` (see `processor/README.md`) |
 | Processor pipeline steps | `processor/app/pipeline/` (decode, segmentation, mask, placement, light, shadow, composite, export) |
 | Dev test page (dev only) | `src/app/dev/processing-test`, `src/app/api/dev/`, `src/lib/dev-tools.ts` |

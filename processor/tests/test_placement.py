@@ -81,3 +81,11 @@ def test_flat_contacts_do_not_change_the_placement():
     assert compute_placement(bbox, 3200, 2400, STANDARD, floor_horizon=0.62, contact_rise=10) == compute_placement(
         bbox, 3200, 2400, STANDARD
     )
+
+
+def test_tall_vehicles_stay_below_the_branding():
+    tall = BBox(0, 0, 1000, 900)  # front view of an SUV
+    p = compute_placement(tall, 3200, 2400, STANDARD, min_top=0.27)
+    assert p.limited_by == "headroom"
+    assert p.top >= 0.27 * 2400 - 1e-6  # roof below the logo and texts
+    assert p.bottom == pytest.approx(0.84 * 2400)  # still standing on the ground line

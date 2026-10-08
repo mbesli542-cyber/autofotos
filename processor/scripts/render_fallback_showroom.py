@@ -1,15 +1,16 @@
-"""Render the procedural AutoExperten Standard placeholder showroom to a JPEG.
+"""Render the EMERGENCY FALLBACK showroom plate (not the AutoExperten design).
 
-Default output: ``public/presets/autoexperten-standard-showroom.jpg`` (3200x2400,
-sRGB, JPEG quality 92). The plate is a stand-in until AutoExperten supplies a
-real photo of the showroom; replace the JPG (same name) to switch every future
-result to the real background.
+Default output: ``public/presets/fallback/autoexperten-standard-fallback.jpg``
+(3200x2400, sRGB, JPEG quality 92, no branding – the official logo and texts
+are composited by app/showroom/branding.py). The pipeline only uses it while
+the real master photo ``public/presets/autoexperten-standard-showroom.jpg`` is
+missing.
 
 Usage (from the repository root)::
 
-    processor/.venv/bin/python processor/scripts/render_showroom_placeholder.py
-    processor/.venv/bin/python processor/scripts/render_showroom_placeholder.py \\
-        --width 2400 --height 1800 --output /tmp/showroom.jpg
+    processor/.venv/bin/python processor/scripts/render_fallback_showroom.py
+    processor/.venv/bin/python processor/scripts/render_fallback_showroom.py \\
+        --width 2400 --height 1800 --output /tmp/fallback.jpg
 
 The rendering is deterministic: the same arguments always give the same pixels.
 """
@@ -28,10 +29,9 @@ PROCESSOR_ROOT = REPO_ROOT / "processor"
 if str(PROCESSOR_ROOT) not in sys.path:
     sys.path.insert(0, str(PROCESSOR_ROOT))
 
-from app.showroom.placeholder import ShowroomBrandText, render_placeholder_showroom  # noqa: E402
+from app.showroom.fallback import render_fallback_showroom  # noqa: E402
 
-DEFAULT_OUTPUT = REPO_ROOT / "public" / "presets" / "autoexperten-standard-showroom.jpg"
-DEFAULT_LOGO = REPO_ROOT / "public" / "brand" / "official" / "AutoExperten_Logo.png"
+DEFAULT_OUTPUT = REPO_ROOT / "public" / "presets" / "fallback" / "autoexperten-standard-fallback.jpg"
 PRESET_JSON = REPO_ROOT / "public" / "presets" / "autoexperten-standard.json"
 
 
@@ -44,7 +44,7 @@ def _resolve(path: str | Path) -> Path:
 def _preset_floor_horizon(default: float = 0.62) -> float:
     try:
         data = json.loads(PRESET_JSON.read_text(encoding="utf-8"))
-        return float(data.get("floorHorizon", default))
+        return float((data.get("background") or {}).get("floorHorizon", default))
     except (OSError, ValueError, TypeError):
         return default
 
@@ -69,12 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--output",
         default=str(DEFAULT_OUTPUT),
-        help="output JPEG path (default public/presets/autoexperten-standard-showroom.jpg)",
-    )
-    parser.add_argument(
-        "--logo",
-        default=str(DEFAULT_LOGO),
-        help="official logo PNG (default public/brand/official/AutoExperten_Logo.png)",
+        help="output JPEG path (default public/presets/fallback/autoexperten-standard-fallback.jpg)",
     )
     parser.add_argument(
         "--floor-horizon",
@@ -88,21 +83,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.width < 64 or args.height < 64:
         parser.error("width and height must be at least 64 px")
-    logo = _resolve(args.logo)
-    if not logo.is_file():
-        parser.error(f"logo not found: {logo}")
     output = _resolve(args.output)
     floor_horizon = args.floor_horizon if args.floor_horizon is not None else _preset_floor_horizon()
 
     started = time.perf_counter()
-    image = render_placeholder_showroom(
-        args.width,
-        args.height,
-        logo_path=logo,
-        brand=ShowroomBrandText(),
-        floor_horizon=floor_horizon,
-        seed=args.seed,
-    )
+    image = render_fallback_showroom(args.width, args.height, floor_horizon=floor_horizon, seed=args.seed)
     elapsed = time.perf_counter() - started
 
     output.parent.mkdir(parents=True, exist_ok=True)

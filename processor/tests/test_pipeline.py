@@ -64,7 +64,7 @@ def test_vehicle_is_placed_consistently_without_distortion(run, vehicle):
 
     p = result.metadata["placement"]
     assert p["limitedBy"] == "width"
-    assert p["width"] / width == pytest.approx(0.78, abs=0.005)
+    assert p["width"] / width == pytest.approx(0.80, abs=0.005)  # preset front_left_45
     assert (p["left"] + p["width"] / 2) / width == pytest.approx(0.5, abs=0.005)
     assert (p["top"] + p["height"]) / height == pytest.approx(0.84, abs=0.005)
     # nothing cropped

@@ -1,8 +1,16 @@
-"""Deterministic PLACEHOLDER showroom renderer (AutoExperten Standard).
+"""EMERGENCY DEVELOPER FALLBACK – procedural showroom plate.
 
-Used until AutoExperten supplies the real master showroom photo at
-`public/presets/autoexperten-standard-showroom.jpg` (generate the placeholder
-JPG with `processor/scripts/render_showroom_placeholder.py`).
+This is NOT the AutoExperten Standard design. The final background is a real,
+photorealistic master photo at ``public/presets/autoexperten-standard-showroom.jpg``;
+this renderer only keeps the pipeline usable while that file is missing.
+Every job that uses it carries the ``showroom_fallback`` warning. Do not
+invest further work in it.
+
+The rendered fallback is stored at
+``public/presets/fallback/autoexperten-standard-fallback.jpg``
+(``processor/scripts/render_fallback_showroom.py``). Like the real master it
+contains NO branding – the official logo and texts are added by
+``app/showroom/branding.py`` for every background.
 
 The plate is rendered procedurally with numpy / OpenCV / Pillow only – no
 downloads and no generative AI. It shows an empty, bright premium dealership:
@@ -48,7 +56,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-__all__ = ["ShowroomBrandText", "render_placeholder_showroom"]
+__all__ = ["ShowroomBrandText", "render_fallback_showroom"]
 
 logger = logging.getLogger(__name__)
 
@@ -1264,22 +1272,26 @@ def _encode(img: np.ndarray, seed: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def render_placeholder_showroom(
+def render_fallback_showroom(
     width: int,
     height: int,
     *,
-    logo_path: Path,
-    brand: ShowroomBrandText,
     floor_horizon: float = 0.62,
     seed: int = 7,
+    logo_path: Path | None = None,
+    brand: ShowroomBrandText | None = None,
 ) -> Image.Image:
-    """Return an RGB image (width x height). Must be deterministic."""
+    """Return the fallback plate as RGB image (width x height), deterministic.
+
+    Without ``logo_path``/``brand`` (the default used by the pipeline) the wall
+    stays empty; branding is applied separately by ``app/showroom/branding.py``.
+    """
     width, height = int(width), int(height)
     if width < 64 or height < 64:
-        raise ValueError("showroom placeholder needs at least 64x64 px")
+        raise ValueError("showroom fallback needs at least 64x64 px")
     sc = _make_scene(width, height, floor_horizon)
     lay = _wall_layout(sc)
-    signs = _brand_layout(sc, Path(logo_path), brand)
+    signs = _brand_layout(sc, Path(logo_path), brand) if logo_path is not None and brand is not None else []
 
     wall, wall_emit = _render_wall(sc, lay, signs, seed)
     floor, refl_term = _render_floor(sc, lay, wall, seed)

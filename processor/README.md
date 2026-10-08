@@ -27,7 +27,7 @@ never regenerated.
 | 4 Cut-out in linear light, edge decontamination | `app/pipeline/composite.py`, `harmonize.py` |
 | 5 Conservative light matching with colour guard | `app/pipeline/light.py` |
 | 6 Placement from the mask bounding box (no distortion) | `app/pipeline/placement.py` |
-| 7 Showroom plate (master image or placeholder) | `app/presets.py`, `app/showroom/` |
+| 7 Showroom: master photo (or emergency fallback) + deterministic branding layer | `app/presets.py`, `app/showroom/branding.py` |
 | 8 Contact + ambient shadow derived from the mask | `app/pipeline/shadow.py` |
 | 9 Light wrap, premultiplied composite | `app/pipeline/harmonize.py`, `composite.py` |
 | 10 JPEG export: 4:3, 2400–3200 px, quality 92, sRGB, no EXIF/GPS | `app/pipeline/export.py` |
@@ -76,29 +76,39 @@ To add another backend implement `VehicleSegmenter` and register it in
 The processing preset is `public/presets/autoexperten-standard.json` (shared
 with the Next.js app; the processor reads it from `PROCESSOR_ASSETS_DIR`,
 default `../public`). It defines output size/quality, placement
-(`widthRatio` 0.78, `centerX` 0.5, `groundLine` 0.84, per-shot overrides),
-shadow and the vehicle adjustment limits. The code clamps every adjustment
+(`widthRatio` 0.80 – 0.82 for 3/4 and side views, 0.60 for front/rear,
+`centerX` 0.5, `groundLine` 0.84, overrides for all 8 exterior shots in
+`shotPlacement`), the branding layout, shadow and the vehicle adjustment
+limits. The code clamps every adjustment
 to `HARD_LIMITS` in `app/pipeline/light.py`, so the JSON cannot make the
 vehicle correction aggressive.
 
-**Showroom master image** – put the final photo of the empty AutoExperten
-showroom (4:3, at least 3200×2400, no vehicle, tyres-line area free) at
+**Showroom master photo (still missing)** – the final photorealistic photo of
+the EMPTY AutoExperten showroom, without any text or logo, goes to
 
 ```
 public/presets/autoexperten-standard-showroom.jpg
 ```
 
-and set `"placeholder": false` in `public/presets/autoexperten-standard.json`
-(`background`). The wall/floor junction of the photo should be at about
-`floorHorizon` (0.62 of the height). Nothing else needs to change. Until
-then a deterministic, procedurally rendered placeholder showroom is used
-(`app/showroom/placeholder.py`, regenerate the JPG with
-`python scripts/render_showroom_placeholder.py`) and every job carries the
-warning `showroom_placeholder`.
+It is used automatically as soon as the file exists (set `background.floorHorizon`
+to its wall/floor junction). Requirements, a photographer brief and an
+image-generator prompt: `public/presets/README.md`. Every exterior vehicle of
+every brand uses this same photo.
 
-**Branding** – the official AutoExperten logo files live in
-`public/brand/official/` (unchanged originals from autoexperten-rn.de);
-see `public/brand/README.md`.
+**Branding layer** (`app/showroom/branding.py`) – the official logo PNG from
+`public/brand/official/` (only scaled, never redrawn), `SCHWETZINGEN`,
+`www.autoexperten-rn.de` and `+49 6202 9262357` (bundled Inter font, SIL OFL,
+`app/showroom/fonts/`) are composited onto the background at the positions in
+the preset's `branding` section – before the vehicle, so they are never drawn
+over it. The placement keeps the vehicle roof below the branding
+(`branding.clearance`). Preview without a vehicle:
+`.venv/bin/python scripts/render_showroom_preview.py -o /tmp/showroom.jpg --guides`
+or `GET /showroom/autoexperten_standard.jpg?width=2400`.
+
+**Emergency fallback (not the final design)** – while the master is missing,
+the procedural plate `public/presets/fallback/autoexperten-standard-fallback.jpg`
+(`app/showroom/fallback.py`, `scripts/render_fallback_showroom.py`) is used and
+every job carries the warning `showroom_fallback` / `showroomSource: "fallback"`.
 
 ## Run locally
 
@@ -115,7 +125,7 @@ cp .env.example .env            # optional – edit as needed
 
 `GET http://localhost:8000/health` → `{"status":"ok","version":"1.0.0"}`
 (with `Authorization: Bearer <key>` also model, debug, Supabase and
-showroom-placeholder details; `503` if the model cannot be loaded). The model
+showroom source (`master`/`fallback`); `503` if the model cannot be loaded). The model
 is warmed up in the background after start-up. Use `--host 0.0.0.0` only
 together with `PROCESSOR_API_KEY`.
 
@@ -231,15 +241,16 @@ Covers API validation and auth, job lifecycle, mask dimensions and
 clean-up, placement geometry (width ratio, centre, ground line, aspect
 preservation, no cropping), compositing output size and format, colour
 guard and hard limits (navy stays navy), decoding, debug output, the
-placeholder showroom and the Supabase store (HTTP mocked). Tests use a
+branding layer (official logo colours, positions), master/fallback selection,
+the fallback plate and the Supabase store (HTTP mocked). Tests use a
 synthetic vehicle and a fake segmenter – no model download needed.
 
 ## Known limitations (V1)
 
 - See-through windows keep the original background pixels seen through the
   glass (the vehicle cut-out is not altered there).
-- One placement standard for all exterior shots (per-shot width overrides in
-  the preset); per-shot ground lines can follow.
+- Per-shot placement differs only in width (and the automatic headroom /
+  horizon limits); per-shot ground lines can follow.
 - Jobs are in-memory (single instance); no batch processing yet.
-- The showroom background is a placeholder until the real master photo is
-  supplied.
+- **The final photorealistic showroom master photo is missing**; the
+  procedural emergency fallback is used until it is supplied.

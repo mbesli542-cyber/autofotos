@@ -27,9 +27,11 @@ export interface ShowroomSpec {
     phone: string;
   };
   /**
-   * Master showroom plate WITHOUT a vehicle that the processor composites
-   * onto (public/presets/…). Until the final photo exists the processor uses
-   * a generated placeholder and reports `showroomPlaceholder: true`.
+   * Master showroom photo WITHOUT a vehicle and WITHOUT branding that the
+   * processor composites onto (public/presets/…); the official logo and texts
+   * are added by the processor's branding layer. Until the final photo exists
+   * the processor uses an emergency fallback and reports
+   * `showroomSource: "fallback"`.
    */
   masterImage?: string;
   /**

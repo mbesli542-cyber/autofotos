@@ -127,10 +127,21 @@ def process_photo(
     progress(0.62, "placement")
     placement_cfg = preset.placement_for(shot_key)
     width, height = output_size(bbox, preset.output, placement_cfg)
+    # the branded showroom decides how high the vehicle may reach (logo stays visible)
+    showroom = backgrounds.get(preset, width, height)
+    min_top = None
+    if showroom.branding.boxes:
+        min_top = showroom.branding.bottom / height + preset.branding.clearance
     profile, has_profile = bottom_profile(alpha, bbox.x0, bbox.x1)
     rise = contact_rise(profile, has_profile, bbox.height)
     placement = compute_placement(
-        bbox, width, height, placement_cfg, floor_horizon=preset.floor_horizon, contact_rise=rise
+        bbox,
+        width,
+        height,
+        placement_cfg,
+        floor_horizon=showroom.floor_horizon,
+        contact_rise=rise,
+        min_top=min_top,
     )
     if placement.limited_by == "horizon" and placement.width < 0.85 * placement_cfg.width_ratio * width:
         warnings.append(
@@ -157,18 +168,17 @@ def process_photo(
     )
     timer.mark("placement")
 
-    # STEP 5 – showroom background
+    # STEP 5 – showroom background (branding already composited, vehicle not yet)
     progress(0.72, "background")
-    background_u8 = backgrounds.get(preset, width, height)
-    debug.rgb("background.jpg", np.asarray(background_u8))
-    background = srgb_to_linear(np.asarray(background_u8))
+    debug.rgb("background.jpg", np.asarray(showroom.rgb))
+    background = srgb_to_linear(np.asarray(showroom.rgb))
     if debug.enabled:
         debug.rgb("composite-before-shadow.jpg", linear_to_u8(over(background, vehicle_rgb, vehicle_alpha)))
     timer.mark("background")
 
     # STEP 7 – contact shadow (on the floor only, under the vehicle)
     progress(0.8, "shadow")
-    shadow = build_shadow(vehicle_alpha, placement, preset.shadow, floor_y=preset.floor_horizon * height)
+    shadow = build_shadow(vehicle_alpha, placement, preset.shadow, floor_y=showroom.floor_horizon * height)
     debug.gray("shadow.png", shadow)
     floor = apply_shadow(background, shadow, preset.shadow.color)
     timer.mark("shadow")
@@ -188,12 +198,11 @@ def process_photo(
     debug.raw("final.jpg", jpeg)
     timer.mark("export")
 
-    placeholder = backgrounds.is_placeholder(preset)
-    if placeholder:
+    if showroom.is_fallback:
         warnings.append(
             QualityWarning(
-                "showroom_placeholder",
-                "Showroom-Platzhalter aktiv – das finale Showroom-Bild fehlt noch.",
+                "showroom_fallback",
+                "Fallback-Showroom aktiv – das finale AutoExperten-Showroom-Foto fehlt noch.",
             )
         )
     metadata = {
@@ -221,7 +230,9 @@ def process_photo(
             "layerOrigin": list(origin),
         },
         "adjustments": correction.as_dict(),
-        "showroomPlaceholder": placeholder,
+        "showroomSource": showroom.source,
+        "showroomPlaceholder": showroom.is_fallback,
+        "branding": {"boxes": [list(b) for b in showroom.branding.boxes], "bottom": showroom.branding.bottom},
         "timingsMs": timer.times,
     }
     debug.json("metadata.json", {**metadata, "warnings": [w.__dict__ for w in warnings]})

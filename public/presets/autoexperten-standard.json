@@ -4,11 +4,62 @@
   "description": "Heller Premium-Showroom, Holzfußboden, AutoExperten Wandlogo und blaue Lichtakzente.",
   "background": {
     "image": "autoexperten-standard-showroom.jpg",
-    "placeholder": true,
-    "notes": "Master showroom plate WITHOUT a vehicle, 4:3, at least 3200x2400 px. Replace the JPG (same name) and set placeholder=false."
+    "fallbackImage": "fallback/autoexperten-standard-fallback.jpg",
+    "floorHorizon": 0.62,
+    "notes": "image = FINAL photorealistic master photo of the EMPTY showroom WITHOUT branding (4:3, >= 3200x2400, ideally 3840x2880). Drop it in with this exact name - it is used automatically. floorHorizon = height (0..1) of the wall/floor junction in that photo. fallbackImage is the procedural emergency fallback, used only while the master is missing."
   },
-  "logo": "official/AutoExperten_Logo.png",
-  "floorHorizon": 0.62,
+  "branding": {
+    "enabled": true,
+    "clearance": 0.03,
+    "lightMatch": 0.5,
+    "logo": {
+      "file": "official/AutoExperten_Logo.png",
+      "centerX": 0.5,
+      "top": 0.07,
+      "maxWidth": 0.30,
+      "maxHeight": 0.08,
+      "opacity": 1.0,
+      "mounted": true
+    },
+    "city": {
+      "text": "SCHWETZINGEN",
+      "centerX": 0.5,
+      "top": 0.158,
+      "capHeight": 0.0165,
+      "tracking": 0.42,
+      "color": "#403F3F",
+      "weight": "semibold",
+      "opacity": 1.0,
+      "mounted": true
+    },
+    "website": {
+      "text": "www.autoexperten-rn.de",
+      "centerX": 0.5,
+      "top": 0.197,
+      "capHeight": 0.0105,
+      "tracking": 0.04,
+      "color": "#4A4949",
+      "weight": "medium",
+      "opacity": 1.0,
+      "mounted": false
+    },
+    "phone": {
+      "text": "+49 6202 9262357",
+      "centerX": 0.5,
+      "top": 0.222,
+      "capHeight": 0.0105,
+      "tracking": 0.04,
+      "color": "#4A4949",
+      "weight": "medium",
+      "opacity": 1.0,
+      "mounted": false
+    },
+    "mount": {
+      "shadowOpacity": 0.28,
+      "shadowOffset": 0.0016,
+      "shadowBlur": 0.0022
+    }
+  },
   "output": {
     "aspect": [4, 3],
     "longEdgeMin": 2400,
@@ -18,16 +69,20 @@
   "placement": {
     "centerX": 0.5,
     "groundLine": 0.84,
-    "widthRatio": 0.78,
-    "maxHeightRatio": 0.62,
+    "widthRatio": 0.80,
+    "maxHeightRatio": 0.60,
     "minMargin": 0.04,
     "maxUpscale": 2.5
   },
   "shotPlacement": {
-    "front": { "widthRatio": 0.62 },
-    "rear": { "widthRatio": 0.62 },
+    "front_left_45": { "widthRatio": 0.80 },
+    "front_right_45": { "widthRatio": 0.80 },
+    "rear_left_45": { "widthRatio": 0.80 },
+    "rear_right_45": { "widthRatio": 0.80 },
     "left_side": { "widthRatio": 0.82 },
-    "right_side": { "widthRatio": 0.82 }
+    "right_side": { "widthRatio": 0.82 },
+    "front": { "widthRatio": 0.60 },
+    "rear": { "widthRatio": 0.60 }
   },
   "shadow": {
     "contactOpacity": 0.82,

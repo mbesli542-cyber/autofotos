@@ -67,7 +67,8 @@ def test_health_needs_no_auth_but_details_do(make_client):
     assert public.status_code == 200
     assert public.json() == {"status": "ok", "version": details["version"]}  # nothing else leaks
     assert details["auth"] is True
-    assert details["showroomPlaceholder"] is True  # preset still flagged as placeholder
+    assert details["showroomSource"] == "master"  # test assets contain a master photo
+    assert details["showroomPlaceholder"] is False
 
 
 def test_unauthenticated_requests_are_rejected_before_the_body_is_parsed(make_client):
@@ -209,7 +210,8 @@ def test_upload_job_returns_downloadable_result(make_client, photo):
     assert result.headers["content-type"] == "image/jpeg"
     image = Image.open(io.BytesIO(result.content))
     assert image.size == (done["result"]["width"], done["result"]["height"])
-    assert any(w["code"] == "showroom_placeholder" for w in done["warnings"])
+    assert not any(w["code"] == "showroom_fallback" for w in done["warnings"])
+    assert done["metadata"]["showroomSource"] == "master"
 
 
 def test_job_reports_queued_processing_complete_in_order(make_client, fake_segmenter, photo):
@@ -354,3 +356,32 @@ def test_contract_jobs_are_not_limited_by_the_upload_queue(make_client, fake_seg
         codes = [client.post("/jobs", json=body).status_code for _ in range(8)]
         gate.set()
     assert codes == [202] * 8
+
+
+def test_showroom_preview_is_the_branded_background(make_client):
+    client, _ = make_client(api_key="secret")
+    auth = {"Authorization": "Bearer secret"}
+    with client:
+        assert client.get("/showroom/autoexperten_standard.jpg").status_code == 401
+        response = client.get("/showroom/autoexperten_standard.jpg?width=1200", headers=auth)
+        assert client.get("/showroom/magic.jpg", headers=auth).status_code == 404
+        assert client.get("/showroom/autoexperten_standard.jpg?width=99999", headers=auth).status_code == 400
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.headers["x-showroom-source"] == "master"
+    image = Image.open(io.BytesIO(response.content))
+    assert image.size == (1200, 900)
+
+
+def test_missing_master_falls_back_and_says_so(make_client, settings, photo):
+    master = settings.presets_dir / "autoexperten-standard-showroom.jpg"
+    master.unlink()
+    client, _ = make_client()
+    with client:
+        health = client.get("/health").json()
+        job = client.post("/jobs/upload", files={"file": ("car.jpg", photo, "image/jpeg")}).json()
+        done = wait_for(client, job["jobId"])
+    assert health["showroomSource"] == "fallback" and health["showroomPlaceholder"] is True
+    assert done["status"] == "complete"
+    assert done["metadata"]["showroomSource"] == "fallback"
+    assert any(w["code"] == "showroom_fallback" for w in done["warnings"])

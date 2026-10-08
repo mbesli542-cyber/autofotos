@@ -5,7 +5,8 @@ centred horizontally, and its lowest pixel (tyre contact) is put on the
 preset's ground line. The scale is the smallest of: target width, maximum
 height, frame margins (never crop), maximum up-scaling and – for 3/4 views
 whose far wheels touch the floor higher up – the showroom floor horizon (every
-tyre contact must stay on the floor, never in front of the wall).
+tyre contact must stay on the floor, never in front of the wall) and the
+branding headroom (the vehicle's roof stays below the logo/texts on the wall).
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ class PlacementResult:
     height: float
     output_width: int
     output_height: int
-    #: Which rule determined the scale: width | height | margin | upscale | horizon.
+    #: Which rule determined the scale: width | height | margin | upscale | horizon | headroom.
     limited_by: str
 
     @property
@@ -73,8 +74,10 @@ def compute_placement(
     *,
     floor_horizon: float | None = None,
     contact_rise: float = 0.0,
+    min_top: float | None = None,
 ) -> PlacementResult:
-    """`contact_rise`: source pixels between the lowest and the highest tyre contact."""
+    """`contact_rise`: source pixels between the lowest and the highest tyre contact.
+    `min_top`: highest allowed vehicle top (fraction of the height), e.g. below the branding."""
     if bbox.width <= 0 or bbox.height <= 0:
         raise ValueError("empty bounding box")
     margin_x = placement.min_margin * width
@@ -90,6 +93,8 @@ def compute_placement(
         ),
         "upscale": placement.max_upscale,
     }
+    if min_top is not None:
+        candidates["headroom"] = max(ground_y - min_top * height, 1.0) / bbox.height
     if floor_horizon is not None and contact_rise > 0:
         room = ground_y - (floor_horizon + HORIZON_CLEARANCE) * height
         candidates["horizon"] = max(room, 1.0) / contact_rise

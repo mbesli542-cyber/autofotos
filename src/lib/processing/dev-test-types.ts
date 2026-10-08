@@ -6,6 +6,10 @@
  *   GET  /jobs/{jobId}              → 200 ProcessorJob | 404 ProcessorErrorBody
  *   GET  /jobs/{jobId}/result       → 200 image/jpeg | 404 | 409 (not complete yet)
  *   GET  /jobs/{jobId}/debug/{name} → file (only with PROCESSOR_DEBUG=true, else 404)
+ *   GET  /showroom/{preset}.jpg?width=N
+ *                                   → 200 image/jpeg (branded showroom background
+ *                                     without vehicle, 4:3), header X-Showroom-Source;
+ *                                     404 unknown preset, 400 invalid width
  *   GET  /health                    → ProcessorHealth
  *   Auth: `Authorization: Bearer <IMAGE_PROCESSING_API_KEY>` (only if configured)
  *
@@ -28,6 +32,19 @@ export type ProcessorJobResult =
   /** Result kept by the processor, downloadable via GET /jobs/{id}/result. */
   | { kind: "file"; resultUrl: string; width: number; height: number; bytes: number };
 
+/**
+ * Which showroom background the processor composited onto:
+ * - "master":   the final AutoExperten showroom photo
+ *               (public/presets/autoexperten-standard-showroom.jpg)
+ * - "fallback": a generated stand-in because the master photo is missing
+ */
+export type ShowroomSource = "master" | "fallback";
+
+export const SHOWROOM_SOURCES: readonly ShowroomSource[] = ["master", "fallback"];
+
+/** Response header of GET /showroom/{preset}.jpg naming the showroom source. */
+export const SHOWROOM_SOURCE_HEADER = "X-Showroom-Source";
+
 export interface ProcessorWarning {
   code: string;
   /** German, user-presentable. */
@@ -38,8 +55,10 @@ export interface ProcessorJobMetadata {
   shotKind: string;
   segmenter: string;
   model: string;
-  /** True while the processor composites onto the generated placeholder showroom. */
+  /** True while the processor composites onto the generated fallback showroom. */
   showroomPlaceholder: boolean;
+  /** Showroom used for this job; null if the processor does not report it. */
+  showroomSource: ShowroomSource | null;
   /** Debug file names (only with PROCESSOR_DEBUG=true), e.g. "mask.png". */
   debugFiles: string[];
   timingsMs: Record<string, number>;
@@ -71,6 +90,8 @@ export interface ProcessorHealth {
   model: string;
   debug: boolean;
   showroomPlaceholder: boolean;
+  /** Showroom the processor currently uses; null if it does not report it. */
+  showroomSource: ShowroomSource | null;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -89,6 +110,9 @@ export const DEFAULT_DEV_TEST_SHOT_KEY = "front_left_45";
 
 export const DEV_TEST_MAX_UPLOAD_MB = 40;
 export const DEV_TEST_MAX_UPLOAD_BYTES = DEV_TEST_MAX_UPLOAD_MB * 1024 * 1024;
+
+/** Width of the showroom preview (GET /showroom/{preset}.jpg?width=N), in px. */
+export const DEV_SHOWROOM_WIDTH = { default: 1600, min: 320, max: 3840 } as const;
 
 export const DEV_JOB_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 export const DEV_DEBUG_NAME_PATTERN = /^[a-z0-9_.-]{1,64}$/;
@@ -111,6 +135,34 @@ export function isValidDebugFileName(value: unknown): value is string {
   );
 }
 
+export function isShowroomSource(value: unknown): value is ShowroomSource {
+  return SHOWROOM_SOURCES.some((source) => source === value);
+}
+
+/** Strict showroom source parsing – anything unknown becomes null. */
+export function parseShowroomSource(value: unknown): ShowroomSource | null {
+  return isShowroomSource(value) ? value : null;
+}
+
+/**
+ * `width` query parameter of the showroom proxy: absent → default, otherwise
+ * a plain integer within DEV_SHOWROOM_WIDTH. Returns null if invalid.
+ */
+export function parseShowroomWidth(value: string | null): number | null {
+  if (value === null) return DEV_SHOWROOM_WIDTH.default;
+  if (!/^[0-9]{1,5}$/.test(value)) return null;
+  const width = Number(value);
+  return width >= DEV_SHOWROOM_WIDTH.min && width <= DEV_SHOWROOM_WIDTH.max ? width : null;
+}
+
+/** A width for the showroom preview matching `preferred` (e.g. the result width) if allowed. */
+export function showroomPreviewWidth(preferred: number | null | undefined): number {
+  if (typeof preferred !== "number" || !Number.isInteger(preferred) || preferred <= 0) {
+    return DEV_SHOWROOM_WIDTH.default; // unknown (the processor reports 0)
+  }
+  return Math.min(DEV_SHOWROOM_WIDTH.max, Math.max(DEV_SHOWROOM_WIDTH.min, preferred));
+}
+
 /** Same-origin proxy URLs used by the browser. */
 export const DEV_TEST_API = {
   base: "/api/dev/processing-test",
@@ -119,6 +171,8 @@ export const DEV_TEST_API = {
     `/api/dev/processing-test/${encodeURIComponent(jobId)}/result${download ? "?download=1" : ""}`,
   debug: (jobId: string, name: string) =>
     `/api/dev/processing-test/${encodeURIComponent(jobId)}/debug/${encodeURIComponent(name)}`,
+  showroom: (preset: DevTestPresetId, width: number = DEV_SHOWROOM_WIDTH.default) =>
+    `/api/dev/processing-test/showroom?${new URLSearchParams({ preset, width: String(width) })}`,
 } as const;
 
 /* ------------------------------------------------------------------------ */
@@ -166,6 +220,20 @@ function parseWarnings(value: unknown): ProcessorWarning[] {
   });
 }
 
+/**
+ * Showroom status of a job or health response. `showroomPlaceholder: true`
+ * (older processors) always means the fallback showroom – when in doubt the
+ * page warns rather than claiming the master photo was used.
+ */
+function parseShowroomStatus(record: Record<string, unknown>): {
+  showroomPlaceholder: boolean;
+  showroomSource: ShowroomSource | null;
+} {
+  const source =
+    record.showroomPlaceholder === true ? "fallback" : parseShowroomSource(record.showroomSource);
+  return { showroomPlaceholder: source === "fallback", showroomSource: source };
+}
+
 function parseTimings(value: unknown): Record<string, number> {
   const timings = asRecord(value);
   if (!timings) return {};
@@ -184,7 +252,7 @@ function parseMetadata(value: unknown): ProcessorJobMetadata {
     shotKind: asString(metadata.shotKind),
     segmenter: asString(metadata.segmenter),
     model: asString(metadata.model),
-    showroomPlaceholder: metadata.showroomPlaceholder === true,
+    ...parseShowroomStatus(metadata),
     debugFiles: Array.isArray(metadata.debugFiles)
       ? metadata.debugFiles.filter(isValidDebugFileName)
       : [],
@@ -228,6 +296,6 @@ export function parseProcessorHealth(value: unknown): ProcessorHealth | null {
     segmenter: asString(health.segmenter),
     model: asString(health.model),
     debug: health.debug === true,
-    showroomPlaceholder: health.showroomPlaceholder === true,
+    ...parseShowroomStatus(health),
   };
 }

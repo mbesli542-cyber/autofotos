@@ -8,6 +8,7 @@ Single-photo testing:
     GET  /jobs/{jobId}/result     processed JPEG
     GET  /jobs/{jobId}/debug      list of debug files (PROCESSOR_DEBUG=true only)
     GET  /jobs/{jobId}/debug/{n}  one debug file    (PROCESSOR_DEBUG=true only)
+    GET  /showroom/{preset}.jpg   branded showroom WITHOUT vehicle (?width=320..3840)
     GET  /health                  service status (no auth; details only with auth)
 
 Every other endpoint requires "Authorization: Bearer <PROCESSOR_API_KEY>" when
@@ -24,7 +25,8 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, File, Form, Header, Request, UploadFile
+import numpy as np
+from fastapi import Depends, FastAPI, File, Form, Header, Query, Request, Response, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -33,9 +35,10 @@ from pydantic import BaseModel, Field
 from .config import Settings
 from .guard import RequestGuard, is_authorized
 from .jobs.manager import JobManager, QueueFullError, StoreUnavailableError
+from .pipeline.export import encode_jpeg
 from .pipeline.pipeline import PIPELINE_VERSION
 from .pipeline.segmentation import VehicleSegmenter, create_segmenter
-from .presets import BackgroundProvider, PresetError, load_preset
+from .presets import PRESET_FILES, BackgroundProvider, PresetError, load_preset
 from .storage.base import PhotoStore
 
 log = logging.getLogger("autoexperten.processor")
@@ -162,9 +165,9 @@ def create_app(
         model = getattr(segmenter, "spec", None)
         try:
             preset = load_preset(settings, "autoexperten_standard")
-            placeholder = backgrounds.is_placeholder(preset)
+            source = backgrounds.source(preset)
         except PresetError:
-            placeholder = None
+            source = None
         body = {
             "status": "error" if failed else "ok",
             "version": PIPELINE_VERSION,
@@ -175,7 +178,8 @@ def create_app(
             "debug": settings.debug,
             "auth": bool(settings.api_key),
             "supabase": store is not None,
-            "showroomPlaceholder": placeholder,
+            "showroomSource": source,
+            "showroomPlaceholder": None if source is None else source == "fallback",
         }
         return JSONResponse(status_code=status, content=body)
 
@@ -249,6 +253,27 @@ def create_app(
         if not settings.debug or _get_job(job_id) is None:
             return error_response(404, "not_found", "Nicht gefunden.")
         return {"files": manager.debug_files(job_id)}
+
+    @app.get("/showroom/{name}", dependencies=[Auth])
+    def get_showroom(name: str, width: Annotated[int, Query(ge=320, le=3840)] = 1600):
+        """The branded showroom background exactly as vehicles are placed on it."""
+        preset_id = name[: -len(".jpg")] if name.endswith(".jpg") else ""
+        if preset_id not in PRESET_FILES:
+            return error_response(404, "not_found", "Dieser Bearbeitungsstil ist noch nicht verfügbar.")
+        try:
+            preset = load_preset(settings, preset_id)
+        except PresetError:
+            return error_response(404, "not_found", "Dieser Bearbeitungsstil ist noch nicht verfügbar.")
+        aw, ah = preset.output.aspect
+        out_w = width - width % 2
+        out_h = int(round(out_w * ah / aw))
+        out_h -= out_h % 2
+        showroom = backgrounds.get(preset, out_w, out_h)
+        return Response(
+            encode_jpeg(np.asarray(showroom.rgb), 90),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "no-store", "X-Showroom-Source": showroom.source},
+        )
 
     @app.get("/jobs/{job_id}/debug/{name}", dependencies=[Auth])
     def get_debug_file(job_id: str, name: str):

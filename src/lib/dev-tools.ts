@@ -77,7 +77,8 @@ export const PROCESSOR_TIMEOUTS_MS = {
 } as const;
 
 /**
- * Calls the processor. `path` must be built from validated values only.
+ * Calls the processor. `path` and `query` must be built from validated values
+ * only (`query` is appended as URL search parameters).
  * The timeout covers the time until the response headers arrive; the body is
  * then streamed and cancelled when the browser disconnects (`signal`).
  * Network failures → 502, timeouts → 504 (German messages).
@@ -88,6 +89,7 @@ export async function callProcessor(
   init: {
     method: "GET" | "POST";
     body?: FormData;
+    query?: Record<string, string>;
     accept: string;
     timeoutMs: number;
     signal?: AbortSignal;
@@ -97,7 +99,9 @@ export async function callProcessor(
   const timer = setTimeout(() => timeout.abort(), init.timeoutMs);
   const signal = init.signal ? AbortSignal.any([init.signal, timeout.signal]) : timeout.signal;
   try {
-    const response = await fetch(joinServiceUrl(config.baseUrl, path), {
+    const url = joinServiceUrl(config.baseUrl, path);
+    for (const [key, value] of Object.entries(init.query ?? {})) url.searchParams.set(key, value);
+    const response = await fetch(url, {
       method: init.method,
       body: init.body,
       signal,
