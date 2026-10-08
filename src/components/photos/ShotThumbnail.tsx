@@ -1,14 +1,18 @@
-import { Camera, Check, CloudOff } from "lucide-react";
+import { Camera, Check, CloudOff, ImageOff } from "lucide-react";
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/lib/cn";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
 
 export type PhotoVariant = "original" | "processed";
 
+/**
+ * Image for a slot. "processed" returns ONLY a real processed version –
+ * never the original as a stand-in (null → "Noch nicht bearbeitet").
+ */
 export function getSlotImageUrl(slot: PhotoSlot, variant: PhotoVariant): string | null {
+  if (variant === "processed") return slot.pending ? null : (slot.photo?.urls.processed ?? null);
   if (slot.pending?.thumbnailUrl) return slot.pending.thumbnailUrl;
   if (!slot.photo) return null;
-  if (variant === "processed" && slot.photo.urls.processed) return slot.photo.urls.processed;
   return slot.photo.urls.thumbnail;
 }
 
@@ -39,6 +43,11 @@ export function ShotThumbnail({
     >
       {url ? (
         <img src={url} alt="" className="size-full object-cover" loading="lazy" decoding="async" />
+      ) : variant === "processed" && captured ? (
+        <div className="flex size-full flex-col items-center justify-center gap-1 px-2 text-center text-ae-subtle">
+          <ImageOff className="size-5" aria-hidden />
+          <span className="text-[11px] leading-tight font-medium">Noch nicht bearbeitet</span>
+        </div>
       ) : (
         <div className="flex size-full items-center justify-center text-ae-subtle">
           <Camera className="size-6" aria-hidden />
@@ -63,7 +72,7 @@ export function ShotThumbnail({
         >
           <Spinner className="size-3.5" />
         </span>
-      ) : slot.photo ? (
+      ) : slot.photo && (variant === "original" || url) ? (
         <span className="absolute right-1.5 bottom-1.5 flex size-6 items-center justify-center rounded-full bg-ae-blue text-white shadow">
           <Check className="size-3.5" strokeWidth={3} aria-hidden />
         </span>

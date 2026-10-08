@@ -4,6 +4,8 @@
  * Data lives in the browser (IndexedDB): vehicles, photo records and the
  * captured image blobs. It mirrors the Supabase behaviour (archive instead of
  * overwrite, separate processed files) so the UI is exercised realistically.
+ * Processed files are only ever real results of the image processor
+ * (downloaded via /api/process-job/:id/result); data migrations: ./migrations.
  */
 import type {
   DataProvider,
@@ -28,14 +30,10 @@ import {
   STORAGE_BUCKETS,
 } from "@/lib/naming/file-naming";
 import { IdbDatabase } from "@/lib/offline/idb";
+import { DEMO_STORES, migrateDemoData } from "./migrations";
 import { buildSeedData, STATIC_PATH_PREFIX, type StoredPhoto } from "./seed";
 
-const STORES = {
-  vehicles: "vehicles",
-  photos: "photos",
-  files: "files",
-  meta: "meta",
-} as const;
+const STORES = DEMO_STORES;
 
 interface StoredFile {
   path: string;
@@ -44,6 +42,16 @@ interface StoredFile {
 
 const DB_NAME = "autoexperten-photo-demo";
 
+/** The demo IndexedDB database (schema version 1; data migrations: ./migrations). */
+export function createDemoDatabase(name: string = DB_NAME): IdbDatabase {
+  return new IdbDatabase(name, 1, [
+    { name: STORES.vehicles, keyPath: "id" },
+    { name: STORES.photos, keyPath: "id", indexes: [{ name: "vehicleId", keyPath: "vehicleId" }] },
+    { name: STORES.files, keyPath: "path" },
+    { name: STORES.meta, keyPath: "key" },
+  ]);
+}
+
 function stripArchived(photo: StoredPhoto): VehiclePhoto {
   const rest: Partial<StoredPhoto> = { ...photo };
   delete rest.archivedAt;
@@ -51,26 +59,29 @@ function stripArchived(photo: StoredPhoto): VehiclePhoto {
 }
 
 export class MockDataProvider implements DataProvider {
-  private readonly db = new IdbDatabase(DB_NAME, 1, [
-    { name: STORES.vehicles, keyPath: "id" },
-    { name: STORES.photos, keyPath: "id", indexes: [{ name: "vehicleId", keyPath: "vehicleId" }] },
-    { name: STORES.files, keyPath: "path" },
-    { name: STORES.meta, keyPath: "key" },
-  ]);
-  private seeding: Promise<void> | null = null;
+  private ready: Promise<void> | null = null;
   private objectUrls = new Map<string, string>();
 
-  /** Seeds demo vehicles on first use. */
-  private ensureSeeded(): Promise<void> {
-    this.seeding ??= (async () => {
+  constructor(private readonly db: IdbDatabase = createDemoDatabase()) {}
+
+  /**
+   * Runs before any data is read or written: pending data migrations first
+   * (e.g. removing simulated processed versions), then the demo seed.
+   */
+  private ensureReady(): Promise<void> {
+    this.ready ??= (async () => {
+      await migrateDemoData(this.db);
       const marker = await this.db.get<{ key: string }>(STORES.meta, "seeded");
       if (marker) return;
       const { vehicles, photos } = buildSeedData();
       await this.db.putMany(STORES.vehicles, vehicles);
       await this.db.putMany(STORES.photos, photos);
       await this.db.put(STORES.meta, { key: "seeded", at: new Date().toISOString() });
-    })();
-    return this.seeding;
+    })().catch((error: unknown) => {
+      this.ready = null; // retry on the next call
+      throw error;
+    });
+    return this.ready;
   }
 
   /** Clears all demo data and restores the seed vehicles. */
@@ -78,8 +89,8 @@ export class MockDataProvider implements DataProvider {
     await this.db.clear([STORES.vehicles, STORES.photos, STORES.files, STORES.meta]);
     for (const url of this.objectUrls.values()) URL.revokeObjectURL(url);
     this.objectUrls.clear();
-    this.seeding = null;
-    await this.ensureSeeded();
+    this.ready = null;
+    await this.ensureReady();
   }
 
   private async activePhotos(vehicleId: string): Promise<StoredPhoto[]> {
@@ -88,7 +99,7 @@ export class MockDataProvider implements DataProvider {
   }
 
   async listVehicles(): Promise<VehicleWithPhotos[]> {
-    await this.ensureSeeded();
+    await this.ensureReady();
     const [vehicles, photos] = await Promise.all([
       this.db.getAll<Vehicle>(STORES.vehicles),
       this.db.getAll<StoredPhoto>(STORES.photos),
@@ -103,12 +114,12 @@ export class MockDataProvider implements DataProvider {
   }
 
   async getVehicle(vehicleId: string): Promise<Vehicle | null> {
-    await this.ensureSeeded();
+    await this.ensureReady();
     return (await this.db.get<Vehicle>(STORES.vehicles, vehicleId)) ?? null;
   }
 
   async createVehicle(input: VehicleInput): Promise<Vehicle> {
-    await this.ensureSeeded();
+    await this.ensureReady();
     const now = new Date().toISOString();
     const vehicle: Vehicle = {
       id: crypto.randomUUID(),
@@ -137,7 +148,7 @@ export class MockDataProvider implements DataProvider {
   }
 
   async listPhotos(vehicleId: string): Promise<VehiclePhoto[]> {
-    await this.ensureSeeded();
+    await this.ensureReady();
     return (await this.activePhotos(vehicleId)).map(stripArchived);
   }
 
@@ -153,6 +164,7 @@ export class MockDataProvider implements DataProvider {
   }
 
   async resolvePhotoUrls(photos: readonly VehiclePhoto[]): Promise<VehiclePhotoWithUrls[]> {
+    await this.ensureReady();
     return Promise.all(
       photos.map(async (photo) => {
         const original = (await this.urlFor(photo.originalStoragePath)) ?? "";
@@ -168,6 +180,7 @@ export class MockDataProvider implements DataProvider {
   }
 
   async savePhoto(input: SavePhotoInput): Promise<VehiclePhoto> {
+    await this.ensureReady();
     const existingRecord = await this.db.get<StoredPhoto>(STORES.photos, input.photoId);
     if (existingRecord) return stripArchived(existingRecord); // idempotent retry
 
@@ -232,13 +245,16 @@ export class MockDataProvider implements DataProvider {
   }
 
   async archivePhoto(photoId: string): Promise<void> {
+    await this.ensureReady();
     const photo = await this.db.get<StoredPhoto>(STORES.photos, photoId);
     if (!photo) throw new AppError("not_found");
     const now = new Date().toISOString();
     await this.db.put<StoredPhoto>(STORES.photos, { ...photo, archivedAt: now, updatedAt: now });
   }
 
+  /** Stores a REAL processor result (separate file; the original is untouched). */
   async saveProcessedPhoto({ photo, preset, file }: SaveProcessedPhotoInput): Promise<VehiclePhoto> {
+    await this.ensureReady();
     const path = `${STORAGE_BUCKETS.processed}/${buildProcessedStoragePath({
       vehicleId: photo.vehicleId,
       shotKey: photo.shotKey,
@@ -264,6 +280,7 @@ export class MockDataProvider implements DataProvider {
     preset: ProcessingPresetId;
     processedStoragePath: string;
   }): Promise<void> {
+    await this.ensureReady();
     const stored = await this.db.get<StoredPhoto>(STORES.photos, input.photoId);
     if (!stored) throw new AppError("not_found");
     await this.db.put<StoredPhoto>(STORES.photos, {

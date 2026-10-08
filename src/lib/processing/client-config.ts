@@ -1,5 +1,7 @@
 /**
- * True while no real processing backend is connected. Used only for UI hints.
- * Set NEXT_PUBLIC_IMAGE_PROCESSOR=real together with IMAGE_PROCESSOR=real.
+ * UI hint for the FIRST render of the processing page only
+ * (NEXT_PUBLIC_IMAGE_PROCESSOR=real → "Verbindung wird geprüft…" instead of
+ * "nicht verbunden"). The real state always comes from GET /api/processing-status.
  */
-export const PROCESSING_IS_SIMULATED = process.env.NEXT_PUBLIC_IMAGE_PROCESSOR !== "real";
+export const PROCESSOR_UI_HINT: "real" | "mock" =
+  process.env.NEXT_PUBLIC_IMAGE_PROCESSOR === "real" ? "real" : "mock";

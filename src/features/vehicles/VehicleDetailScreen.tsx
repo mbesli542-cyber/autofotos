@@ -1,6 +1,6 @@
 "use client";
 
-import { Camera, CloudOff, Images, Pencil } from "lucide-react";
+import { Camera, CloudOff, ImageOff, Images, Pencil } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { AppHeader } from "@/components/layout/AppHeader";
@@ -85,6 +85,7 @@ export function VehicleDetailScreen({
 
   const { vehicle } = state;
   const cover = photos[0];
+  const coverUrl = cover ? (variant === "processed" ? cover.urls.processed : cover.urls.original) : null;
   const failedUploads = pending.filter((item) => item.status === "failed").length;
 
   return (
@@ -94,12 +95,18 @@ export function VehicleDetailScreen({
         {/* Hero */}
         <section className="overflow-hidden rounded-2xl border border-ae-border bg-ae-surface">
           <div className="relative aspect-[16/9] bg-ae-surface-3 sm:aspect-[21/9]">
-            {cover ? (
+            {cover && coverUrl ? (
               <img
-                src={variant === "processed" && cover.urls.processed ? cover.urls.processed : cover.urls.original}
-                alt={`${vehicleDisplayName(vehicle)} – ${cover.title}`}
+                src={coverUrl}
+                alt={`${vehicleDisplayName(vehicle)} – ${cover.title}${variant === "processed" ? " (bearbeitet)" : ""}`}
                 className="size-full object-cover"
               />
+            ) : cover ? (
+              // "Bearbeitet" never falls back to the original photo.
+              <div className="flex size-full flex-col items-center justify-center gap-2 text-ae-subtle">
+                <ImageOff className="size-9" aria-hidden />
+                <span className="text-sm font-medium">Noch nicht bearbeitet</span>
+              </div>
             ) : (
               <div className="flex size-full items-center justify-center text-ae-subtle">
                 <Camera className="size-10" aria-hidden />
@@ -185,7 +192,9 @@ export function VehicleDetailScreen({
             <h2 id="photos-title" className="font-semibold">
               Aufnahmen
             </h2>
-            {hasProcessed && <PhotoVersionToggle value={variant} onChange={setVariant} />}
+            {(hasProcessed || variant === "processed") && (
+              <PhotoVersionToggle value={variant} onChange={setVariant} />
+            )}
           </div>
           <PhotoGrid slots={slots.required} variant={variant} onSelect={(slot) => setSelectedKey(slot.key)} label="Pflichtfotos" />
           {slots.extras.length > 0 && (
@@ -200,6 +209,8 @@ export function VehicleDetailScreen({
       </PageContainer>
 
       <PhotoViewer
+        // Re-created when the grid switches version, so the viewer opens in that version.
+        key={variant}
         slots={allSlots}
         selectedKey={selectedKey}
         defaultVariant={variant}

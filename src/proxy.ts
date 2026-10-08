@@ -1,7 +1,8 @@
 /**
  * Proxy (formerly "middleware"): keeps the Supabase session cookie fresh and
- * redirects signed-out users to /login. Does nothing in demo mode – there,
- * the client-side AuthGate handles access.
+ * redirects signed-out users to /login. Does nothing in demo mode
+ * (NEXT_PUBLIC_DATA_BACKEND, see src/lib/data/backend-mode.ts) – there, the
+ * client-side AuthGate handles access.
  *
  * Developer tools (/dev/*) are outside the login. When they are disabled
  * (production without ENABLE_DEV_TOOLS=true) they answer with a real 404 –
@@ -10,6 +11,7 @@
  */
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { getDataBackendMode } from "@/lib/data/backend-mode";
 import { isDevToolsEnabled } from "@/lib/dev-tools";
 import { getSupabasePublicConfig } from "@/lib/supabase/config";
 
@@ -25,7 +27,7 @@ export async function proxy(request: NextRequest) {
     return NextResponse.rewrite(new URL(NOT_FOUND_REWRITE, request.url), { status: 404 });
   }
 
-  const config = getSupabasePublicConfig();
+  const config = getDataBackendMode() === "supabase" ? getSupabasePublicConfig() : null;
   if (!config) return NextResponse.next();
 
   let response = NextResponse.next({ request });

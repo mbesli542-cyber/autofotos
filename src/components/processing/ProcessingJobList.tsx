@@ -1,10 +1,12 @@
 import { Check, Clock, TriangleAlert } from "lucide-react";
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/lib/cn";
+import { SHOT_TREATMENT_LABELS } from "@/lib/processing/shot-treatment";
 import type { PhotoRunState, PhotoRunStatus } from "@/features/processing/use-processing-run";
 
 const LABELS: Record<PhotoRunStatus, string> = {
   waiting: "Wartend",
+  preparing: "Wird hochgeladen",
   queued: "In Warteschlange",
   processing: "In Bearbeitung",
   saving: "Wird gespeichert",
@@ -30,6 +32,9 @@ export function ProcessingJobList({ items }: { items: readonly PhotoRunState[] }
           </span>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium">{item.title}</p>
+            {item.treatment === "original_environment" && (
+              <p className="truncate text-xs text-ae-subtle">{SHOT_TREATMENT_LABELS.original_environment}</p>
+            )}
             {item.status === "processing" && (
               <div className="mt-1 h-1 overflow-hidden rounded-full bg-ae-surface-3">
                 <div className="h-full bg-ae-blue transition-[width]" style={{ width: `${Math.round(item.progress * 100)}%` }} />

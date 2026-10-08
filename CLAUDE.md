@@ -42,16 +42,25 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
   strong reason. Do not build payments, CRM, pricing, public registration etc.
 - **Keep components reusable** and screens thin (`src/features/*` compose
   `src/components/*`; business rules live in `src/lib/*` as pure functions).
-- **The processing API must stay easy to connect**: the UI only talks
-  to `/api/process-photo` + `/api/process-job/:jobId`; implementations sit
-  behind the `ImageProcessor` interface (`RealImageProcessor` → `processor/`).
+- **The processing API must stay easy to connect**: the UI only talks to
+  `/api/processing-status`, `/api/process-photo` (Supabase), `/api/process-upload`
+  (demo) and `/api/process-job/:jobId[/result]`; implementations sit behind the
+  `ImageProcessor` interface (`RealImageProcessor` → `processor/`, the only code
+  that talks HTTP to the processor).
+- **No fake processing.** "Bearbeitet" only shows real processor results.
+  Without a connected processor nothing is processed or saved ("Echte
+  Showroom-Bearbeitung ist noch nicht verbunden."); never fall back to the
+  original or add bars/overlays to stand in for a result.
 - **No generative image AI in processing** (no DALL·E, Stable Diffusion, Flux,
   Midjourney, Generative Fill, image-to-image). The processor composites the
   ORIGINAL vehicle pixels; vehicle corrections stay within `HARD_LIMITS` and
   the colour guard in `processor/app/pipeline/light.py`. Never loosen them.
 - **One fixed showroom.** The background is the master photo
   `public/presets/autoexperten-standard-showroom.jpg` (empty showroom, no text;
-  still to be supplied) + preset JSON; it is never generated per photo. The
+  currently derived from `autoexperten-standard-reference.jpg` by
+  `processor/scripts/prepare_showroom_master.py`) + preset JSON; it is never
+  generated per photo. Without it exterior jobs fail with "AutoExperten
+  Showroom-Master fehlt." (no silent fallback). The
   official logo/texts are composited by `processor/app/showroom/branding.py`
   (positions in the JSON `branding`). `app/showroom/fallback.py` is only an
   emergency fallback – never present it as the final design or improve it.
@@ -72,8 +81,11 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Status-syncing workflow operations | `src/lib/workflow/vehicle-workflow.ts` |
 | Offline-tolerant upload queue | `src/lib/offline/upload-queue.ts` |
 | Camera (stream, capture, quality-check interface) | `src/lib/camera/`, `src/components/camera/` |
-| Processing contract, presets, mock/real processors | `src/lib/processing/` |
-| API routes | `src/app/api/process-photo`, `src/app/api/process-job/[jobId]` |
+| Processing contract, config, presets, real processor, client, adapters | `src/lib/processing/` |
+| Data backend decision (`NEXT_PUBLIC_DATA_BACKEND`) | `src/lib/data/backend-mode.ts` |
+| Demo data migrations (IndexedDB) | `src/lib/data/mock/migrations.ts` |
+| API routes | `src/app/api/processing-status`, `process-photo`, `process-upload`, `process-job/[jobId]` (+ `/result`) |
+| Processing access (login / demo access code), error mapping | `src/lib/api/processing-access.ts`, `src/lib/api/processing-errors.ts` |
 | Client service container | `src/lib/app-services.ts` |
 | DB schema, RLS, storage policies | `supabase/migrations/` |
 | Brand config / official logo | `src/config/brand.ts`, `src/components/brand/BrandLogo.tsx`, `public/brand/` |
@@ -100,7 +112,15 @@ dev only (404 in production unless `ENABLE_DEV_TOOLS=true`): `/dev/processing-te
   `refs`, `purity`): set state in async callbacks, not synchronously in effects.
 - Always order photos by the shot template (`sortPhotosByShotOrder`), never by
   time.
-- Demo mode is automatic when `NEXT_PUBLIC_SUPABASE_URL`/key are missing.
+- Demo mode is automatic when `NEXT_PUBLIC_SUPABASE_URL`/key are missing
+  (or forced with `NEXT_PUBLIC_DATA_BACKEND=demo`). The data backend and the
+  image processor (`IMAGE_PROCESSOR=mock` = none connected, `real`) are decided
+  independently – demo mode can use the real processor.
+- Processing adapters (`src/lib/processing/photo-processing.ts`): Supabase sends
+  ids (processor stores the result, `kind: "stored"`); demo uploads a downscaled
+  copy (≤ 3200 px, < 4 MB for Vercel) via `/api/process-upload`, downloads
+  `/api/process-job/:id/result` (`kind: "file"`) and saves it in IndexedDB.
+  Public demo deployments must set `PROCESSING_ACCESS_CODE`.
 - Logo: official assets in `/public/brand/` (`LOGO_ASSETS`); see `public/brand/README.md`.
 - Processor: settings come from env / `processor/.env` (`app/config.py`);
   `PROCESSOR_DEBUG=true` writes debug images – never on public instances.

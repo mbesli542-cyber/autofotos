@@ -1,34 +1,38 @@
 /**
- * GET /api/process-job/:jobId
- * → 200 ProcessingJob { jobId, status: queued|processing|complete|failed, … }
+ * GET /api/process-job/:jobId  (both data backends)
+ * → 200 ProcessingJob { jobId, status: queued|processing|complete|failed, progress, result, error, … }
+ *
+ * `result` is { kind: "stored", processedStoragePath } (Supabase contract) or
+ * { kind: "file", width, height, bytes } (upload jobs – download the JPEG via
+ * ./result). The processor's own result URL is never passed on.
+ * Demo mode: requires the access code if PROCESSING_ACCESS_CODE is set.
  */
 import { NextResponse, type NextRequest } from "next/server";
-import { apiError, authenticateRequest } from "@/lib/api/route-helpers";
+import { authorizeProcessingRequest } from "@/lib/api/processing-access";
+import { processingErrorResponse, processingNotConnected } from "@/lib/api/processing-errors";
+import { apiError } from "@/lib/api/route-helpers";
 import { getImageProcessor } from "@/lib/processing/get-image-processor";
-import type { ProcessingJob } from "@/lib/processing/types";
+import { isValidProcessingJobId, type ProcessingJob } from "@/lib/processing/types";
 
-const JOB_ID_PATTERN = /^[A-Za-z0-9_-]{1,512}$/;
-
-export async function GET(_request: NextRequest, ctx: RouteContext<"/api/process-job/[jobId]">) {
+export async function GET(request: NextRequest, ctx: RouteContext<"/api/process-job/[jobId]">) {
   const { jobId } = await ctx.params;
-  if (!JOB_ID_PATTERN.test(jobId)) {
+  if (!isValidProcessingJobId(jobId)) {
     return apiError(400, "invalid_job_id", "Ungültige Auftrags-ID.");
   }
 
-  const auth = await authenticateRequest();
+  const auth = await authorizeProcessingRequest(request);
   if (!auth.ok) return auth.response;
 
+  const processor = getImageProcessor();
+  if (!processor) return processingNotConnected();
+
   try {
-    const job = await getImageProcessor().getJob(jobId, { userId: auth.userId });
-    if (!job) return apiError(404, "not_found", "Auftrag wurde nicht gefunden.");
+    const job = await processor.getJob(jobId);
+    if (!job) return apiError(404, "not_found", "Auftrag wurde nicht gefunden oder ist abgelaufen.");
     return NextResponse.json<ProcessingJob>(job, {
       headers: { "Cache-Control": "no-store" },
     });
-  } catch {
-    return apiError(
-      502,
-      "processing_unavailable",
-      "Die Bildbearbeitung ist derzeit nicht erreichbar. Bitte versuchen Sie es später erneut.",
-    );
+  } catch (error) {
+    return processingErrorResponse(error);
   }
 }

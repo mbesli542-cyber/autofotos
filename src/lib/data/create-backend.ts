@@ -1,9 +1,11 @@
 /**
- * Chooses the backend: Supabase when configured, otherwise demo mode.
+ * Chooses the backend from NEXT_PUBLIC_DATA_BACKEND (see ./backend-mode):
+ * Supabase when selected and configured, otherwise demo mode.
  * Constructors do not touch browser APIs, so this is safe during SSR.
  */
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser-client";
 import { getSupabasePublicConfig } from "@/lib/supabase/config";
+import { getDataBackendMode } from "./backend-mode";
 import { DemoAuthService } from "./mock/demo-auth-service";
 import { MockDataProvider } from "./mock/mock-data-provider";
 import { SupabaseAuthService } from "./supabase/supabase-auth-service";
@@ -11,7 +13,7 @@ import { SupabaseDataProvider } from "./supabase/supabase-data-provider";
 import type { Backend } from "./types";
 
 export function createBackend(): Backend {
-  const config = getSupabasePublicConfig();
+  const config = getDataBackendMode() === "supabase" ? getSupabasePublicConfig() : null;
   if (config) {
     const client = getSupabaseBrowserClient(config);
     return {

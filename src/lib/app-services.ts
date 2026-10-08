@@ -7,11 +7,11 @@
  */
 import { AuthStore } from "@/lib/auth/auth-store";
 import { CAMERA_CONFIG } from "@/lib/camera/config";
+import { getDataBackendMode } from "@/lib/data/backend-mode";
 import { createBackend } from "@/lib/data/create-backend";
 import type { Backend, BackendMode } from "@/lib/data/types";
 import { UploadQueue } from "@/lib/offline/upload-queue";
 import { DEFAULT_SHOT_TEMPLATE, type ShotTemplate } from "@/lib/shots/shot-template";
-import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { savePhotoAndSyncStatus } from "@/lib/workflow/vehicle-workflow";
 
 export interface AppServices {
@@ -50,9 +50,12 @@ export function getAppServices(): AppServices {
   return services;
 }
 
-/** Safe during render (server and client): derived from env only. */
+/**
+ * Safe during render (server and client): derived from env only
+ * (NEXT_PUBLIC_DATA_BACKEND + Supabase env, see src/lib/data/backend-mode.ts).
+ */
 export function getBackendMode(): BackendMode {
-  return isSupabaseConfigured() ? "supabase" : "demo";
+  return getDataBackendMode();
 }
 
 /** The active shot template (pure, safe during render). */

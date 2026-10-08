@@ -10,7 +10,8 @@ review and retake photos. Completed photo sets can then be processed into the
 AutoExperten showroom style: the separate processor service (`processor/`,
 Python/FastAPI) cuts out the **original** vehicle pixels and places them on
 the fixed AutoExperten showroom with a contact shadow – the vehicle itself is
-never regenerated. Without the processor the app uses a clearly marked mock.
+never regenerated. There is no simulated processing: without a connected
+processor nothing is processed, and "Bearbeitet" only ever shows real results.
 
 > UI language: German. Mobile first. Installable as a PWA – no App Store needed.
 
@@ -27,7 +28,7 @@ never regenerated. Without the processor the app uses a clearly marked mock.
 6. [PWA usage](#pwa-usage)
 7. [Camera: limitations, HTTPS & orientation](#camera-limitations-https--orientation)
 8. [Offline / weak connection](#offline--weak-connection)
-9. [Image processing](#image-processing) (mock, real processor, showroom, dev test page)
+9. [Image processing](#image-processing) (configuration, Supabase & demo adapters, processor, showroom, dev test page)
 10. [Project structure](#project-structure)
 11. [Tests & quality checks](#tests--quality-checks)
 12. [Brand assets](#brand-assets)
@@ -45,7 +46,7 @@ never regenerated. Without the processor the app uses a clearly marked mock.
 | Review all shots in listing order, large preview, retake / delete, complete | Fotos überprüfen | `/fahrzeuge/[id]/fotos` |
 | Vehicle details, progress, photo grid, Original ⇄ Bearbeitet | Fahrzeug | `/fahrzeuge/[id]` |
 | Edit vehicle data | Fahrzeugdaten | `/fahrzeuge/[id]/daten` |
-| Choose style & process photos (mocked) | Fotos bearbeiten | `/fahrzeuge/[id]/bearbeiten` |
+| Choose style & process photos with the real showroom processor | Fotos bearbeiten | `/fahrzeuge/[id]/bearbeiten` |
 | Tabs: open captures / ready for processing / account & settings | Kamera · Bearbeiten · Mehr | `/kamera`, `/bearbeiten`, `/mehr` |
 
 Vehicle statuses: **Neu** → **Aufnahmen offen** → **Vollständig** (explicit
@@ -125,8 +126,8 @@ npm run generate:demo-assets # regenerate public/demo/shots/*.svg
 
 ## Demo mode
 
-If `NEXT_PUBLIC_SUPABASE_URL` or the anon/publishable key is missing, the app
-automatically uses:
+If `NEXT_PUBLIC_SUPABASE_URL` or the anon/publishable key is missing – or
+`NEXT_PUBLIC_DATA_BACKEND=demo` is set – the app uses:
 
 - `DemoAuthService` – any e-mail + password is accepted (prefilled:
   `demo@autoexperten-rn.de` / `demo`), session kept in `localStorage`.
@@ -141,6 +142,14 @@ Demo data only lives in that browser. "Mehr → Demo-Daten zurücksetzen"
 restores the sample vehicles. Both providers implement the same
 `DataProvider` interface (`src/lib/data/types.ts`), so the UI is identical.
 
+Demo mode does **not** disable real image processing: with
+`IMAGE_PROCESSOR=real` the photos are uploaded to the processor and the
+results are stored in the browser (see [Image processing](#image-processing)).
+Processed versions created by older app versions in demo mode were simulated
+(original photo + branding bar); a one-time data migration
+(`src/lib/data/mock/migrations.ts`) deletes them and resets "Bearbeitet"
+vehicles to "Vollständig".
+
 ---
 
 ## Configure Supabase
@@ -153,10 +162,12 @@ Copy `.env.example` to `.env.local`:
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL` | browser + server | Project URL (Project Settings → API) |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` *(or `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`)* | browser + server | Public anon / publishable key |
-| `IMAGE_PROCESSOR` | server | `mock` (default) or `real` |
-| `IMAGE_PROCESSING_API_URL` | server | Base URL of the future processing service (`real` only) |
-| `IMAGE_PROCESSING_API_KEY` | server | Secret for the processing service (`real` only) |
-| `NEXT_PUBLIC_IMAGE_PROCESSOR` | browser | UI hint only (`real` hides the "Vorschau-Version" notice) |
+| `NEXT_PUBLIC_DATA_BACKEND` | browser + server | `demo` or `supabase`; unset = Supabase when configured, else demo (see [Image processing → Configuration](#configuration)) |
+| `IMAGE_PROCESSOR` | server | `mock` (default) = no processor connected, or `real` |
+| `IMAGE_PROCESSING_API_URL` | server | Base URL of the processor (`real` only) |
+| `IMAGE_PROCESSING_API_KEY` | server | Bearer secret for the processor (`real` only) |
+| `NEXT_PUBLIC_IMAGE_PROCESSOR` | browser | UI hint for the first render of the processing page only |
+| `PROCESSING_ACCESS_CODE` | server | Demo mode only: access code for the processing routes |
 
 **Never** put the service role key into a `NEXT_PUBLIC_*` variable. The app
 does not need it; all requests run with the employee's session and RLS.
@@ -180,7 +191,7 @@ What it creates:
 | `vehicles` | `id, user_id, manufacturer, model, color, license_plate, vin, mileage, first_registration, internal_reference, notes, status (new/capturing/complete/processed), created_at, updated_at` + `organization_id`. |
 | `vehicle_photos` | `id, vehicle_id, shot_key, shot_order, title, original_storage_path, processed_storage_path, processed_preset, thumbnail_storage_path, width, height, taken_at, archived_at, created_at, updated_at`. One *active* photo per shot (partial unique index). A trigger makes `original_storage_path` immutable. |
 | `add_vehicle_photo()` | Inserts a new photo and archives the previous one of the same shot in one transaction; idempotent for upload retries. |
-| `processing_jobs` | Prepared for the real processing service (not used by the mock). |
+| `processing_jobs` | Prepared for a persistent job log (not used yet – job state lives in the processor). |
 
 **Access model / RLS:** employees of an organisation share its vehicles;
 nobody else can read or change them. Vehicles and photos have no delete
@@ -226,6 +237,13 @@ The project deploys to Vercel without extra configuration (framework preset
 4. To go live with Supabase, add `NEXT_PUBLIC_SUPABASE_URL` and
    `NEXT_PUBLIC_SUPABASE_ANON_KEY` under *Project Settings → Environment
    Variables* and **redeploy** – `NEXT_PUBLIC_*` values are baked in at build time.
+5. To connect real image processing, run the processor on a VM/container
+   (it never runs on Vercel – ≥ 12 GB RAM; Docker Compose + automatic HTTPS:
+   `processor/deploy/`, steps in [`processor/README.md` → Deploy](processor/README.md))
+   and set `IMAGE_PROCESSOR=real`,
+   `IMAGE_PROCESSING_API_URL`, `IMAGE_PROCESSING_API_KEY` (and
+   `NEXT_PUBLIC_IMAGE_PROCESSOR=real`). For a **public demo deployment** also set
+   `PROCESSING_ACCESS_CODE` – otherwise anyone can use your processor.
 
 Vercel serves the app over HTTPS, so the camera works on phones and the app
 can be installed to the home screen.
@@ -316,33 +334,85 @@ scratches, damage, wear and the interior must stay truthful. Only the
 surroundings change. Original photos are never modified – results are
 separate files.
 
-### API contract (already implemented)
+### Configuration
+
+Two independent decisions (pure helpers in `src/lib`):
+
+| Variable | Values | Decides |
+| --- | --- | --- |
+| `NEXT_PUBLIC_DATA_BACKEND` | `demo` · `supabase` · unset | where vehicles and photos live. Unset: Supabase if its env is complete, otherwise demo. `demo` forces demo mode even with Supabase env. `supabase` without Supabase env → demo + console warning. (`src/lib/data/backend-mode.ts`; used by `getBackendMode()`, `createBackend()`, `authenticateRequest()`, `src/proxy.ts`) |
+| `IMAGE_PROCESSOR` | `mock` (default) · `real` | whether a processor is connected. `mock` means **no processor** – there are no simulated results. `real` needs `IMAGE_PROCESSING_API_URL` (+ `IMAGE_PROCESSING_API_KEY`). (`src/lib/processing/processor-config.ts`) |
+| `IMAGE_PROCESSING_API_URL` / `_KEY` | URL, secret | the processor's base URL (path prefix allowed) and Bearer key – server only, never sent to the browser |
+| `PROCESSING_ACCESS_CODE` | any text | demo mode only (see below) |
+| `NEXT_PUBLIC_IMAGE_PROCESSOR` | `real` · `mock` | UI hint for the first render; the real state comes from `GET /api/processing-status` |
+
+**"Bearbeitet" only ever shows real processor results.** If no processor is
+connected or reachable, the processing page shows the amber chip
+"Showroom-Prozessor nicht verbunden" and "Echte Showroom-Bearbeitung ist noch
+nicht verbunden.", the start button is disabled and nothing is saved. If the
+processor reports that the showroom master photo is missing
+(`showroomSource: "fallback"`), the page shows "AutoExperten Showroom-Master
+fehlt." and stays disabled; a job that was composited onto the fallback plate
+is never stored (`src/lib/processing/processor-contract.ts`). Photos without a
+processed version show "Noch nicht bearbeitet" – never the original as a stand-in.
+
+### API (browser ⇄ app)
 
 ```
-POST /api/process-photo        { vehicleId, photoId, preset }  → 202 { jobId, status }
-GET  /api/process-job/:jobId   → { jobId, status, progress, result, error, … }
+GET  /api/processing-status            → { connected, processor, showroomSource, showroomError, accessCodeRequired, dataBackend }
+POST /api/process-photo                Supabase mode: { vehicleId, photoId, preset } → 202 { jobId, status }
+POST /api/process-upload               demo mode: multipart file (image ≤ 4.4 MB), preset, shotKey → 202 { jobId, status }
+GET  /api/process-job/:jobId           → { jobId, status, progress, result, error, warnings, … }
+GET  /api/process-job/:jobId/result    demo mode: image/jpeg (409 while not ready)
 status: queued | processing | complete | failed
 preset: autoexperten_standard | autoexperten_dark | original_plus
+result: { kind: "stored", processedStoragePath } | { kind: "file", width, height, bytes }
 ```
 
-The UI (`src/lib/processing/processing-client.ts`) only uses these endpoints.
-Route handlers delegate to an **`ImageProcessor`** (`src/lib/processing/types.ts`):
+The UI only uses `src/lib/processing/processing-client.ts`. The route handlers
+delegate to the `ImageProcessor` interface (`src/lib/processing/types.ts`);
+`RealImageProcessor` is the only code that talks HTTP to the processor
+(`POST {url}/jobs`, `POST {url}/jobs/upload`, `GET {url}/jobs/{id}`,
+`GET {url}/jobs/{id}/result`, `GET {url}/health`, always with the Bearer key).
+Job ids are validated (`^[a-f0-9]{32}$`) before they are forwarded; processor
+errors become German messages, and the processor's own German job errors
+(e.g. "Das Fahrzeug konnte im Foto nicht erkannt werden.") are shown per photo.
+A full queue (503 `busy`) is retried automatically by the client.
 
-- **`MockImageProcessor`** (default) – stateless (the job id encodes the
-  request), simulates *queued → processing → complete*. The browser then
-  renders a clearly marked **preview**: the original photo 1:1 plus an
-  AutoExperten branding bar *below* it, stored as a separate processed file.
-  This makes "Original ⇄ Bearbeitet" testable end-to-end.
-- **`RealImageProcessor`** – HTTP adapter for the future service
-  (`IMAGE_PROCESSOR=real`, `IMAGE_PROCESSING_API_URL`, `IMAGE_PROCESSING_API_KEY`).
-  Expected service API: `POST {url}/jobs`, `GET {url}/jobs/:id`; the service
-  stores the result in `vehicle-processed/…`, updates
-  `vehicle_photos.processed_storage_path` and returns
-  `result: { kind: "stored", processedStoragePath }`.
+**Two adapters, chosen by the data backend** (`src/lib/processing/photo-processing.ts`):
 
-Connecting the real backend = implement that service + set env vars. **No UI
-changes are needed.** (In demo mode only the mock processor is allowed,
-because demo mode has no authentication.)
+- **Supabase:** `POST /api/process-photo` → processor `POST /jobs` (it reads the
+  original from `vehicle-originals` and writes `vehicle-processed/…`) → poll →
+  `result.kind = "stored"` → `recordProcessedPhoto`. Requires the login.
+- **Demo (upload):** photos only exist in the browser (IndexedDB), so the
+  client takes the original Blob, makes a **copy** that stays below Vercel's
+  4.5 MB request limit (long edge ≤ 3200 px, JPEG 0.9, lower quality if still
+  > 4 MB, EXIF orientation applied; a photo the browser cannot decode is sent
+  unchanged if ≤ 4 MB) → `POST /api/process-upload` → processor `POST /jobs/upload`
+  → poll `GET /api/process-job/:id` → download `GET /api/process-job/:id/result`
+  (the app streams the processor's JPEG; the browser never sees the processor's
+  URL, key or result URL) → `saveProcessedPhoto` stores it as a separate file in
+  IndexedDB. Originals are never changed.
+
+**Which photos:** exterior shots 01–08 get the AutoExperten showroom (4:3).
+Interior/detail shots 09–15 are sent too – the processor returns them in their
+original environment (it never composites non-exterior shot keys), labelled
+"Innenraum/Detail – Originalumgebung" in the results. Extra photos are not
+processed. A vehicle becomes "Bearbeitet" only when every required shot has a
+real processed version.
+
+**Access code (public demo deployments):** in demo mode there is no login. If
+`PROCESSING_ACCESS_CODE` is set, `/api/process-upload` and `/api/process-job/*`
+require the header `x-processing-access-code` (constant-time compare, else
+401 `access_code_required`); the processing page asks once for the
+"Zugangscode für die Bildbearbeitung" and keeps it in `localStorage` on that
+device. **Without it, anyone who can open the demo deployment can use your
+processor.** Supabase mode uses the normal login instead.
+
+**Vercel never runs the model.** The Next.js app (on Vercel) only proxies
+small requests; the processor runs on its own VM/container (see below).
+Results of 3200 px JPEGs are typically 1–3 MB and are streamed through
+`/api/process-job/:id/result`.
 
 ### Real processor (Stage 2 prototype) – `processor/`
 
@@ -400,9 +470,10 @@ for Vercel functions – run it on a VM/container with ≥ 12 GB RAM.
 
 **Connect the app** (`.env.local`): `IMAGE_PROCESSOR=real`,
 `NEXT_PUBLIC_IMAGE_PROCESSOR=real`, `IMAGE_PROCESSING_API_URL`,
-`IMAGE_PROCESSING_API_KEY`. The processor additionally needs
-`SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (processor side only) to read
-originals and store results in `vehicle-processed`. No UI changes needed.
+`IMAGE_PROCESSING_API_KEY`. In demo mode that is all (photos are uploaded). In
+Supabase mode the processor additionally needs `SUPABASE_URL` +
+`SUPABASE_SERVICE_ROLE_KEY` (processor side only) to read originals and store
+results in `vehicle-processed`. No UI changes needed.
 
 **Debugging:** `PROCESSOR_DEBUG=true` keeps `original.jpg`, `mask.png`,
 `vehicle-transparent.png`, `background.jpg`, `composite-before-shadow.jpg`,
@@ -416,12 +487,14 @@ shown on the dev test page). Never enable it on a public instance.
 adjustment limits) – used by the processor and referenced from
 `src/lib/processing/presets.ts`.
 
-**Showroom master photo – still missing.** Every exterior vehicle is placed on
-ONE fixed photo of the empty showroom, `public/presets/autoexperten-standard-showroom.jpg`
-(photorealistic, 4:3, ≥ 3200×2400, ideally 3840×2880, no vehicle, **no text or
-logo**). Drop the file in – it is used automatically; then set
-`background.floorHorizon`. Requirements, photographer brief and an
-image-generator prompt: [`public/presets/README.md`](public/presets/README.md).
+**Showroom master photo.** Every exterior vehicle is placed on ONE fixed photo
+of the empty showroom, `public/presets/autoexperten-standard-showroom.jpg`
+(4:3, 3200×2400, no vehicle, **no text or logo**). The current master is
+derived from the showroom design `public/presets/autoexperten-standard-reference.jpg`
+by `processor/scripts/prepare_showroom_master.py` (baked-in lettering removed
+deterministically, upscaled from 1448 px – a sharper photo of the empty showroom
+can replace it; then set `background.floorHorizon`). Requirements and brief:
+[`public/presets/README.md`](public/presets/README.md).
 
 **Branding:** the official logo PNG, "SCHWETZINGEN", www.autoexperten-rn.de and
 +49 6202 9262357 are composited deterministically onto the background
@@ -429,9 +502,11 @@ image-generator prompt: [`public/presets/README.md`](public/presets/README.md).
 section) – never AI-generated, never over the vehicle; the vehicle roof stays
 below them.
 
-**Fallback:** until the master exists the processor uses a procedural
-emergency plate (`public/presets/fallback/`), clearly reported as
-`showroom_fallback` – it is not the AutoExperten Standard design.
+**No silent fallback:** without the master every exterior job fails with
+"AutoExperten Showroom-Master fehlt." and nothing is saved. The procedural
+emergency plate (`public/presets/fallback/`) is only used with
+`PROCESSOR_ALLOW_FALLBACK_SHOWROOM=true` (developers) – it is not the
+AutoExperten Standard design.
 
 The look of `autoexperten_standard` (default):
 
@@ -457,8 +532,10 @@ src/
     (app)/layout.tsx           auth gate for everything below
     (app)/(tabs)/…             screens with bottom navigation
     (app)/(capture)/…/kamera   full-screen guided camera
-    api/process-photo          POST – start processing job
-    api/process-job/[jobId]    GET  – job status
+    api/processing-status      GET  – is a real processor connected (health check)
+    api/process-photo          POST – start a processing job (Supabase mode)
+    api/process-upload         POST – upload a photo for processing (demo mode)
+    api/process-job/[jobId]    GET  – job status (+ /result: processed JPEG, demo mode)
     dev/processing-test        developer test page (dev only, not linked)
     api/dev/processing-test/…  its proxy routes to the processor (dev only)
     login/, offline/, manifest.ts, layout.tsx, globals.css
@@ -474,7 +551,7 @@ src/
     workflow/     operations that keep vehicle status in sync
     offline/      IndexedDB helper, upload queue
     camera/       getUserMedia, capture, image utils, quality-check interface
-    processing/   API contract, presets, mock/real processors, client, mock renderer
+    processing/   API contract, config, presets, RealImageProcessor, client, upload prep, adapters
     supabase/     config, browser + server clients
     app-services.ts  client service container
   config/brand.ts  company data, colours, logo assets
@@ -503,8 +580,12 @@ processor/             Python image processor (FastAPI) – see processor/README
 - export file naming / storage paths
 - vehicle validation (required fields, VIN, mileage, dates, plates)
 - vehicle status rules
-- mock processor job lifecycle and request validation
-- real processor adapter (URL joining, auth header, 404 handling)
+- data backend / image processor configuration
+- processor adapter (URL joining, auth header, upload, result streaming, health, error mapping)
+- processor response parsing (no `resultUrl` leak, fallback showroom never "complete")
+- processing client (busy retry, access code, result download) and the two adapters
+- upload preparation rules, shot treatment (showroom vs. original environment)
+- processing access code, demo data migration (fake processed versions removed)
 - photo slots (incl. pending uploads and extra photos)
 - component tests: `ShotProgress`, `VehicleForm`
 

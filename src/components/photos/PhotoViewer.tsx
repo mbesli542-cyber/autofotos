@@ -1,12 +1,14 @@
 "use client";
 
-import { Camera, ChevronLeft, ChevronRight, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
+import { Camera, ChevronLeft, ChevronRight, ImageOff, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/Button";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { Spinner } from "@/components/ui/Spinner";
+import { getShotTemplate } from "@/lib/app-services";
 import { formatDateTime } from "@/lib/format";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
+import { getShotTreatment } from "@/lib/processing/shot-treatment";
 import { PhotoVersionToggle } from "./PhotoVersionToggle";
 import type { PhotoVariant } from "./ShotThumbnail";
 
@@ -57,8 +59,11 @@ export function PhotoViewer({
     return <dialog ref={dialogRef} className="hidden" aria-hidden />;
   }
 
-  const processedUrl = slot.photo?.urls.processed ?? null;
-  const shownVariant: PhotoVariant = variant === "processed" && processedUrl ? "processed" : "original";
+  const processedUrl = slot.pending ? null : (slot.photo?.urls.processed ?? null);
+  // "Bearbeitet" only ever shows a real processed version – never the original as a stand-in.
+  const shownVariant: PhotoVariant = variant;
+  const showToggle = Boolean(slot.photo) && (processedUrl !== null || variant === "processed");
+  const treatment = getShotTreatment(getShotTemplate(), slot.key);
   const imageUrl =
     shownVariant === "processed"
       ? processedUrl
@@ -109,7 +114,7 @@ export function PhotoViewer({
               {slot.title}
             </h2>
           </div>
-          {processedUrl && (
+          {showToggle && (
             <div className="hidden sm:block">
               <PhotoVersionToggle value={shownVariant} onChange={setVariant} />
             </div>
@@ -138,6 +143,14 @@ export function PhotoViewer({
                 className="max-h-full w-full object-contain sm:max-h-[68dvh]"
               />
             </>
+          ) : shownVariant === "processed" && (slot.photo || slot.pending) ? (
+            <div className="flex flex-col items-center gap-3 p-8 text-center text-ae-muted">
+              <ImageOff className="size-10" aria-hidden />
+              <p className="font-semibold text-ae-text">Noch nicht bearbeitet</p>
+              <p className="max-w-xs text-sm">
+                Für dieses Foto gibt es noch keine bearbeitete Version. Das Original finden Sie unter „Original“.
+              </p>
+            </div>
           ) : (
             <div className="flex flex-col items-center gap-3 p-8 text-center text-ae-muted">
               <Camera className="size-10" aria-hidden />
@@ -165,15 +178,15 @@ export function PhotoViewer({
               <ChevronRight className="size-6" aria-hidden />
             </button>
           )}
-          {shownVariant === "processed" && (
+          {shownVariant === "processed" && imageUrl && (
             <span className="absolute top-3 left-3 rounded-md bg-ae-blue px-2 py-0.5 text-xs font-semibold text-white">
-              Bearbeitet
+              {treatment === "original_environment" ? "Bearbeitet · Originalumgebung" : "Bearbeitet"}
             </span>
           )}
         </div>
 
         <footer className="pb-safe border-t border-ae-border/70 bg-ae-bg px-4 pt-3">
-          {processedUrl && (
+          {showToggle && (
             <div className="mb-3 flex justify-center sm:hidden">
               <PhotoVersionToggle value={shownVariant} onChange={setVariant} />
             </div>

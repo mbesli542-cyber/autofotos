@@ -1,31 +1,22 @@
 /**
- * Server-side factory: selects the ImageProcessor implementation.
+ * Server-side factory: the connected ImageProcessor, or null when no real
+ * processor is configured (IMAGE_PROCESSOR is not "real" or the URL is
+ * missing). There is no simulated fallback – callers answer
+ * PROCESSING_NOT_CONNECTED_MESSAGE then.
  * Only import this from route handlers (server code).
  */
-import { MockImageProcessor } from "./mock-image-processor";
+import { getImageProcessorConfig } from "./processor-config";
 import { RealImageProcessor } from "./real-image-processor";
 import type { ImageProcessor } from "./types";
 
-let cached: ImageProcessor | null = null;
+let cached: { key: string; processor: ImageProcessor } | null = null;
 
-export function getImageProcessor(): ImageProcessor {
-  if (cached) return cached;
-
-  const kind = process.env.IMAGE_PROCESSOR ?? "mock";
-  const baseUrl = process.env.IMAGE_PROCESSING_API_URL;
-
-  if (kind === "real") {
-    if (!baseUrl) {
-      throw new Error(
-        "IMAGE_PROCESSOR=real requires IMAGE_PROCESSING_API_URL to be set.",
-      );
-    }
-    cached = new RealImageProcessor({
-      baseUrl,
-      apiKey: process.env.IMAGE_PROCESSING_API_KEY ?? null,
-    });
-  } else {
-    cached = new MockImageProcessor();
+export function getImageProcessor(): ImageProcessor | null {
+  const config = getImageProcessorConfig();
+  if (config.kind !== "real") return null;
+  const key = `${config.baseUrl}\n${config.apiKey ?? ""}`;
+  if (cached?.key !== key) {
+    cached = { key, processor: new RealImageProcessor({ baseUrl: config.baseUrl, apiKey: config.apiKey }) };
   }
-  return cached;
+  return cached.processor;
 }

@@ -1,9 +1,13 @@
 /**
  * Processing presets ("Bearbeitungsstile").
  *
- * These are CONFIGURATION – nothing here transforms images. The image
- * processor (processor/) composites the segmented, untouched vehicle into the
- * AutoExperten showroom. See README → "Zukünftige Bildverarbeitung".
+ * These are CONFIGURATION – nothing here transforms images, and the app never
+ * simulates a result. The image processor (processor/) composites the
+ * segmented, untouched vehicle into the AutoExperten showroom; the preset id is
+ * sent with every job (POST /api/process-photo or /api/process-upload). See
+ * README → "Image processing". Presets the processor does not implement yet
+ * (currently autoexperten_dark, original_plus) fail per photo with its German
+ * message – nothing is saved for them.
  *
  * Numeric placement / shadow / output values used by the processor live in
  * the preset JSON (`processingConfig`, e.g. public/presets/autoexperten-standard.json)
@@ -29,9 +33,10 @@ export interface ShowroomSpec {
   /**
    * Master showroom photo WITHOUT a vehicle and WITHOUT branding that the
    * processor composites onto (public/presets/…); the official logo and texts
-   * are added by the processor's branding layer. Until the final photo exists
-   * the processor uses an emergency fallback and reports
-   * `showroomSource: "fallback"`.
+   * are added by the processor's branding layer. While the photo is missing
+   * the processor reports `showroomSource: "fallback"` – the app then refuses
+   * processing ("AutoExperten Showroom-Master fehlt.") and never stores a
+   * fallback composite.
    */
   masterImage?: string;
   /**

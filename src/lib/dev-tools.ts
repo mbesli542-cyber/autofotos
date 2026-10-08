@@ -12,6 +12,7 @@
  * src/proxy.ts uses isDevToolsEnabled() to answer /dev/* with a real 404.
  */
 import { NextResponse } from "next/server";
+import { parseProcessorConnection, type ProcessorConnection } from "@/lib/processing/processor-config";
 import { joinServiceUrl } from "@/lib/processing/real-image-processor";
 import type { ApiErrorBody } from "@/lib/processing/types";
 
@@ -24,25 +25,19 @@ export function apiError(status: number, code: string, message: string) {
   return NextResponse.json<ApiErrorBody>({ error: { code, message } }, { status });
 }
 
-export interface ProcessorConfig {
-  /** IMAGE_PROCESSING_API_URL, may contain a path prefix. */
-  baseUrl: string;
-  /** IMAGE_PROCESSING_API_KEY – sent as Bearer token if set. */
-  apiKey: string | null;
-}
+export type ProcessorConfig = ProcessorConnection;
 
-/** Processor connection from the environment, or null if not (validly) configured. */
+/**
+ * Processor connection from the environment, or null if not (validly)
+ * configured. The test page only needs the URL (IMAGE_PROCESSOR is not
+ * required – it never stores results in the app).
+ */
 export function getProcessorConfig(): ProcessorConfig | null {
-  const baseUrl = process.env.IMAGE_PROCESSING_API_URL?.trim();
-  if (!baseUrl) return null;
-  try {
-    const { protocol } = new URL(baseUrl);
-    if (protocol !== "http:" && protocol !== "https:") return null;
-  } catch {
-    return null;
-  }
-  const apiKey = process.env.IMAGE_PROCESSING_API_KEY?.trim();
-  return { baseUrl, apiKey: apiKey ? apiKey : null };
+  const connection = parseProcessorConnection({
+    IMAGE_PROCESSING_API_URL: process.env.IMAGE_PROCESSING_API_URL,
+    IMAGE_PROCESSING_API_KEY: process.env.IMAGE_PROCESSING_API_KEY,
+  });
+  return "error" in connection ? null : connection;
 }
 
 /* ------------------------------------------------------------------------ */
