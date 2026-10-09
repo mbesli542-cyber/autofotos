@@ -88,6 +88,12 @@ export interface ProcessingJob {
   result: ProcessingJobResult | null;
   /** German, user-presentable error message (the processor's own text). */
   error: string | null;
+  /**
+   * Machine-readable reason of a failed job (the processor's
+   * `metadata.errorCode`, e.g. a quality-gate code like "vehicle_too_small",
+   * see quality-gate.ts); null otherwise or when unknown.
+   */
+  errorCode: string | null;
   warnings: ProcessingWarning[];
 }
 
@@ -106,7 +112,20 @@ export interface UploadJobInput {
   shotKey: string;
 }
 
-export type ShowroomSource = "master" | "fallback";
+/**
+ * Showroom state reported by the processor (/health and job metadata):
+ * - "plates":   the complete set of eight angle-specific plates rendered from
+ *               the AutoExperten 3D showroom – the ONLY usable state
+ * - "missing":  the plate set is missing or unusable
+ * - "master" / "fallback": older processors (single showroom photo /
+ *               generated stand-in) – never accepted for processing
+ */
+export const SHOWROOM_SOURCES = ["plates", "missing", "master", "fallback"] as const;
+
+export type ShowroomSource = (typeof SHOWROOM_SOURCES)[number];
+
+/** The only showroom state real processing may run with. */
+export const USABLE_SHOWROOM_SOURCE: ShowroomSource = "plates";
 
 /** Parsed GET {processor}/health (requested with the Bearer key). */
 export interface ProcessorHealthReport {
@@ -116,7 +135,7 @@ export interface ProcessorHealthReport {
   authorized: boolean;
   modelError: boolean;
   showroomSource: ShowroomSource | null;
-  /** The master photo exists but cannot be used. */
+  /** The showroom plate set exists but cannot be used (processor `showroomMasterError`). */
   showroomMasterError: boolean;
   /** The showroom preset (JSON) is broken. */
   presetError: boolean;
@@ -149,17 +168,20 @@ export interface ProcessingStatus {
   /** IMAGE_PROCESSOR: "mock" = no processor connected (there are no simulated results). */
   processor: "real" | "mock";
   showroomSource: ShowroomSource | null;
-  /** German message when the showroom is not ready (e.g. master photo missing). */
+  /** German message when the showroom is not ready (e.g. plate set missing). */
   showroomError: string | null;
   /** Demo mode with PROCESSING_ACCESS_CODE set. */
   accessCodeRequired: boolean;
   dataBackend: BackendMode;
 }
 
-/** Processing can only start against a connected processor with the final showroom. */
+/** Processing can only start against a connected processor with the complete plate set. */
 export function canStartProcessing(status: ProcessingStatus | null): boolean {
   return Boolean(
-    status && status.connected && status.showroomSource === "master" && status.showroomError === null,
+    status &&
+      status.connected &&
+      status.showroomSource === USABLE_SHOWROOM_SOURCE &&
+      status.showroomError === null,
   );
 }
 

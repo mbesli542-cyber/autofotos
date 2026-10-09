@@ -31,14 +31,15 @@ export interface ShowroomSpec {
     phone: string;
   };
   /**
-   * Master showroom photo WITHOUT a vehicle and WITHOUT branding that the
-   * processor composites onto (public/presets/…); the official logo and texts
-   * are added by the processor's branding layer. While the photo is missing
-   * the processor reports `showroomSource: "fallback"` – the app then refuses
-   * processing ("AutoExperten Showroom-Master fehlt.") and never stores a
-   * fallback composite.
+   * Plate set of the ONE AutoExperten 3D showroom (processor/showroom3d):
+   * `plates.json` + eight angle-specific plates (one per exterior shot,
+   * empty wall, no vehicle, no branding) the processor composites onto; the
+   * official logo and texts are added by the processor's branding layer in
+   * wall space. While the set is incomplete the processor reports
+   * `showroomSource: "missing"` – the app then refuses processing
+   * ("AutoExperten Showroom-Master fehlt.") and never stores a result.
    */
-  masterImage?: string;
+  plateSet?: string;
   /**
    * Processor configuration (placement, shadow, output, light limits) –
    * the source of truth for all numeric values of this preset.
@@ -115,7 +116,7 @@ export const PROCESSING_PRESETS: Record<ProcessingPresetId, ProcessingPreset> = 
         "Grünpflanzen (Palmen) in schlichten Pflanzkübeln",
       ],
       brandWall: BRAND_WALL,
-      masterImage: "/presets/autoexperten-standard-showroom.jpg",
+      plateSet: "/presets/autoexperten-standard/plates.json",
       // Placement, shadow and output numbers: see this JSON (used by processor/).
       processingConfig: "/presets/autoexperten-standard.json",
       referenceImage: "/presets/autoexperten-standard-reference.jpg",

@@ -9,7 +9,9 @@
  *             → data.saveProcessedPhoto (stored as a separate file in IndexedDB)
  *
  * Only a real, completed processor result is ever saved. Any failure throws
- * (with the processor's German message where available) and saves nothing.
+ * (with the processor's German message where available) and saves nothing;
+ * a failed job throws ProcessingJobFailedError carrying the processor's
+ * errorCode (e.g. a quality-gate rejection → "Foto neu aufnehmen").
  */
 import type { BackendMode, DataProvider } from "@/lib/data/types";
 import type { ProcessingPresetId, VehiclePhotoWithUrls } from "@/lib/domain/types";
@@ -37,9 +39,20 @@ export interface PhotoProcessingDeps {
 
 export const NO_RESULT_MESSAGE = "Die Bildbearbeitung hat kein Ergebnis geliefert.";
 
+/** The processor job ended as failed. `errorCode`: its reason (e.g. "vehicle_too_small"), if known. */
+export class ProcessingJobFailedError extends AppError {
+  constructor(
+    readonly errorCode: string | null,
+    userMessage: string,
+  ) {
+    super("unknown", { userMessage });
+    this.name = "ProcessingJobFailedError";
+  }
+}
+
 function ensureCompleted(job: ProcessingJob): void {
   if (job.status !== "complete") {
-    throw new AppError("unknown", { userMessage: job.error ?? "Bearbeitung fehlgeschlagen." });
+    throw new ProcessingJobFailedError(job.errorCode ?? null, job.error ?? "Bearbeitung fehlgeschlagen.");
   }
 }
 

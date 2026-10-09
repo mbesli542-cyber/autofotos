@@ -4,7 +4,9 @@
     .venv/bin/python -m app.cli path/to/car.jpg -o result.jpg --debug-dir debug/
 
 Options: --preset (default autoexperten_standard), --shot (default
-front_left_45), --debug-dir (writes mask/cut-out/background/... images).
+front_left_45), --debug-dir (writes mask/geometry/cut-out/plate/... images).
+A photo rejected by the quality gate prints the German message and the gate
+details and exits with code 2.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from pathlib import Path
 from .config import Settings
 from .pipeline.debug import NULL_DEBUG, DebugSink
 from .pipeline.pipeline import process_photo
+from .pipeline.quality import QualityGateError
 from .pipeline.segmentation import create_segmenter
 from .presets import BackgroundProvider, load_preset
 
@@ -38,15 +41,21 @@ def main(argv: list[str] | None = None) -> int:
     debug = DebugSink(args.debug_dir) if args.debug_dir else NULL_DEBUG
 
     started = time.perf_counter()
-    result = process_photo(
-        args.input.read_bytes(),
-        preset=preset,
-        segmenter=segmenter,
-        backgrounds=backgrounds,
-        shot_key=args.shot,
-        debug=debug,
-        progress=lambda p, step: print(f"  {int(p * 100):3d}% {step}", file=sys.stderr),
-    )
+    try:
+        result = process_photo(
+            args.input.read_bytes(),
+            preset=preset,
+            segmenter=segmenter,
+            backgrounds=backgrounds,
+            shot_key=args.shot,
+            debug=debug,
+            progress=lambda p, step: print(f"  {int(p * 100):3d}% {step}", file=sys.stderr),
+        )
+    except QualityGateError as error:
+        print(
+            json.dumps({"rejected": error.code, "message": error.user_message, "details": error.details}, indent=2, ensure_ascii=False)
+        )
+        return 2
     args.output.write_bytes(result.jpeg)
     print(
         json.dumps(

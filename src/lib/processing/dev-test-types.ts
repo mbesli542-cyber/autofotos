@@ -6,17 +6,25 @@
  *   GET  /jobs/{jobId}              → 200 ProcessorJob | 404 ProcessorErrorBody
  *   GET  /jobs/{jobId}/result       → 200 image/jpeg | 404 | 409 (not complete yet)
  *   GET  /jobs/{jobId}/debug/{name} → file (only with PROCESSOR_DEBUG=true, else 404)
- *   GET  /showroom/{preset}.jpg?width=N
- *                                   → 200 image/jpeg (branded showroom background
- *                                     without vehicle, 4:3), header X-Showroom-Source;
- *                                     404 unknown preset, 400 invalid width
+ *   GET  /showroom/{preset}/{shot}.jpg?width=N
+ *                                   → 200 image/jpeg (the branded showroom plate of
+ *                                     that exterior shot without vehicle, 4:3),
+ *                                     header X-Showroom-Source ("plates");
+ *                                     404 unknown preset/shot, 400 invalid width
  *   GET  /health                    → ProcessorHealth
  *   Auth: `Authorization: Bearer <IMAGE_PROCESSING_API_KEY>` (only if configured)
  *
  * The browser never talks to the processor directly – it only calls the
  * proxy routes under `/api/dev/processing-test` (see DEV_TEST_API).
  */
-import { PROCESSING_JOB_STATUSES, type ProcessingJobStatus } from "./types";
+import {
+  PROCESSING_JOB_STATUSES,
+  SHOWROOM_SOURCES,
+  type ProcessingJobStatus,
+  type ShowroomSource,
+} from "./types";
+
+export { SHOWROOM_SOURCES, type ShowroomSource } from "./types";
 
 /* ------------------------------------------------------------------------ */
 /* Contract types                                                            */
@@ -32,18 +40,29 @@ export type ProcessorJobResult =
   /** Result kept by the processor, downloadable via GET /jobs/{id}/result. */
   | { kind: "file"; resultUrl: string; width: number; height: number; bytes: number };
 
-/**
- * Which showroom background the processor composited onto:
- * - "master":   the final AutoExperten showroom photo
- *               (public/presets/autoexperten-standard-showroom.jpg)
- * - "fallback": a generated stand-in because the master photo is missing
- */
-export type ShowroomSource = "master" | "fallback";
-
-export const SHOWROOM_SOURCES: readonly ShowroomSource[] = ["master", "fallback"];
-
-/** Response header of GET /showroom/{preset}.jpg naming the showroom source. */
+/** Response header of GET /showroom/{preset}/{shot}.jpg naming the showroom source. */
 export const SHOWROOM_SOURCE_HEADER = "X-Showroom-Source";
+
+/**
+ * Shots with an angle-specific showroom plate (the eight exterior shots,
+ * public/presets/autoexperten-standard/<shot>.jpg on the processor).
+ */
+export const SHOWROOM_PLATE_SHOTS = [
+  "front_left_45",
+  "front",
+  "front_right_45",
+  "left_side",
+  "right_side",
+  "rear_left_45",
+  "rear",
+  "rear_right_45",
+] as const;
+
+export type ShowroomPlateShot = (typeof SHOWROOM_PLATE_SHOTS)[number];
+
+export function isShowroomPlateShot(value: unknown): value is ShowroomPlateShot {
+  return SHOWROOM_PLATE_SHOTS.some((shot) => shot === value);
+}
 
 export interface ProcessorWarning {
   code: string;
@@ -55,15 +74,23 @@ export interface ProcessorJobMetadata {
   shotKind: string;
   segmenter: string;
   model: string;
-  /** True while the processor composites onto the generated fallback showroom. */
+  /** True when the processor did NOT use the showroom plates (fallback / placeholder). */
   showroomPlaceholder: boolean;
   /** Showroom used for this job; null if the processor does not report it. */
   showroomSource: ShowroomSource | null;
+  /** Plate the vehicle was composited onto (may be the mirrored 3/4 plate of the shot). */
+  plateUsed: ShowroomPlateShot | null;
+  /** Reason of a failed job, e.g. a quality-gate code ("vehicle_too_small", …). */
+  errorCode: string | null;
   /** Debug file names (only with PROCESSOR_DEBUG=true), e.g. "mask.png". */
   debugFiles: string[];
   timingsMs: Record<string, number>;
-  placement?: Record<string, unknown>;
-  adjustments?: Record<string, unknown>;
+  /**
+   * Every other metadata field as reported (plate camera, contacts, geometry,
+   * gate decisions, placement, adjustments, qualityGate details, …) – shown
+   * as JSON under "Technische Details".
+   */
+  details: Record<string, unknown>;
 }
 
 export interface ProcessorJob {
@@ -106,12 +133,12 @@ export const DEV_TEST_PRESETS = [
 export type DevTestPresetId = (typeof DEV_TEST_PRESETS)[number]["id"];
 
 export const DEFAULT_DEV_TEST_PRESET: DevTestPresetId = "autoexperten_standard";
-export const DEFAULT_DEV_TEST_SHOT_KEY = "front_left_45";
+export const DEFAULT_DEV_TEST_SHOT_KEY: ShowroomPlateShot = "front_left_45";
 
 export const DEV_TEST_MAX_UPLOAD_MB = 40;
 export const DEV_TEST_MAX_UPLOAD_BYTES = DEV_TEST_MAX_UPLOAD_MB * 1024 * 1024;
 
-/** Width of the showroom preview (GET /showroom/{preset}.jpg?width=N), in px. */
+/** Width of the showroom preview (GET /showroom/{preset}/{shot}.jpg?width=N), in px. */
 export const DEV_SHOWROOM_WIDTH = { default: 1600, min: 320, max: 3840 } as const;
 
 export const DEV_JOB_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -171,8 +198,8 @@ export const DEV_TEST_API = {
     `/api/dev/processing-test/${encodeURIComponent(jobId)}/result${download ? "?download=1" : ""}`,
   debug: (jobId: string, name: string) =>
     `/api/dev/processing-test/${encodeURIComponent(jobId)}/debug/${encodeURIComponent(name)}`,
-  showroom: (preset: DevTestPresetId, width: number = DEV_SHOWROOM_WIDTH.default) =>
-    `/api/dev/processing-test/showroom?${new URLSearchParams({ preset, width: String(width) })}`,
+  showroom: (preset: DevTestPresetId, shot: ShowroomPlateShot, width: number = DEV_SHOWROOM_WIDTH.default) =>
+    `/api/dev/processing-test/showroom?${new URLSearchParams({ preset, shot, width: String(width) })}`,
 } as const;
 
 /* ------------------------------------------------------------------------ */
@@ -222,8 +249,8 @@ function parseWarnings(value: unknown): ProcessorWarning[] {
 
 /**
  * Showroom status of a job or health response. `showroomPlaceholder: true`
- * (older processors) always means the fallback showroom – when in doubt the
- * page warns rather than claiming the master photo was used.
+ * always means the fallback showroom – when in doubt the page warns rather
+ * than claiming the plates were used.
  */
 function parseShowroomStatus(record: Record<string, unknown>): {
   showroomPlaceholder: boolean;
@@ -232,6 +259,23 @@ function parseShowroomStatus(record: Record<string, unknown>): {
   const source =
     record.showroomPlaceholder === true ? "fallback" : parseShowroomSource(record.showroomSource);
   return { showroomPlaceholder: source === "fallback", showroomSource: source };
+}
+
+/** Metadata fields parsed into their own properties (not repeated in `details`). */
+const PARSED_METADATA_KEYS: ReadonlySet<string> = new Set([
+  "shotKind",
+  "segmenter",
+  "model",
+  "showroomPlaceholder",
+  "showroomSource",
+  "plateUsed",
+  "errorCode",
+  "debugFiles",
+  "timingsMs",
+]);
+
+function parseErrorCode(value: unknown): string | null {
+  return typeof value === "string" && /^[a-z][a-z0-9_]{0,39}$/.test(value) ? value : null;
 }
 
 function parseTimings(value: unknown): Record<string, number> {
@@ -246,19 +290,20 @@ function parseTimings(value: unknown): Record<string, number> {
 
 function parseMetadata(value: unknown): ProcessorJobMetadata {
   const metadata = asRecord(value) ?? {};
-  const placement = asRecord(metadata.placement);
-  const adjustments = asRecord(metadata.adjustments);
   return {
     shotKind: asString(metadata.shotKind),
     segmenter: asString(metadata.segmenter),
     model: asString(metadata.model),
     ...parseShowroomStatus(metadata),
+    plateUsed: isShowroomPlateShot(metadata.plateUsed) ? metadata.plateUsed : null,
+    errorCode: parseErrorCode(metadata.errorCode),
     debugFiles: Array.isArray(metadata.debugFiles)
       ? metadata.debugFiles.filter(isValidDebugFileName)
       : [],
     timingsMs: parseTimings(metadata.timingsMs),
-    ...(placement ? { placement } : {}),
-    ...(adjustments ? { adjustments } : {}),
+    details: Object.fromEntries(
+      Object.entries(metadata).filter(([key, entry]) => !PARSED_METADATA_KEYS.has(key) && entry !== undefined),
+    ),
   };
 }
 

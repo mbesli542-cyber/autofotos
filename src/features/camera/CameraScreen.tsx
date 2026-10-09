@@ -5,6 +5,7 @@ import { ErrorState } from "@/components/ui/ErrorState";
 import { Spinner } from "@/components/ui/Spinner";
 import { useVehicleDetail } from "@/hooks/use-vehicle-data";
 import { getShotTemplate } from "@/lib/app-services";
+import type { CameraReturnTarget } from "@/lib/camera/camera-links";
 import { VehicleNotFound } from "@/features/vehicles/VehicleNotFound";
 
 export function CameraScreen({
@@ -14,7 +15,7 @@ export function CameraScreen({
 }: {
   vehicleId: string;
   initialShotKey: string | null;
-  returnTo: "fotos" | null;
+  returnTo: CameraReturnTarget | null;
 }) {
   const { state, reload } = useVehicleDetail(vehicleId);
 

@@ -8,7 +8,7 @@ Single-photo testing:
     GET  /jobs/{jobId}/result     processed JPEG
     GET  /jobs/{jobId}/debug      list of debug files (PROCESSOR_DEBUG=true only)
     GET  /jobs/{jobId}/debug/{n}  one debug file    (PROCESSOR_DEBUG=true only)
-    GET  /showroom/{preset}.jpg   branded showroom WITHOUT vehicle (?width=320..3840)
+    GET  /showroom/{preset}/{shot}.jpg  branded plate of an exterior shot WITHOUT vehicle (?width=320..3840)
     GET  /health                  service status (no auth; details only with auth)
 
 Every other endpoint requires "Authorization: Bearer <PROCESSOR_API_KEY>" when
@@ -26,7 +26,17 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
 import numpy as np
-from fastapi import Depends, FastAPI, File, Form, Header, Query, Request, Response, UploadFile
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -38,7 +48,16 @@ from .jobs.manager import JobManager, QueueFullError, StoreUnavailableError
 from .pipeline.export import encode_jpeg
 from .pipeline.pipeline import PIPELINE_VERSION
 from .pipeline.segmentation import VehicleSegmenter, create_segmenter
-from .presets import PRESET_FILES, BackgroundProvider, PresetConfigError, PresetError, load_preset
+from .presets import (
+    EXTERIOR_SHOTS,
+    PRESET_FILES,
+    SHOWROOM_PLATES,
+    BackgroundProvider,
+    PresetConfigError,
+    PresetError,
+    ShowroomUnavailableError,
+    load_preset,
+)
 from .storage.base import PhotoStore
 
 log = logging.getLogger("autoexperten.processor")
@@ -180,11 +199,11 @@ def create_app(
             "debug": settings.debug,
             "auth": bool(settings.api_key),
             "supabase": store is not None,
+            # "plates": the complete 3D-showroom plate set is usable; "missing": exterior jobs fail
             "showroomSource": source,
             "showroomMasterError": master_error,
             "presetError": preset_error,
-            "fallbackShowroomAllowed": settings.allow_fallback_showroom,
-            "showroomPlaceholder": None if source is None else source == "fallback",
+            "showroomPlaceholder": None if source is None else False,
         }
         return JSONResponse(status_code=status, content=body)
 
@@ -259,11 +278,11 @@ def create_app(
             return error_response(404, "not_found", "Nicht gefunden.")
         return {"files": manager.debug_files(job_id)}
 
-    @app.get("/showroom/{name}", dependencies=[Auth])
-    def get_showroom(name: str, width: Annotated[int, Query(ge=320, le=3840)] = 1600):
-        """The branded showroom background exactly as vehicles are placed on it."""
-        preset_id = name[: -len(".jpg")] if name.endswith(".jpg") else ""
-        if preset_id not in PRESET_FILES:
+    @app.get("/showroom/{preset_id}/{name}", dependencies=[Auth])
+    def get_showroom(preset_id: str, name: str, width: Annotated[int, Query(ge=320, le=3840)] = 1600):
+        """The branded plate of one exterior shot exactly as vehicles are placed on it."""
+        shot = name[: -len(".jpg")] if name.endswith(".jpg") else ""
+        if preset_id not in PRESET_FILES or shot not in EXTERIOR_SHOTS:
             return error_response(404, "not_found", "Dieser Bearbeitungsstil ist noch nicht verfügbar.")
         try:
             preset = load_preset(settings, preset_id)
@@ -271,7 +290,9 @@ def create_app(
             out_w = width - width % 2
             out_h = int(round(out_w * ah / aw))
             out_h -= out_h % 2
-            showroom = backgrounds.get(preset, out_w, out_h)
+            showroom = backgrounds.get(preset, shot, out_w, out_h)
+        except ShowroomUnavailableError:
+            return error_response(503, "showroom_missing", "AutoExperten Showroom-Master fehlt.")
         except PresetConfigError:
             log.exception("Showroom preset %s is misconfigured", preset_id)
             return error_response(
@@ -282,7 +303,7 @@ def create_app(
         return Response(
             encode_jpeg(np.asarray(showroom.rgb), 90),
             media_type="image/jpeg",
-            headers={"Cache-Control": "no-store", "X-Showroom-Source": showroom.source},
+            headers={"Cache-Control": "no-store", "X-Showroom-Source": SHOWROOM_PLATES, "X-Showroom-Plate": shot},
         )
 
     @app.get("/jobs/{job_id}/debug/{name}", dependencies=[Auth])

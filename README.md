@@ -350,11 +350,15 @@ Two independent decisions (pure helpers in `src/lib`):
 connected or reachable, the processing page shows the amber chip
 "Showroom-Prozessor nicht verbunden" and "Echte Showroom-Bearbeitung ist noch
 nicht verbunden.", the start button is disabled and nothing is saved. If the
-processor reports that the showroom master photo is missing
-(`showroomSource: "fallback"`), the page shows "AutoExperten Showroom-Master
-fehlt." and stays disabled; a job that was composited onto the fallback plate
-is never stored (`src/lib/processing/processor-contract.ts`). Photos without a
-processed version show "Noch nicht bearbeitet" – never the original as a stand-in.
+processor reports that its showroom plates are missing or invalid
+(`showroomSource: "missing"`), the page shows "AutoExperten Showroom-Master
+fehlt." and stays disabled; a job that was not composited onto the plates is
+never stored (`src/lib/processing/processor-contract.ts`). Photos the
+processor's quality gate rejects (vehicle too small, cropped, wrong
+perspective, …) fail with a German retake hint and `errorCode`; the shot is
+offered for "Foto neu aufnehmen" (`src/lib/processing/quality-gate.ts`).
+Photos without a processed version show "Noch nicht bearbeitet" – never the
+original as a stand-in.
 
 ### API (browser ⇄ app)
 
@@ -421,14 +425,19 @@ implements the contract above. Full documentation: **[processor/README.md](proce
 
 ```
 original photo
- → decode (EXIF orientation, ICC → sRGB)
+ → decode (EXIF orientation, ICC → sRGB), resolution gate (long edge ≥ 1600 px)
  → vehicle segmentation (BiRefNet, local ONNX model)
- → full-resolution alpha (guided filter), mask clean-up
- → cut-out of the ORIGINAL vehicle pixels
- → conservative light matching (tiny exposure / white balance, colour guard)
- → bbox-based placement (no distortion, 80–82 % width for 3/4 and side views, 60 % front/rear, centred, ground line 84 %, roof below the branding)
- → fixed AutoExperten showroom photo + official branding layer
- → contact + ambient shadow from the mask
+ → alpha: model alpha snapped onto colour edges (never grown beyond the model's outline, thin parts
+   such as antenna masts kept), clean-up (a traffic cone / post standing behind the car is cut from
+   the outline, with a warning; if its cut line is not certain the photo is rejected)
+ → vehicle geometry (tyre contacts, near end of 3/4 views, contact rise)
+ → plate of the shot's angle (3D showroom, 8 cameras; mirrored 3/4 plate if the photo shows the other side)
+ → placement on the plate (target width 81 % for 3/4, 85 % side, 62 % front/rear, centred,
+   lowest tyre contact on the plate's ground line, roof below the branding)
+ → quality gate (too small / cropped / mask / perspective / tyre contacts → German retake hint, nothing stored)
+ → cut-out of the ORIGINAL vehicle pixels, conservative light matching (colour guard)
+ → branded plate (official logo + texts in wall space, lit by the plate's light)
+ → grounding: contact shadow × the plate's rendered car shadow, on the floor only
  → edge harmonisation (decontamination, light wrap)
  → JPEG 4:3, 2400–3200 px, quality 92, sRGB, no EXIF
 ```
@@ -439,6 +448,10 @@ colour, wheels, badges, lights, glass, damage and wear are the photographed
 pixels. Vehicle corrections are capped by hard limits in code
 (`processor/app/pipeline/light.py`) and reverted if the measured hue or
 saturation of the vehicle would change. Interior shots are not composited.
+Scenery seen through the windows and outdoor reflections in the paint stay –
+they are photographed vehicle pixels (window and relighting treatments were
+evaluated and removed because they changed stickers, livery, interior and dark
+paint; see `processor/README.md` → Known limitations).
 
 **Run it locally** (Python 3.12+)
 
@@ -476,37 +489,36 @@ Supabase mode the processor additionally needs `SUPABASE_URL` +
 results in `vehicle-processed`. No UI changes needed.
 
 **Debugging:** `PROCESSOR_DEBUG=true` keeps `original.jpg`, `mask.png`,
-`vehicle-transparent.png`, `background.jpg`, `composite-before-shadow.jpg`,
-`shadow.png`, `final.jpg` per job (`processor/data/jobs/<id>/debug/`, also
+`geometry.jpg`, `vehicle-transparent.png`, `background.jpg` (branded plate),
+`composite-before-shadow.jpg`, `shadow.png`, `final.jpg` per job (`processor/data/jobs/<id>/debug/`, also
 shown on the dev test page). Never enable it on a public instance.
 
 ### AutoExperten showroom preset
 
 `public/presets/autoexperten-standard.json` is the processing preset
-(background, branding layout, output size, per-shot placement, shadow,
-adjustment limits) – used by the processor and referenced from
+(plate set, branding layout, output size, placement limits, shadow,
+adjustment limits, quality gate) – used by the processor and referenced from
 `src/lib/processing/presets.ts`.
 
-**Showroom master photo.** Every exterior vehicle is placed on ONE fixed photo
-of the empty showroom, `public/presets/autoexperten-standard-showroom.jpg`
-(4:3, 3200×2400, no vehicle, **no text or logo**). The current master is
-derived from the showroom design `public/presets/autoexperten-standard-reference.jpg`
-by `processor/scripts/prepare_showroom_master.py` (baked-in lettering removed
-deterministically, upscaled from 1448 px – a sharper photo of the empty showroom
-can replace it; then set `background.floorHorizon`). Requirements and brief:
-[`public/presets/README.md`](public/presets/README.md).
+**One 3D showroom, eight plates.** The AutoExperten showroom is one physical
+3D room (`processor/showroom3d/render_plates.py`, Blender, CC0 assets,
+modelled after the approved design
+`public/presets/autoexperten-standard-reference.jpg`) rendered from one
+camera per exterior shot into `public/presets/autoexperten-standard/`
+(`<shot>.jpg` empty plate, `<shot>-shadow.png` floor shadow of a typical car,
+`plates.json` camera + floor/wall homographies). Every vehicle goes onto the
+plate of its photographed angle, so perspective, floor and light fit.
+Rendering and checking: [`public/presets/README.md`](public/presets/README.md).
 
 **Branding:** the official logo PNG, "SCHWETZINGEN", www.autoexperten-rn.de and
-+49 6202 9262357 are composited deterministically onto the background
-(`processor/app/showroom/branding.py`, positions in the JSON `branding`
-section) – never AI-generated, never over the vehicle; the vehicle roof stays
-below them.
++49 6202 9262357 are composited deterministically onto the brand wall of each
+plate through its wall homography (`processor/app/showroom/wall_branding.py`,
+layout in the JSON `branding` section as fractions of the brand wall) – never
+AI-generated, never over the vehicle; the vehicle roof stays below them.
 
-**No silent fallback:** without the master every exterior job fails with
-"AutoExperten Showroom-Master fehlt." and nothing is saved. The procedural
-emergency plate (`public/presets/fallback/`) is only used with
-`PROCESSOR_ALLOW_FALLBACK_SHOWROOM=true` (developers) – it is not the
-AutoExperten Standard design.
+**No silent fallback:** without a complete, valid plate set every exterior job
+fails with "AutoExperten Showroom-Master fehlt." and nothing is saved; there
+is no procedural stand-in background.
 
 The look of `autoexperten_standard` (default):
 
@@ -559,14 +571,16 @@ src/
 public/
   overlays/  camera framing guides (SVG)    demo/shots/  demo placeholder photos
   icons/     PWA icons (official monogram)  brand/       official logo (+ official/ originals)
-  presets/   showroom preset JSON (+ master photo, fallback/)  sw.js  service worker
+  presets/   showroom preset JSON + 3D showroom plates (autoexperten-standard/)  sw.js  service worker
 supabase/migrations/   schema, RLS, storage
 scripts/generate-demo-assets.mjs
 processor/             Python image processor (FastAPI) – see processor/README.md
-  app/pipeline/        decode, segmentation, mask, placement, light, shadow, composite, export
+  app/pipeline/        decode, segmentation, mask, vehicle_geometry, placement, quality, light,
+                       grounding/shadow, composite, export
   app/jobs/ storage/   job manager, Supabase photo store
-  app/showroom/        branding layer (official logo + texts), emergency fallback plate
-  tests/               pytest
+  app/showroom/        plate set (plates.py), wall-space branding (official logo + texts)
+  showroom3d/          Blender scene + cameras of the 3D showroom, plate post-processing
+  tests/               pytest (synthetic plate sets: tests/plate_fixtures.py)
 ```
 
 ---
@@ -590,8 +604,10 @@ processor/             Python image processor (FastAPI) – see processor/README
 - component tests: `ShotProgress`, `VehicleForm`
 
 `cd processor && .venv/bin/python -m pytest` runs the processor tests (API
-validation/auth, job lifecycle, mask, placement, compositing output, colour
-guard, decoding, debug output, branding layer, showroom fallback, Supabase store).
+validation/auth, job lifecycle incl. quality-gate failures, plate-set
+validation, wall-space branding, vehicle geometry, quality gate, placement,
+grounding, mask, compositing output, colour guard, decoding, debug output,
+Supabase store).
 
 The full acceptance flow (login → create vehicle → 15 guided captures →
 review → retake → complete → process → Original/Bearbeitet) was verified in

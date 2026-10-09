@@ -1,4 +1,4 @@
-"""Deterministic brand wall: official logo + texts composited onto the background."""
+"""Deterministic brand wall: official logo + texts (layout engine and plate provider)."""
 
 from dataclasses import replace
 from pathlib import Path
@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 
 from app.presets import BackgroundProvider, load_preset, parse_branding
-from app.showroom.branding import BrandingConfig, LogoConfig, apply_branding
+from app.showroom.branding import BrandingConfig, apply_branding
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BRAND_DIR = REPO_ROOT / "public" / "brand"
@@ -113,33 +113,54 @@ def test_preset_json_branding_is_parsed_and_tunable():
     assert cfg.light_match == 0
 
 
-def test_background_provider_brands_master_and_fallback_identically(settings):
+def test_plate_provider_brands_every_plate_in_wall_space(settings):
     preset = load_preset(settings, "autoexperten_standard")
     provider = BackgroundProvider(settings)
-    master = provider.get(preset, 1600, 1200)
-    assert master.source == "master" and not master.is_fallback
-    (settings.presets_dir / preset.background_image).unlink()
-    fallback = BackgroundProvider(settings).get(preset, 1600, 1200)
-    assert fallback.source == "fallback"
-    assert master.branding.boxes == fallback.branding.boxes  # same brand wall on every background
-    assert not master.rgb.flags.writeable
+    for shot in ("front_left_45", "left_side", "front", "rear_right_45"):
+        showroom = provider.get(preset, shot, 1600, 1200)
+        assert showroom.source == "plates" and showroom.key == shot
+        assert not showroom.rgb.flags.writeable and not showroom.shadow.flags.writeable
+        assert showroom.rgb.shape == (1200, 1600, 3) and showroom.shadow.shape == (1200, 1600)
+        names = [b[0] for b in showroom.branding.boxes]
+        assert names == ["logo", "city", "website", "phone"]
+        logo = showroom.branding.box("logo")
+        # centred on the wall, above the typical car's roof (with the clearance)
+        u0, v0, u1, _ = showroom.plate.proxy_bbox
+        assert abs((logo[0] + logo[2]) / 2 - 800) < 0.12 * 1600
+        assert showroom.branding.bottom + preset.branding.clearance * 1200 < v0 * 1200
+        # the main logo is clearly visible, the contact lines are secondary
+        web = showroom.branding.box("website")
+        assert 0.22 * 1600 < (logo[2] - logo[0]) < 0.40 * 1600
+        assert (web[2] - web[0]) < 0.6 * (logo[2] - logo[0])
 
 
-def test_provider_reports_an_unreadable_master_and_uses_the_fallback(settings):
+def test_plate_provider_caches_and_follows_file_changes(settings):
+    import os
+    import time
+
     preset = load_preset(settings, "autoexperten_standard")
-    (settings.presets_dir / preset.background_image).write_bytes(b"half-copied")
     provider = BackgroundProvider(settings)
-    showroom = provider.get(preset, 800, 600)
-    assert showroom.source == "fallback"
-    assert provider.source(preset) == "fallback" and provider.master_error(preset)
+    first = provider.get(preset, "front", 800, 600)
+    assert provider.get(preset, "front", 800, 600) is first
+    image = settings.presets_dir / "autoexperten-standard" / "front.jpg"
+    Image.fromarray(np.full((480, 640, 3), 90, np.uint8)).save(image)
+    later = time.time() + 5
+    os.utime(image, (later, later))
+    second = provider.get(preset, "front", 800, 600)
+    assert second is not first
+    assert np.asarray(second.rgb)[590, 10].max() < 110  # the new (dark) plate is used
 
 
-def test_provider_follows_floor_horizon_changes(settings):
+def test_an_unreadable_plate_makes_the_showroom_unavailable(settings):
+    from app.presets import ShowroomUnavailableError
+
     preset = load_preset(settings, "autoexperten_standard")
+    (settings.presets_dir / "autoexperten-standard" / "rear.jpg").write_bytes(b"half-copied")
     provider = BackgroundProvider(settings)
-    assert provider.get(preset, 800, 600).floor_horizon == pytest.approx(preset.floor_horizon)
-    moved = replace(preset, floor_horizon=0.70)
-    assert provider.get(moved, 800, 600).floor_horizon == pytest.approx(0.70)
+    assert provider.source(preset) == "missing"
+    assert "rear" in provider.master_error(preset)
+    with pytest.raises(ShowroomUnavailableError):
+        provider.get(preset, "front", 800, 600)
 
 
 def test_missing_logo_fails_the_background_with_a_configuration_error(settings):
@@ -148,4 +169,4 @@ def test_missing_logo_fails_the_background_with_a_configuration_error(settings):
     preset = load_preset(settings, "autoexperten_standard")
     (settings.brand_dir / preset.branding.logo.file).unlink()
     with pytest.raises(PresetConfigError):
-        BackgroundProvider(settings).get(preset, 800, 600)
+        BackgroundProvider(settings).get(preset, "front_left_45", 800, 600)

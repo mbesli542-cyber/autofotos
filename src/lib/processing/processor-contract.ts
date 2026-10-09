@@ -6,17 +6,21 @@
  *                 createdAt, updatedAt, result, error, warnings, metadata }
  *     result: { kind: "stored", processedStoragePath }                  (POST /jobs)
  *           | { kind: "file", resultUrl, width, height, bytes }         (POST /jobs/upload)
+ *     metadata.errorCode (failed jobs): e.g. a quality-gate code
+ *           ("vehicle_too_small", …, see quality-gate.ts) – passed on as `errorCode`
  *   GET /health (with Bearer) → { status, version, modelLoaded, modelError,
- *                 showroomSource, showroomMasterError, presetError, … }
+ *                 showroomSource ("plates" | "missing"), showroomMasterError, presetError, … }
  *
  * The app-facing ProcessingJob never contains the processor's `resultUrl`,
- * and a job composited onto the emergency fallback showroom is never
- * reported as complete – it is not the AutoExperten design.
+ * and a job without the AutoExperten showroom plates (emergency fallback,
+ * placeholder, missing plates) is never reported as complete.
  */
 import { isProcessingPresetId } from "@/lib/domain/types";
+import { QUALITY_GATE_MESSAGES, isQualityGateErrorCode } from "./quality-gate";
 import {
   PROCESSING_JOB_STATUSES,
   SHOWROOM_MASTER_MISSING_MESSAGE,
+  SHOWROOM_SOURCES,
   isValidProcessingJobId,
   type ProcessingJob,
   type ProcessingJobResult,
@@ -27,6 +31,9 @@ import {
 } from "./types";
 
 const MAX_MESSAGE_LENGTH = 300;
+const ERROR_CODE_PATTERN = /^[a-z][a-z0-9_]{0,39}$/;
+/** errorCode of jobs the app refuses because the showroom plates were not used. */
+export const SHOWROOM_MISSING_ERROR_CODE = "showroom";
 export const MISSING_RESULT_MESSAGE = "Die Bildbearbeitung hat kein Ergebnis geliefert.";
 export const GENERIC_JOB_ERROR_MESSAGE = "Bearbeitung fehlgeschlagen.";
 
@@ -52,7 +59,12 @@ export function asMessage(value: unknown): string | null {
 }
 
 function parseShowroomSource(value: unknown): ShowroomSource | null {
-  return value === "master" || value === "fallback" ? value : null;
+  return SHOWROOM_SOURCES.find((source) => source === value) ?? null;
+}
+
+/** A processor error code (snake_case identifier), or null. */
+function parseErrorCode(value: unknown): string | null {
+  return typeof value === "string" && ERROR_CODE_PATTERN.test(value) ? value : null;
 }
 
 function parseResult(value: unknown): ProcessingJobResult | null {
@@ -83,10 +95,15 @@ function parseWarnings(value: unknown): ProcessingWarning[] {
   });
 }
 
-/** True when the processor reports that the emergency fallback showroom was used. */
+/**
+ * True when the processor reports that the result was NOT composited onto the
+ * AutoExperten showroom plates (emergency fallback / placeholder / missing
+ * plates). Interior passthrough results report no showroom and are fine.
+ */
 function usedFallbackShowroom(metadata: Record<string, unknown> | null): boolean {
   if (!metadata) return false;
-  return metadata.showroomPlaceholder === true || parseShowroomSource(metadata.showroomSource) === "fallback";
+  const source = parseShowroomSource(metadata.showroomSource);
+  return metadata.showroomPlaceholder === true || source === "fallback" || source === "missing";
 }
 
 /**
@@ -98,16 +115,19 @@ export function parseProcessorJob(value: unknown): ProcessingJob | null {
   if (!job || !isValidProcessingJobId(job.jobId)) return null;
   if (!PROCESSING_JOB_STATUSES.includes(job.status as ProcessingJobStatus)) return null;
 
+  const metadata = asRecord(job.metadata);
   let status = job.status as ProcessingJobStatus;
   let result = status === "complete" ? parseResult(job.result) : null;
   let error = asMessage(job.error);
+  let errorCode = status === "failed" ? parseErrorCode(metadata?.errorCode) : null;
   const progress = typeof job.progress === "number" && Number.isFinite(job.progress) ? job.progress : 0;
 
   if (status === "complete") {
-    if (usedFallbackShowroom(asRecord(job.metadata))) {
+    if (usedFallbackShowroom(metadata)) {
       status = "failed";
       result = null;
       error = SHOWROOM_MASTER_MISSING_MESSAGE;
+      errorCode = SHOWROOM_MISSING_ERROR_CODE;
     } else if (!result) {
       status = "failed";
       error = MISSING_RESULT_MESSAGE;
@@ -115,6 +135,8 @@ export function parseProcessorJob(value: unknown): ProcessingJob | null {
   }
   if (status === "failed") {
     result = null;
+    // Quality-gate rejections always carry their German instruction.
+    if (!error && isQualityGateErrorCode(errorCode)) error = QUALITY_GATE_MESSAGES[errorCode];
     error ??= GENERIC_JOB_ERROR_MESSAGE;
   } else if (status !== "complete") {
     error = null;
@@ -131,6 +153,7 @@ export function parseProcessorJob(value: unknown): ProcessingJob | null {
     updatedAt: asString(job.updatedAt),
     result,
     error,
+    errorCode,
     warnings: parseWarnings(job.warnings),
   };
 }

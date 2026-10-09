@@ -3,29 +3,27 @@
   "name": "AutoExperten Standard",
   "description": "Heller Premium-Showroom, Holzfußboden, AutoExperten Wandlogo und blaue Lichtakzente.",
   "background": {
-    "image": "autoexperten-standard-showroom.jpg",
-    "fallbackImage": "fallback/autoexperten-standard-fallback.jpg",
-    "floorHorizon": 0.586,
-    "notes": "image = FINAL master photo of the EMPTY showroom WITHOUT branding (4:3, >= 3200x2400). Current master: derived from autoexperten-standard-reference.jpg by processor/scripts/prepare_showroom_master.py (baked-in lettering removed). floorHorizon = height (0..1) of the wall/floor junction. fallbackImage = procedural emergency plate, only with PROCESSOR_ALLOW_FALLBACK_SHOWROOM=true."
+    "plates": "autoexperten-standard/plates.json",
+    "notes": "ONE physical 3D showroom (processor/showroom3d/render_plates.py, Blender, CC0 assets) rendered from eight shot-specific cameras: <shot>.jpg = empty plate WITHOUT branding, <shot>-shadow.png = floor shadow of a typical car (16-bit, linear multiplier), plates.json = camera + floor/wall homographies + proxy car. Missing or invalid plates: every exterior job fails with 'AutoExperten Showroom-Master fehlt.' (no fallback)."
   },
   "branding": {
     "enabled": true,
     "clearance": 0.025,
-    "lightMatch": 0.5,
+    "lightMatch": 0.0,
     "logo": {
       "file": "official/AutoExperten_Logo.png",
       "centerX": 0.5,
-      "top": 0.205,
-      "maxWidth": 0.32,
-      "maxHeight": 0.075,
+      "top": 0.135,
+      "maxWidth": 0.4,
+      "maxHeight": 0.18,
       "opacity": 1.0,
       "mounted": true
     },
     "city": {
       "text": "SCHWETZINGEN",
       "centerX": 0.5,
-      "top": 0.292,
-      "capHeight": 0.0175,
+      "top": 0.257,
+      "capHeight": 0.025,
       "tracking": 0.42,
       "color": "#403F3F",
       "weight": "semibold",
@@ -35,8 +33,8 @@
     "website": {
       "text": "www.autoexperten-rn.de",
       "centerX": 0.5,
-      "top": 0.33,
-      "capHeight": 0.0115,
+      "top": 0.307,
+      "capHeight": 0.0165,
       "tracking": 0.04,
       "color": "#4A4949",
       "weight": "medium",
@@ -46,8 +44,8 @@
     "phone": {
       "text": "+49 6202 9262357",
       "centerX": 0.5,
-      "top": 0.358,
-      "capHeight": 0.0115,
+      "top": 0.338,
+      "capHeight": 0.0165,
       "tracking": 0.04,
       "color": "#4A4949",
       "weight": "medium",
@@ -61,58 +59,61 @@
     }
   },
   "output": {
-    "aspect": [4, 3],
+    "aspect": [
+      4,
+      3
+    ],
     "longEdgeMin": 2400,
-    "longEdgeMax": 3200,
+    "longEdgeMax": 2400,
     "jpegQuality": 92
   },
   "placement": {
-    "centerX": 0.5,
-    "groundLine": 0.87,
-    "widthRatio": 0.8,
-    "maxHeightRatio": 0.6,
-    "minMargin": 0.04,
-    "maxUpscale": 2.5
-  },
-  "shotPlacement": {
-    "front_left_45": {
-      "widthRatio": 0.8
-    },
-    "front_right_45": {
-      "widthRatio": 0.8
-    },
-    "rear_left_45": {
-      "widthRatio": 0.8
-    },
-    "rear_right_45": {
-      "widthRatio": 0.8
-    },
-    "left_side": {
-      "widthRatio": 0.82
-    },
-    "right_side": {
-      "widthRatio": 0.82
-    },
-    "front": {
-      "widthRatio": 0.6
-    },
-    "rear": {
-      "widthRatio": 0.6
-    }
+    "maxHeightRatio": 0.62,
+    "minMargin": 0.03,
+    "minTargetFraction": 0.9
   },
   "shadow": {
-    "contactOpacity": 0.82,
-    "contactHeight": 0.012,
-    "ambientOpacity": 0.42,
-    "ambientHeight": 0.075,
-    "ambientSpread": 1.04,
-    "ambientBlur": 0.03,
-    "color": [34, 25, 18]
+    "contactOpacity": 0.92,
+    "creaseOpacity": 0.85,
+    "underbodyOpacity": 0.85,
+    "edgeOpacity": 0.4,
+    "underbodyFalloff": 0.12,
+    "ambientOpacity": 0.35,
+    "ambientReach": 0.6,
+    "minFloorLight": 0.04
+  },
+  "reflection": {
+    "enabled": true,
+    "strength": 1.0,
+    "maxReflectance": 0.2,
+    "defaultReflectance": 0.1,
+    "fade": 1.0,
+    "blurRate": 0.04
   },
   "vehicleAdjustments": {
     "exposureEvLimit": 0.25,
     "contrastLimit": 0.0,
     "whiteBalanceLimit": 0.02,
     "lightWrap": 0.1
+  },
+  "quality": {
+    "minSourceLongEdge": 1600,
+    "maxUpscale": 1.5,
+    "minVehicleWidthRatio": 0.45,
+    "maxUncertainFraction": 0.3,
+    "maxSplitParts": 3,
+    "minCoverage": 0.004,
+    "maxCoverage": 0.85,
+    "minFillRatio": 0.3,
+    "borderPx": 2,
+    "topTouchRatio": 0.15,
+    "minContacts": 2,
+    "maxRiseFactor": 2.6,
+    "minRiseFactor": 0.0,
+    "riseTolerance": 0.03,
+    "minAspectFactor": 0.5,
+    "maxAspectFactor": 1.9,
+    "highViewRiseFactor": 1.7,
+    "highViewAspectFactor": 0.8
   }
 }

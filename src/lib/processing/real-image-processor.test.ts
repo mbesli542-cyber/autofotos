@@ -214,7 +214,7 @@ describe("RealImageProcessor – upload flow (demo mode)", () => {
           status: "complete",
           progress: 1,
           result: { kind: "file", resultUrl: `/jobs/${JOB_ID}/result`, width: 3200, height: 2400, bytes: 1234 },
-          metadata: { showroomSource: "master", showroomPlaceholder: false },
+          metadata: { showroomSource: "plates", showroomPlaceholder: false },
         }),
       ),
     );
@@ -272,7 +272,7 @@ describe("RealImageProcessor – health", () => {
         version: "1",
         modelLoaded: true,
         modelError: false,
-        showroomSource: "master",
+        showroomSource: "plates",
         showroomMasterError: null,
         presetError: null,
       }),
@@ -283,7 +283,7 @@ describe("RealImageProcessor – health", () => {
       ok: true,
       authorized: true,
       modelError: false,
-      showroomSource: "master",
+      showroomSource: "plates",
       showroomMasterError: false,
       presetError: false,
     });

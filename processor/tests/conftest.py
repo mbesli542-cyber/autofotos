@@ -16,25 +16,30 @@ import pytest
 from PIL import Image
 
 from app.config import REPO_ROOT, Settings
+from tests.plate_fixtures import build_plate_set
 
 NAVY = (24, 34, 78)  # dark navy blue paint (sRGB)
 
 
-def make_vehicle_photo(width: int = 2000, height: int = 1500, *, seed: int = 3):
-    """Synthetic 'car' (navy body, glass, black tyres, mirror) on a busy outdoor background.
-
-    Returns (rgb uint8, ground-truth mask float32 [0,1]).
-    """
+def _outdoor(width: int, height: int, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     y = np.linspace(0, 1, height, dtype=np.float32)[:, None, None]
     sky = np.array([170, 190, 210], np.float32)
     ground = np.array([95, 98, 92], np.float32)
     background = np.where(y < 0.55, sky, ground) + rng.normal(0, 9, (height, width, 3)).astype(np.float32)
-    rgb = np.clip(background, 0, 255).astype(np.uint8)
+    return np.clip(background, 0, 255).astype(np.uint8)
+
+
+def make_vehicle_photo(width: int = 2000, height: int = 1500, *, seed: int = 3, body_ratio: float = 0.7):
+    """Synthetic SIDE view 'car' (navy body, glass, black tyres, mirror) on a busy outdoor background.
+
+    Returns (rgb uint8, ground-truth mask float32 [0,1]). Use it with the side shots.
+    """
+    rgb = _outdoor(width, height, seed)
 
     mask = np.zeros((height, width), np.uint8)
     cx, base = width // 2, int(height * 0.78)
-    body_w, body_h = int(width * 0.5), int(height * 0.16)
+    body_w, body_h = int(width * body_ratio), int(height * 0.16)
     x0, x1 = cx - body_w // 2, cx + body_w // 2
     # body
     cv2.rectangle(mask, (x0, base - body_h), (x1, base - int(0.03 * height)), 255, -1)
@@ -66,6 +71,43 @@ def make_vehicle_photo(width: int = 2000, height: int = 1500, *, seed: int = 3):
         cv2.circle(tyres, (wx, base - radius), radius, 255, -1)
     rgb[tyres > 0] = (22, 22, 24)
     return rgb, (mask.astype(np.float32) / 255.0)
+
+
+def three_quarter_mask(width: int = 2200, height: int = 1650, *, near_end: str = "left", ratio: float = 0.7):
+    """Silhouette of a FRONT 3/4 view: near front tyre lowest, near rear tyre higher
+    (wheelbase side), far front tyre a little higher on the near-end side.
+
+    Returns (mask uint8 0/255, wheel circles [(x, y, r)], bbox width).
+    """
+    bw = int(width * ratio)
+    x0 = (width - bw) // 2
+    base = int(height * 0.8)
+
+    def pt(fx: float, fy: float) -> tuple[int, int]:
+        x = fx if near_end == "left" else 1.0 - fx
+        return int(round(x0 + x * bw)), int(round(base - fy * bw))
+
+    mask = np.zeros((height, width), np.uint8)
+    body = [pt(0.0, 0.12), pt(0.0, 0.34), pt(0.3, 0.40), pt(0.42, 0.56), pt(0.7, 0.55), pt(1.0, 0.33),
+            pt(1.0, 0.19), pt(0.33, 0.035)]  # fmt: skip
+    cv2.fillPoly(mask, [np.array(body, np.int32)], 255)
+    wheels = []
+    for fx, fy, r in ((0.42, 0.0, 0.075), (0.85, 0.12, 0.06), (0.13, 0.07, 0.055)):
+        cx, bottom = pt(fx, fy)
+        radius = int(round(r * bw))
+        cv2.circle(mask, (cx, bottom - radius), radius, 255, -1)
+        wheels.append((cx, bottom - radius, radius))
+    return mask, wheels, bw
+
+
+def make_three_quarter_photo(width: int = 2200, height: int = 1650, *, near_end: str = "left", seed: int = 5):
+    """Synthetic front 3/4 'car' (navy paint, black tyres). Returns (rgb, mask float32)."""
+    rgb = _outdoor(width, height, seed)
+    mask, wheels, _ = three_quarter_mask(width, height, near_end=near_end)
+    rgb[mask > 0] = NAVY
+    for cx, cy, r in wheels:
+        cv2.circle(rgb, (cx, cy), r, (22, 22, 24), -1)
+    return rgb, mask.astype(np.float32) / 255.0
 
 
 def encode_jpeg(rgb: np.ndarray, quality: int = 95, exif=None) -> bytes:
@@ -108,16 +150,31 @@ def vehicle():
     return make_vehicle_photo()
 
 
+@pytest.fixture(scope="session")
+def three_quarter():
+    """Synthetic front-left 3/4 photo (2200 × 1650) and its mask."""
+    return make_three_quarter_photo()
+
+
 @pytest.fixture
-def fake_segmenter(vehicle):
+def fake_segmenter(vehicle, three_quarter):
     seg = FakeSegmenter()
     seg.register(vehicle[1])
+    seg.register(three_quarter[1])
     return seg
 
 
+@pytest.fixture(scope="session")
+def synthetic_plates(tmp_path_factory) -> Path:
+    """One synthetic, geometrically exact plate set per test session (tests/plate_fixtures.py)."""
+    directory = tmp_path_factory.mktemp("plates") / "autoexperten-standard"
+    build_plate_set(directory)
+    return directory
+
+
 @pytest.fixture
-def assets_dir(tmp_path: Path) -> Path:
-    """Copy of the real preset + logo, with a small deterministic master background."""
+def assets_dir(tmp_path: Path, synthetic_plates: Path) -> Path:
+    """Copy of the real preset + logo, with the small synthetic plate set."""
     assets = tmp_path / "assets"
     (assets / "presets").mkdir(parents=True)
     (assets / "brand" / "official").mkdir(parents=True)
@@ -126,11 +183,8 @@ def assets_dir(tmp_path: Path) -> Path:
         REPO_ROOT / "public/brand/official/AutoExperten_Logo.png", assets / "brand/official/AutoExperten_Logo.png"
     )
     preset = json.loads((assets / "presets/autoexperten-standard.json").read_text())
-    background = np.zeros((1200, 1600, 3), np.uint8)
-    junction = int(round(preset["background"]["floorHorizon"] * 1200))
-    background[:junction] = (236, 237, 240)  # wall
-    background[junction:] = (156, 112, 74)  # wooden floor tone
-    Image.fromarray(background).save(assets / "presets" / preset["background"]["image"], quality=95)
+    target = assets / "presets" / preset["background"]["plates"]
+    shutil.copytree(synthetic_plates, target.parent)
     return assets
 
 

@@ -1,17 +1,16 @@
-"""Processing presets ("Bearbeitungsstile") and their showroom background.
+"""Processing presets ("Bearbeitungsstile") and their showroom plates.
 
 A preset is a JSON file in `<assets>/presets/` (default: the Next.js
-`public/presets/` folder), e.g. `autoexperten-standard.json`. It references ONE
-fixed master showroom photo (`background.image`, e.g.
-`autoexperten-standard-showroom.jpg`) that every exterior vehicle of the preset
-is placed on. The master is the EMPTY showroom without branding; the official
-logo and the texts are composited deterministically on top
-(`app/showroom/branding.py`, `branding` section of the JSON).
+`public/presets/` folder), e.g. `autoexperten-standard.json`. Its background is
+ONE physical 3D showroom rendered from eight shot-specific cameras
+(`background.plates` → `plates.json`, rendered by processor/showroom3d/): every
+exterior shot is placed onto the plate of its own camera, so perspective,
+floor and light fit the photographed angle. The plates are EMPTY (no branding);
+the official logo and the texts are composited per plate in wall space
+(app/showroom/wall_branding.py, `branding` section of the JSON).
 
-If the master photo is missing, the procedural emergency fallback
-(`background.fallbackImage`, rendered by app/showroom/fallback.py) is used and
-every job carries the `showroom_fallback` warning. As soon as the master file
-exists it is always used.
+There is no fallback: while the plate set is missing or invalid every exterior
+job fails with "AutoExperten Showroom-Master fehlt.".
 """
 
 from __future__ import annotations
@@ -21,18 +20,27 @@ import logging
 import re
 import threading
 from dataclasses import dataclass, field, fields, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
+import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
 from .config import Settings
-from .showroom.branding import BrandingAssetError, BrandingConfig, BrandingLayout, apply_branding, logo_stamp
+from .showroom.branding import (
+    BrandingAssetError,
+    BrandingConfig,
+    BrandingLayout,
+    logo_stamp,
+)
+from .showroom.plates import Plate, PlateSet, PlateSetError, load_plate_set
+from .showroom.wall_branding import apply_wall_branding
 
 log = logging.getLogger(__name__)
 
-SHOWROOM_MASTER = "master"
-SHOWROOM_FALLBACK = "fallback"
+#: /health and job metadata: the complete plate set is usable / it is not.
+SHOWROOM_PLATES = "plates"
+SHOWROOM_MISSING = "missing"
 
 
 class PresetError(Exception):
@@ -41,37 +49,66 @@ class PresetError(Exception):
 
 @dataclass(frozen=True)
 class Placement:
-    """Where the vehicle goes in the output frame (fractions of width/height)."""
+    """Size limits for the vehicle (fractions of the output frame).
 
-    center_x: float = 0.5
-    #: Lowest vehicle pixel (tyre contact) as a fraction of the output height.
-    ground_line: float = 0.84
-    #: Target vehicle width as a fraction of the output width.
-    width_ratio: float = 0.78
+    Target width, horizontal centre and ground line come from the plate
+    (`vehicle.targetWidthRatio`, centred, lowest proxy tyre contact).
+    """
+
     #: The vehicle may never be taller than this fraction of the output height.
     max_height_ratio: float = 0.66
     #: Minimum free margin on every side (fraction of the respective dimension).
-    min_margin: float = 0.04
-    #: Never enlarge the source vehicle more than this factor (avoids blur).
-    max_upscale: float = 1.6
+    min_margin: float = 0.03
+    #: Warn when the limits shrink the vehicle below this fraction of the target width.
+    min_target_fraction: float = 0.9
 
 
 @dataclass(frozen=True)
 class ShadowConfig:
-    #: Darkness of the contact shadow right under the tyres (0..1).
-    contact_opacity: float = 0.82
-    #: Vertical reach of the contact shadow, fraction of vehicle width.
-    contact_height: float = 0.012
-    #: Darkness of the broad soft shadow under the car body (0..1).
-    ambient_opacity: float = 0.42
-    #: Height of the ambient ellipse, fraction of vehicle width.
-    ambient_height: float = 0.075
-    #: Width of the ambient ellipse relative to the vehicle width.
-    ambient_spread: float = 1.04
-    #: Blur of the ambient shadow, fraction of vehicle width.
-    ambient_blur: float = 0.03
-    #: Shadow tint (sRGB) – warm dark brown suits a wooden floor.
-    color: tuple[int, int, int] = (34, 25, 18)
+    """Grounding v3 (app/pipeline/grounding.py) – opacities 0..1, distances in floor metres."""
+
+    #: Darkness of the compact contact shadow right under each tyre's contact patch
+    #: (size from physical tyre dimensions and the fitted car pose).
+    contact_opacity: float = 0.92
+    #: Darkness of the thin occlusion crease where a tyre meets the floor.
+    crease_opacity: float = 0.85
+    #: Darkness of the floor seen under the body, right below the lower outline (deep under the car).
+    underbody_opacity: float = 0.85
+    #: Darkness at the floor line (the car footprint's near edge, below bumpers and sills).
+    edge_opacity: float = 0.4
+    #: Beyond the floor line the underbody shadow fades out over this many metres.
+    underbody_falloff: float = 0.12
+    #: Scale of the plate's rendered proxy-car shadow (soft ambient occlusion).
+    ambient_opacity: float = 0.35
+    #: The ambient occlusion is kept only within this many metres of the footprint.
+    ambient_reach: float = 0.6
+    #: The floor keeps at least this fraction of its light (no black holes).
+    min_floor_light: float = 0.04
+
+
+@dataclass(frozen=True)
+class ReflectionConfig:
+    """The vehicle's reflection on the lacquered floor (app/pipeline/reflection.py).
+
+    Inside the car's mirror image the plate's own floor reflection (LED streaks, wall
+    glow – the plate's reflection pass) is removed and the mirrored ORIGINAL vehicle
+    pixels are added as a colour-neutral specular term with the plate's measured
+    reflectance.
+    """
+
+    enabled: bool = True
+    #: × the plate's measured floor reflectance (plates.json "reflectance"); 1 = as rendered.
+    strength: float = 1.0
+    #: Upper limit of the reflectance applied to the car's mirror image.
+    max_reflectance: float = 0.2
+    #: Reflectance for plates without a reflection pass.
+    default_reflectance: float = 0.1
+    #: The reflection (and the occlusion of the plate's own reflection) fades out between
+    #: half of and this many × the vehicle height below the floor line.
+    fade: float = 1.0
+    #: Gloss blur: Gaussian sigma (px) per px of distance from the floor line (horizontal;
+    #: vertically 4× as much – glossy floors stretch reflections towards the camera).
+    blur_rate: float = 0.04
 
 
 @dataclass(frozen=True)
@@ -97,21 +134,59 @@ class OutputConfig:
 
 
 @dataclass(frozen=True)
+class QualityConfig:
+    """Quality gate (app/pipeline/quality.py): photos that would give a bad listing image are rejected."""
+
+    #: Source photos with a shorter long edge are rejected (source_resolution_too_low).
+    min_source_long_edge: int = 1600
+    #: The vehicle may be enlarged at most this much (else vehicle_too_small / source_resolution_too_low).
+    max_upscale: float = 1.5
+    #: Below this vehicle width (fraction of the source width) an upscale failure means "too small".
+    min_vehicle_width_ratio: float = 0.45
+    #: Mask confidence: soft edge pixels per solid vehicle pixel, separated large parts, coverage.
+    max_uncertain_fraction: float = 0.3
+    max_split_parts: int = 3
+    min_coverage: float = 0.004
+    max_coverage: float = 0.85
+    #: Mask area / bbox area outside this range is not a car silhouette.
+    min_fill_ratio: float = 0.3
+    #: Solid vehicle pixels within this many px of the left/right/bottom border = cropped.
+    border_px: int = 2
+    #: ... and the top border, when touched over this fraction of the vehicle width.
+    top_touch_ratio: float = 0.15
+    #: Plausible tyre contacts needed for 3/4 and side shots.
+    min_contacts: int = 2
+    #: Contact rise / vehicle width relative to the plate's proxy (3/4 shots). A much
+    #: larger rise = camera far above the plate camera. minRiseFactor 0 = off: a small
+    #: rise also comes from 3/4 photos taken closer to the side, which are fine.
+    max_rise_factor: float = 2.6
+    min_rise_factor: float = 0.0
+    #: Extra absolute tolerance for the rise (fraction of the vehicle width).
+    rise_tolerance: float = 0.03
+    #: Vehicle bbox aspect relative to the plate's proxy.
+    min_aspect_factor: float = 0.5
+    max_aspect_factor: float = 1.9
+    #: Photo from above (3/4 shots): a steep floor (contact rise > highViewRiseFactor × the
+    #: plate's, outer-zone rise > highViewRiseFactor + 0.3) together with a tall bbox
+    #: (aspect < highViewAspectFactor × the proxy's – roof and bonnet seen from above).
+    high_view_rise_factor: float = 1.7
+    high_view_aspect_factor: float = 0.8
+
+
+@dataclass(frozen=True)
 class Preset:
     id: str
     name: str
-    #: FINAL master showroom photo (empty, no branding), relative to the presets directory.
-    background_image: str
-    #: Procedural emergency fallback, used only while the master is missing.
-    fallback_image: str | None
-    #: Fraction of the frame height where wall meets floor in the background.
-    floor_horizon: float
+    #: plates.json of the 3D showroom plate set, relative to the presets directory.
+    plates: str
     branding: BrandingConfig = field(default_factory=BrandingConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     placement: Placement = field(default_factory=Placement)
     shot_placement: dict[str, Placement] = field(default_factory=dict)
     shadow: ShadowConfig = field(default_factory=ShadowConfig)
+    reflection: ReflectionConfig = field(default_factory=ReflectionConfig)
     adjustments: VehicleAdjustments = field(default_factory=VehicleAdjustments)
+    quality: QualityConfig = field(default_factory=QualityConfig)
 
     def placement_for(self, shot_key: str | None) -> Placement:
         if shot_key and shot_key in self.shot_placement:
@@ -151,17 +226,20 @@ def _camel_to_snake(name: str) -> str:
 
 #: Fields that are fractions of the frame (or opacities) and must lie in 0..1.
 _FRACTIONS = {
-    "center_x", "ground_line", "width_ratio", "max_height_ratio", "min_margin",
+    "max_height_ratio", "min_margin", "min_target_fraction",
     "top", "max_width", "max_height", "cap_height", "opacity", "clearance", "light_match",
     "shadow_opacity", "shadow_offset", "shadow_blur",
-    "contact_opacity", "contact_height", "ambient_opacity", "ambient_height", "ambient_blur",
+    "contact_opacity", "crease_opacity", "underbody_opacity", "edge_opacity", "ambient_opacity",
+    "min_floor_light",
+    "min_vehicle_width_ratio", "max_uncertain_fraction", "min_coverage", "max_coverage",
+    "min_fill_ratio", "top_touch_ratio", "rise_tolerance",
 }  # fmt: skip
 _HEX_COLOUR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _TOP_LEVEL_KEYS = {
     "id", "name", "description", "background", "branding", "output",
-    "placement", "shotPlacement", "shadow", "vehicleAdjustments",
+    "placement", "shotPlacement", "shadow", "reflection", "vehicleAdjustments", "quality",
 }  # fmt: skip
-_BACKGROUND_KEYS = {"image", "fallbackImage", "floorHorizon", "notes"}
+_BACKGROUND_KEYS = {"plates", "notes"}
 
 
 class PresetConfigError(PresetError):
@@ -235,6 +313,51 @@ def parse_branding(data: dict | None) -> BrandingConfig:
     )
 
 
+def _parse_quality(data) -> QualityConfig:
+    quality = _build(QualityConfig, data, "quality")
+    if quality.max_upscale < 1.0:
+        raise PresetConfigError("quality.maxUpscale must be at least 1 (1 = never enlarge)")
+    if not 320 <= quality.min_source_long_edge <= 12000:
+        raise PresetConfigError("quality.minSourceLongEdge must be a pixel size between 320 and 12000")
+    if quality.min_coverage >= quality.max_coverage:
+        raise PresetConfigError("quality.minCoverage must be smaller than quality.maxCoverage")
+    if quality.min_rise_factor >= quality.max_rise_factor or quality.max_rise_factor < 1.0:
+        raise PresetConfigError("quality.minRiseFactor must be below quality.maxRiseFactor, and maxRiseFactor >= 1")
+    if quality.min_aspect_factor >= 1.0 or quality.max_aspect_factor <= 1.0:
+        raise PresetConfigError("quality.minAspectFactor < 1 < quality.maxAspectFactor required")
+    if quality.high_view_rise_factor < 1.0 or not 0.0 < quality.high_view_aspect_factor <= 1.0:
+        raise PresetConfigError("quality.highViewRiseFactor >= 1 and 0 < quality.highViewAspectFactor <= 1 required")
+    if quality.min_contacts > 4:
+        raise PresetConfigError("quality.minContacts must be 0..4")
+    return quality
+
+
+def _parse_shadow(data) -> ShadowConfig:
+    shadow = _build(ShadowConfig, data, "shadow")
+    for name, value in (("underbodyFalloff", shadow.underbody_falloff), ("ambientReach", shadow.ambient_reach)):
+        if not 0.05 <= value <= 2.0:
+            raise PresetConfigError(f"shadow.{name} must be 0.05..2 (metres on the floor), got {value}")
+    if shadow.edge_opacity > shadow.underbody_opacity:
+        raise PresetConfigError("shadow.edgeOpacity must not exceed shadow.underbodyOpacity (darkest under the car)")
+    if shadow.min_floor_light < 0.02:
+        raise PresetConfigError("shadow.minFloorLight must be at least 0.02 (never pure black)")
+    return shadow
+
+
+def _parse_reflection(data) -> ReflectionConfig:
+    reflection = _build(ReflectionConfig, data, "reflection")
+    if reflection.strength > 1.5:
+        raise PresetConfigError("reflection.strength must be 0..1.5 (× the plate's measured floor reflectance)")
+    for name, value in (("maxReflectance", reflection.max_reflectance), ("defaultReflectance", reflection.default_reflectance)):
+        if value > 0.3:
+            raise PresetConfigError(f"reflection.{name} must be 0..0.3 (a lacquered floor, not a mirror), got {value}")
+    if not 0.2 <= reflection.fade <= 2.0:
+        raise PresetConfigError("reflection.fade must be 0.2..2 (× the vehicle height)")
+    if reflection.blur_rate > 0.2:
+        raise PresetConfigError("reflection.blurRate must be 0..0.2 (px blur per px of distance)")
+    return reflection
+
+
 def parse_preset(data: dict) -> Preset:
     if not isinstance(data, dict):
         raise PresetConfigError("preset must be a JSON object")
@@ -245,25 +368,22 @@ def parse_preset(data: dict) -> Preset:
         if not isinstance(data.get(key), str):
             raise PresetConfigError(f"preset needs a text '{key}'")
     background = data.get("background")
-    if not isinstance(background, dict) or not isinstance(background.get("image"), str):
-        raise PresetConfigError("preset needs background.image")
+    if not isinstance(background, dict) or not isinstance(background.get("plates"), str):
+        raise PresetConfigError("preset needs background.plates (the plates.json of the 3D showroom)")
     unknown = set(background) - _BACKGROUND_KEYS
     if unknown:
         raise PresetConfigError(f"Unknown preset field(s) in background: {', '.join(sorted(unknown))}")
-    fallback = background.get("fallbackImage")
-    if fallback is not None and not isinstance(fallback, str):
-        raise PresetConfigError("background.fallbackImage must be a text")
-    horizon = _check_value("background", "floorHorizon", "floor_horizon", background.get("floorHorizon", 0.62), 0.62)
-    if not 0.05 <= horizon <= 0.95:
-        raise PresetConfigError("background.floorHorizon must be a fraction of the height (e.g. 0.62)")
+    plates = PurePosixPath(background["plates"])
+    if plates.is_absolute() or ".." in plates.parts or plates.suffix != ".json":
+        raise PresetConfigError("background.plates must be a relative path to a .json file inside presets/")
 
-    for section in ("branding", "output", "placement", "shotPlacement", "shadow", "vehicleAdjustments"):
+    for section in (
+        "branding", "output", "placement", "shotPlacement", "shadow", "reflection", "vehicleAdjustments", "quality",
+    ):  # fmt: skip
         if section in data and not isinstance(data[section], dict):
             raise PresetConfigError(f"{section} must be an object")
     base_placement = _build(Placement, data.get("placement"), "placement")
     shot_data = data.get("shotPlacement") or {}
-    if not isinstance(shot_data, dict):
-        raise PresetConfigError("shotPlacement must be an object")
     shots = {}
     for key, value in shot_data.items():
         if key not in EXTERIOR_SHOTS:
@@ -273,31 +393,31 @@ def parse_preset(data: dict) -> Preset:
         if not isinstance(value, dict):
             raise PresetConfigError(f"shotPlacement.{key} must be an object")
         shots[key] = _merge(base_placement, value, f"shotPlacement.{key}")
-    branding = parse_branding(data.get("branding"))
     for name, placement in [("placement", base_placement), *((f"shotPlacement.{k}", v) for k, v in shots.items())]:
-        if placement.ground_line < horizon + 0.1:
-            raise PresetConfigError(
-                f"{name}.groundLine ({placement.ground_line}) must be well below background.floorHorizon ({horizon})"
-            )
+        if placement.max_height_ratio < 0.2:
+            raise PresetConfigError(f"{name}.maxHeightRatio ({placement.max_height_ratio}) leaves no room for the vehicle")
+    branding = parse_branding(data.get("branding"))
     if branding.enabled:
+        # fractions of the brand wall (top 0 = ceiling side, 1 = floor): keep the
+        # signage on the upper wall so that the vehicle roof stays below it
         lowest = max(
             branding.logo.top + branding.logo.max_height,
             *(t.top + 2 * t.cap_height for t in (branding.city, branding.website, branding.phone) if t.text.strip()),
         )
-        if lowest + branding.clearance > horizon:
-            raise PresetConfigError("branding must stay on the wall above background.floorHorizon")
+        if lowest > 0.7:
+            raise PresetConfigError("branding must stay on the upper part of the brand wall (bottom <= 0.7)")
     return Preset(
         id=data["id"],
         name=data["name"],
-        background_image=background["image"],
-        fallback_image=fallback,
-        floor_horizon=horizon,
+        plates=str(plates),
         branding=branding,
         output=_build(OutputConfig, data.get("output"), "output"),
         placement=base_placement,
         shot_placement=shots,
-        shadow=_build(ShadowConfig, data.get("shadow"), "shadow"),
+        shadow=_parse_shadow(data.get("shadow")),
+        reflection=_parse_reflection(data.get("reflection")),
         adjustments=_build(VehicleAdjustments, data.get("vehicleAdjustments"), "vehicleAdjustments"),
+        quality=_parse_quality(data.get("quality")),
     )
 
 
@@ -316,130 +436,208 @@ def load_preset(settings: Settings, preset_id: str) -> Preset:
         raise PresetConfigError(f"{path.name}: {error}") from None
 
 
-@dataclass(frozen=True)
-class Showroom:
-    """The branded background for one output size."""
+class ShowroomUnavailableError(PresetConfigError):
+    """The showroom plate set is missing or unusable – exterior jobs must fail."""
 
-    #: sRGB uint8 (H, W, 3), read-only.
+
+@dataclass(frozen=True)
+class ShowroomPlate:
+    """One branded showroom plate at one output size (everything read-only)."""
+
+    #: Plate (shot) key, e.g. "front_left_45".
+    key: str
+    plate: Plate
+    #: Branded plate, sRGB uint8 (H, W, 3).
     rgb: np.ndarray
-    #: "master" (final showroom photo) or "fallback" (procedural emergency plate).
-    source: str
-    #: Where the branding elements were drawn.
+    #: Where the branding elements landed (output pixels).
     branding: BrandingLayout
-    floor_horizon: float
+    #: Proxy-car floor shadow as a LINEAR multiplier (H, W), 1 = no shadow.
+    shadow: np.ndarray
+    #: Per column: first row (float px) that shows the floor in front of the wall.
+    floor_top: np.ndarray
+    source: str = SHOWROOM_PLATES
+    #: The plate floor's own glossy reflection, LINEAR RGB (H, W, 3), signed (the plate minus its
+    #: gloss-free render); None without a reflection pass.
+    reflection: np.ndarray | None = None
 
     @property
-    def is_fallback(self) -> bool:
-        return self.source == SHOWROOM_FALLBACK
+    def width(self) -> int:
+        return int(self.rgb.shape[1])
+
+    @property
+    def height(self) -> int:
+        return int(self.rgb.shape[0])
+
+    @property
+    def is_fallback(self) -> bool:  # kept for callers of the old API – plates are never a fallback
+        return False
+
+    def floor_mask(self) -> np.ndarray:
+        rows = np.arange(self.height, dtype=np.float32)[:, None] + 0.5
+        return rows >= self.floor_top[None, :]
 
 
 class BackgroundProvider:
-    """Loads the showroom (master, else fallback), brands it, caches per size."""
+    """Plate provider: loads the plate set, brands one plate per output size, caches."""
+
+    #: Branded plates kept in memory (each ≈ 60 MB at 3200 × 2400).
+    CACHE_SIZE = 3
 
     def __init__(self, settings: Settings):
         self._settings = settings
-        self._cache: dict[tuple, Showroom] = {}
-        #: master path -> (mtime_ns, error) for a master that could not be read
-        self._master_errors: dict[str, tuple[int, str]] = {}
-        self._warned: set[tuple[str, int]] = set()
+        self._cache: dict[tuple, ShowroomPlate] = {}
+        self._sets: dict[str, tuple[tuple, PlateSet | None, str | None]] = {}
+        self._warned: set[tuple] = set()
         self._lock = threading.Lock()
 
-    def master_path(self, preset: Preset) -> Path:
-        return self._settings.presets_dir / preset.background_image
-
-    def fallback_path(self, preset: Preset) -> Path | None:
-        if not preset.fallback_image:
-            return None
-        return self._settings.presets_dir / preset.fallback_image
+    def plates_path(self, preset: Preset) -> Path:
+        return self._settings.presets_dir / preset.plates
 
     @staticmethod
-    def _stamp(path: Path | None) -> int:
+    def _stamp(path: Path) -> int:
         try:
-            return path.stat().st_mtime_ns if path is not None else 0
+            return path.stat().st_mtime_ns
         except OSError:
             return 0
 
+    def _set_stamp(self, path: Path, known: PlateSet | None) -> tuple:
+        files = known.files() if known is not None else [path]
+        return tuple(self._stamp(f) for f in files)
+
+    def _load(self, preset: Preset) -> tuple[PlateSet | None, str | None]:
+        path = self.plates_path(preset)
+        key = str(path)
+        cached = self._sets.get(key)
+        # a usable set is reused while none of its files changed; a broken one is re-checked every time
+        if cached is not None and cached[1] is not None and cached[0] == self._set_stamp(path, cached[1]):
+            return cached[1], None
+        try:
+            plate_set, error = load_plate_set(path), None
+        except PlateSetError as exc:
+            plate_set, error = None, str(exc)
+            if cached is None or cached[2] != error:  # log each new problem once
+                log.error("Showroom plate set unusable: %s", error)
+        self._sets[key] = (self._set_stamp(path, plate_set), plate_set, error)
+        return plate_set, error
+
+    def plate_set(self, preset: Preset) -> PlateSet:
+        """The validated plate set (raises ShowroomUnavailableError)."""
+        with self._lock:
+            plate_set, error = self._load(preset)
+        if plate_set is None:
+            raise ShowroomUnavailableError(error or "showroom plate set missing")
+        return plate_set
+
     def master_error(self, preset: Preset) -> str | None:
-        """Why the master photo cannot be used although it exists (else None)."""
-        path = self.master_path(preset)
-        known = self._master_errors.get(str(path))
-        if known and known[0] == self._stamp(path):
-            return known[1]
-        return None
+        """Why the plate set cannot be used (None when it is usable)."""
+        with self._lock:
+            return self._load(preset)[1]
 
     def source(self, preset: Preset) -> str:
-        if self.master_path(preset).is_file() and self.master_error(preset) is None:
-            return SHOWROOM_MASTER
-        return SHOWROOM_FALLBACK
+        return SHOWROOM_PLATES if self.master_error(preset) is None else SHOWROOM_MISSING
 
     def is_placeholder(self, preset: Preset) -> bool:
-        """True while the procedural fallback is used (kept for API compatibility)."""
-        return self.source(preset) == SHOWROOM_FALLBACK
+        """Kept for API compatibility: plates are never a placeholder."""
+        return False
 
-    def get(self, preset: Preset, width: int, height: int) -> Showroom:
-        """Branded showroom background, cover-fitted to (width, height)."""
-        master = self.master_path(preset)
+    def get(self, preset: Preset, shot_key: str, width: int, height: int) -> ShowroomPlate:
+        """Branded plate of `shot_key` at (width, height) – same aspect ratio as the plates."""
+        plate_set = self.plate_set(preset)
+        plate = plate_set.plate(shot_key)
         logo = self._settings.brand_dir / preset.branding.logo.file
+        stamps = (
+            self._stamp(plate.image),
+            self._stamp(plate.shadow) if plate.shadow else 0,
+            self._stamp(plate.reflection) if plate.reflection else 0,
+        )
+        key = (preset.id, preset.plates, shot_key, width, height, stamps, logo_stamp(logo), preset.branding)
         with self._lock:
-            source = self.source(preset)
-            path = master if source == SHOWROOM_MASTER else self.fallback_path(preset)
-            key = (
-                preset.id, width, height, source, self._stamp(path), logo_stamp(logo),
-                preset.floor_horizon, repr(preset.branding),
-            )  # fmt: skip
             cached = self._cache.get(key)
             if cached is not None:
                 return cached
-            base = None
-            if source == SHOWROOM_MASTER:
-                try:
-                    base = self._load_photo(master, width, height)
-                except Exception as error:  # unreadable/half-copied/unsupported master
-                    log.error("Showroom master %s cannot be read (%s) – using the fallback", master, error)
-                    self._master_errors[str(master)] = (self._stamp(master), str(error))
-                    source, path = SHOWROOM_FALLBACK, self.fallback_path(preset)
-            if base is None:
-                base = self._load_fallback(preset, path, width, height)
-            rgb = np.ascontiguousarray(np.asarray(base.convert("RGB"), dtype=np.uint8))
-            try:
-                rgb, layout = apply_branding(rgb, preset.branding, self._settings.brand_dir)
-            except BrandingAssetError as error:
-                raise PresetConfigError(str(error)) from None
-            rgb.setflags(write=False)
-            showroom = Showroom(rgb=rgb, source=source, branding=layout, floor_horizon=preset.floor_horizon)
-            if len(self._cache) > 8:
-                self._cache.clear()
+        if abs(plate.aspect / (width / height) - 1.0) > 0.01:
+            raise ShowroomUnavailableError(
+                f"plate {shot_key} is {plate.size[0]}x{plate.size[1]}, the output {width}x{height} has another aspect ratio"
+            )
+        try:
+            base = self._load_plate_image(plate, width, height)
+            shadow = self._load_shadow(plate, width, height)
+            reflection = self._load_reflection(plate, width, height)
+        except ShowroomUnavailableError:
+            raise
+        except Exception as error:  # unreadable/half-copied plate file
+            raise ShowroomUnavailableError(f"plate {shot_key} unreadable: {error}") from None
+        try:
+            rgb, layout = apply_wall_branding(base, plate, preset.branding, self._settings.brand_dir)
+        except BrandingAssetError as error:
+            raise PresetConfigError(str(error)) from None
+        rgb = np.ascontiguousarray(rgb)
+        rgb.setflags(write=False)
+        shadow.setflags(write=False)
+        floor_top = plate.floor_top(width, height)
+        floor_top.setflags(write=False)
+        if reflection is not None:
+            reflection.setflags(write=False)
+        showroom = ShowroomPlate(
+            key=shot_key, plate=plate, rgb=rgb, branding=layout, shadow=shadow, floor_top=floor_top, reflection=reflection
+        )
+        with self._lock:
+            while len(self._cache) >= self.CACHE_SIZE:
+                self._cache.pop(next(iter(self._cache)))
             self._cache[key] = showroom
-            return showroom
+        return showroom
 
-    def _load_photo(self, path: Path, width: int, height: int) -> Image.Image:
-        with Image.open(path) as image:
+    def _load_plate_image(self, plate: Plate, width: int, height: int) -> np.ndarray:
+        with Image.open(plate.image) as image:
             photo = _to_srgb(ImageOps.exif_transpose(image))
             photo.load()
         photo = photo.convert("RGB")
-        stamp = (str(path), self._stamp(path))
-        if stamp not in self._warned:
+        if photo.size != plate.size:
+            raise ShowroomUnavailableError(
+                f"plate {plate.key}: image is {photo.width}x{photo.height}, plates.json says {plate.size[0]}x{plate.size[1]}"
+            )
+        stamp = (str(plate.image), width)
+        if photo.width < width and stamp not in self._warned:
             self._warned.add(stamp)
-            aspect, wanted = photo.width / photo.height, width / height
-            if abs(aspect / wanted - 1.0) > 0.01:
-                log.warning(
-                    "Showroom photo %s is %dx%d, not %d:%d – it is centre-cropped (floorHorizon refers to the crop)",
-                    path.name, photo.width, photo.height, width, height,
-                )  # fmt: skip
-            if photo.width < width:
-                log.warning("Showroom photo %s (%d px wide) is upscaled to %d px", path.name, photo.width, width)
-        return ImageOps.fit(photo, (width, height), Image.LANCZOS, centering=(0.5, 0.5))
+            log.warning("Showroom plate %s (%d px wide) is upscaled to %d px", plate.image.name, photo.width, width)
+        if photo.size != (width, height):
+            photo = photo.resize((width, height), Image.LANCZOS)
+        return np.ascontiguousarray(np.asarray(photo, dtype=np.uint8))
 
-    def _load_fallback(self, preset: Preset, path: Path | None, width: int, height: int) -> Image.Image:
-        if path is not None and path.is_file():
-            try:
-                return self._load_photo(path, width, height)
-            except Exception as error:
-                log.error("Showroom fallback %s cannot be read (%s) – rendering it", path, error)
-        # neither master nor stored fallback: render the emergency plate
-        from .showroom.fallback import render_fallback_showroom
+    @staticmethod
+    def _load_reflection(plate: Plate, width: int, height: int) -> np.ndarray | None:
+        return _load_reflection_map(plate, width, height)
 
-        return render_fallback_showroom(width, height, floor_horizon=preset.floor_horizon)
+    @staticmethod
+    def _load_shadow(plate: Plate, width: int, height: int) -> np.ndarray:
+        if plate.shadow is None:
+            return np.ones((height, width), np.float32)
+        raw = cv2.imread(str(plate.shadow), cv2.IMREAD_UNCHANGED)
+        if raw is None:
+            raise ShowroomUnavailableError(f"plate {plate.key}: shadow map unreadable")
+        if raw.ndim == 3:
+            raw = raw[..., 0]
+        scale = 65535.0 if raw.dtype == np.uint16 else 255.0
+        mult = raw.astype(np.float32) / scale
+        if abs(mult.shape[1] / mult.shape[0] - plate.aspect) > 0.02:
+            raise ShowroomUnavailableError(f"plate {plate.key}: shadow map has another aspect ratio than the plate")
+        if mult.shape != (height, width):
+            mult = cv2.resize(mult, (width, height), interpolation=cv2.INTER_LINEAR)
+        return np.clip(mult, 0.0, 1.0).astype(np.float32)
+
+
+def _load_reflection_map(plate: Plate, width: int, height: int) -> np.ndarray | None:
+    """The plate floor's reflection pass as LINEAR RGB at the output size (None without one)."""
+    if plate.reflection is None:
+        return None
+    raw = cv2.imread(str(plate.reflection), cv2.IMREAD_UNCHANGED)
+    if raw is None or raw.ndim != 3 or raw.shape[2] != 3:
+        raise ShowroomUnavailableError(f"plate {plate.key}: reflection pass unreadable (16-bit RGB PNG expected)")
+    scale = 65535.0 if raw.dtype == np.uint16 else 255.0
+    rgb = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB).astype(np.float32) / scale - plate.reflection_offset
+    if rgb.shape[:2] != (height, width):
+        rgb = cv2.resize(rgb, (width, height), interpolation=cv2.INTER_CUBIC)
+    return np.ascontiguousarray(np.clip(rgb, -1.0, 1.0), dtype=np.float32)
 
 
 def _to_srgb(image: Image.Image) -> Image.Image:

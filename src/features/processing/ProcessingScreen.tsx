@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { PageContainer, StickyActions } from "@/components/layout/PageContainer";
 import { AccessCodeForm } from "@/components/processing/AccessCodeForm";
-import { ProcessingJobList } from "@/components/processing/ProcessingJobList";
+import { ProcessingJobList, type JobRetakeAction } from "@/components/processing/ProcessingJobList";
 import { ProcessingPresetCard } from "@/components/processing/ProcessingPresetCard";
 import {
   ProcessingStatusPanel,
@@ -19,19 +19,22 @@ import { ProgressBar } from "@/components/ui/ProgressBar";
 import { PageLoading } from "@/components/ui/Spinner";
 import { useProcessingAccessCode } from "@/hooks/use-processing-access-code";
 import { useProcessingStatus } from "@/hooks/use-processing-status";
+import { usePendingUploads } from "@/hooks/use-upload-queue";
 import { useVehicleDetail } from "@/hooks/use-vehicle-data";
-import { getShotTemplate } from "@/lib/app-services";
+import { getAppServices, getShotTemplate } from "@/lib/app-services";
+import { cameraHref } from "@/lib/camera/camera-links";
 import { cn } from "@/lib/cn";
-import type { ProcessingPresetId } from "@/lib/domain/types";
+import type { ProcessingPresetId, VehiclePhotoWithUrls } from "@/lib/domain/types";
 import { vehicleDisplayName, pluralizePhotos } from "@/lib/format";
 import { storeAccessCode } from "@/lib/processing/access-code-storage";
 import { PROCESSOR_UI_HINT } from "@/lib/processing/client-config";
 import { DEFAULT_PROCESSING_PRESET, PROCESSING_PRESET_LIST } from "@/lib/processing/presets";
+import { getRetakeStatus } from "@/lib/processing/quality-gate";
 import { countByTreatment, selectPhotosForProcessing } from "@/lib/processing/shot-treatment";
 import { canStartProcessing } from "@/lib/processing/types";
 import { canProcessVehicle } from "@/lib/vehicles/status";
 import { VehicleNotFound } from "@/features/vehicles/VehicleNotFound";
-import { useProcessingRun } from "./use-processing-run";
+import { useProcessingRun, type PhotoRunState, type RunResult } from "./use-processing-run";
 
 /** "Fotos bearbeiten": choose a style and process the photos with the real showroom processor. */
 export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
@@ -39,6 +42,7 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
   const { state, reload } = useVehicleDetail(vehicleId);
   const processing = useProcessingStatus();
   const storedAccessCode = useProcessingAccessCode();
+  const pendingUploads = usePendingUploads(vehicleId);
   const run = useProcessingRun(vehicleId);
   const [preset, setPreset] = useState<ProcessingPresetId>(DEFAULT_PROCESSING_PRESET);
   const [accessCodeError, setAccessCodeError] = useState<string | null>(null);
@@ -54,6 +58,17 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
   const finished = run.items.filter((item) => item.status === "complete" || item.status === "failed").length;
   const failed = run.items.filter((item) => item.status === "failed").length;
   const succeeded = run.items.filter((item) => item.status === "complete").length;
+  /** Failed shots a new photo would fix (quality gate etc.), by shot key. */
+  const retakes = useMemo(
+    () =>
+      new Map(
+        run.items.flatMap((item) => {
+          const retake = getRetakeStatus(item, photos, pendingUploads);
+          return retake ? [[item.shotKey, retake] as const] : [];
+        }),
+      ),
+    [run.items, photos, pendingUploads],
+  );
 
   const status = processing.state.status;
   const connection: ProcessorConnectionState =
@@ -67,9 +82,7 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
   const needsAccessCode = Boolean(status?.accessCodeRequired) && (!storedAccessCode || accessCodeError !== null);
   const canStart = canStartProcessing(status) && photos.length > 0 && !needsAccessCode;
 
-  async function startRun(selectedPreset: ProcessingPresetId, accessCode: string | null) {
-    setAccessCodeError(null);
-    const result = await run.start(photos, selectedPreset, accessCode);
+  function handleRunResult(result: RunResult, selectedPreset: ProcessingPresetId) {
     if (result.outcome === "access_denied") {
       storeAccessCode(null);
       setAccessCodeError(result.message ?? "Der Zugangscode für die Bildbearbeitung ist ungültig.");
@@ -77,6 +90,33 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
     } else if (result.outcome === "done") {
       processing.refresh();
     }
+  }
+
+  async function startRun(selectedPreset: ProcessingPresetId, accessCode: string | null) {
+    setAccessCodeError(null);
+    handleRunResult(await run.start(photos, selectedPreset, accessCode), selectedPreset);
+  }
+
+  /** After "Foto neu aufnehmen": processes only the new photo of that shot. */
+  async function processRetake(photo: VehiclePhotoWithUrls) {
+    setAccessCodeError(null);
+    handleRunResult(await run.retry(photo, preset, storedAccessCode), preset);
+  }
+
+  function retakeAction(item: PhotoRunState): JobRetakeAction | null {
+    const retake = retakes.get(item.shotKey);
+    if (!retake) return null;
+    if (retake.kind === "retake") {
+      return { kind: "retake", href: cameraHref(vehicleId, { shot: item.shotKey, returnTo: "bearbeiten" }) };
+    }
+    if (retake.kind === "saving") {
+      return {
+        kind: "saving",
+        failed: retake.failed,
+        onRetryUpload: () => getAppServices().uploads.retry(retake.uploadId),
+      };
+    }
+    return { kind: "ready", onProcess: () => void processRetake(retake.photo) };
   }
 
   function handleAccessCode(code: string) {
@@ -213,6 +253,7 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
                 total={run.items.length}
                 succeeded={succeeded}
                 failed={failed}
+                retakes={[...retakes.values()].filter((retake) => retake.kind === "retake").length}
                 resultsHref={`${detailHref}?ansicht=bearbeitet`}
                 onReset={run.reset}
               />
@@ -230,7 +271,7 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
                 </p>
               </div>
             )}
-            <ProcessingJobList items={run.items} />
+            <ProcessingJobList items={run.items} retakeAction={retakeAction} />
           </section>
         )}
       </PageContainer>
@@ -242,12 +283,15 @@ function RunSummary({
   total,
   succeeded,
   failed,
+  retakes,
   resultsHref,
   onReset,
 }: {
   total: number;
   succeeded: number;
   failed: number;
+  /** Failed shots still waiting for a new photo ("Foto neu aufnehmen" in the list). */
+  retakes: number;
   resultsHref: string;
   onReset: () => void;
 }) {
@@ -279,6 +323,13 @@ function RunSummary({
         {failed > 0 ? ` · ${failed} fehlgeschlagen` : ""}.
         {failed > 0 ? " Für fehlgeschlagene Fotos wurde nichts gespeichert." : ""}
       </p>
+      {retakes > 0 && (
+        <p className="mt-1 text-sm text-ae-muted">
+          {retakes === 1
+            ? "Ein Foto muss neu aufgenommen werden – siehe Hinweis in der Liste."
+            : `${retakes} Fotos müssen neu aufgenommen werden – siehe Hinweise in der Liste.`}
+        </p>
+      )}
       <div className="mt-4 grid w-full max-w-sm gap-2">
         {!allFailed && (
           <ButtonLink href={resultsHref} size="lg" fullWidth>

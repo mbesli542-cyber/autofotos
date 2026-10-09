@@ -55,15 +55,30 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
   Midjourney, Generative Fill, image-to-image). The processor composites the
   ORIGINAL vehicle pixels; vehicle corrections stay within `HARD_LIMITS` and
   the colour guard in `processor/app/pipeline/light.py`. Never loosen them.
-- **One fixed showroom.** The background is the master photo
-  `public/presets/autoexperten-standard-showroom.jpg` (empty showroom, no text;
-  currently derived from `autoexperten-standard-reference.jpg` by
-  `processor/scripts/prepare_showroom_master.py`) + preset JSON; it is never
-  generated per photo. Without it exterior jobs fail with "AutoExperten
-  Showroom-Master fehlt." (no silent fallback). The
-  official logo/texts are composited by `processor/app/showroom/branding.py`
-  (positions in the JSON `branding`). `app/showroom/fallback.py` is only an
-  emergency fallback – never present it as the final design or improve it.
+  Lighting harmonisation is only that guarded exposure/WB correction plus the
+  light wrap; see-through windows and outdoor reflections in the paint stay
+  (vehicle pixels – window/relight treatments were evaluated and removed).
+  Matting (`matting.py`) may tighten the model's outline, never grow it, and
+  never thins thin parts (antenna masts, mirror arms) below the model alpha.
+- **One fixed 3D showroom, eight angle-specific plates (processor/showroom3d).**
+  One physical Blender room (`processor/showroom3d/render_plates.py`, CC0
+  assets, modelled after `public/presets/autoexperten-standard-reference.jpg`)
+  is rendered from one camera per exterior shot into
+  `public/presets/autoexperten-standard/` (`<shot>.jpg` empty plate without
+  branding, `<shot>-shadow.png` proxy-car floor shadow, `plates.json` camera +
+  floor/wall homographies + proxy car). Each photo goes onto the plate of its
+  angle (a mirrored 3/4 photo onto the partner plate); plates are never
+  generated per photo. Without a complete, valid plate set exterior jobs fail
+  with "AutoExperten Showroom-Master fehlt." – there is no fallback background.
+  The official logo/texts are composited in wall space through the plate's
+  wall homography (`processor/app/showroom/wall_branding.py`, layout in the
+  JSON `branding`, fractions of the brand wall).
+- **Quality gate instead of bad results.** Photos that would give a bad
+  listing image (too small, cropped, wrong perspective, unclear mask/tyres)
+  are rejected with exact German retake messages
+  (`processor/app/pipeline/quality.py`, thresholds in the JSON `quality`; app:
+  `src/lib/processing/quality-gate.ts`). Keep the thresholds generous for
+  normal phone photos.
 - **Official logo only** (`public/brand/official/`); never redraw or
   approximate it.
 
@@ -89,9 +104,9 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Client service container | `src/lib/app-services.ts` |
 | DB schema, RLS, storage policies | `supabase/migrations/` |
 | Brand config / official logo | `src/config/brand.ts`, `src/components/brand/BrandLogo.tsx`, `public/brand/` |
-| Showroom preset, master photo, branding layer | `public/presets/` (README = master brief), `processor/app/showroom/branding.py` |
+| Showroom preset, 3D plates, branding layer | `public/presets/` (README = plates + rendering), `processor/showroom3d/`, `processor/app/showroom/` (`plates.py`, `wall_branding.py`, `branding.py`) |
 | Image processor (Python/FastAPI) | `processor/` (see `processor/README.md`) |
-| Processor pipeline steps | `processor/app/pipeline/` (decode, segmentation, mask, placement, light, shadow, composite, export) |
+| Processor pipeline steps | `processor/app/pipeline/` (decode, segmentation, matting, mask, vehicle_geometry, placement, quality, light, grounding/shadow, composite, export) |
 | Dev test page (dev only) | `src/app/dev/processing-test`, `src/app/api/dev/`, `src/lib/dev-tools.ts` |
 
 Routes: `/login`, `/fahrzeuge`, `/fahrzeuge/neu`, `/fahrzeuge/[id]`,

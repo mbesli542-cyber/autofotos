@@ -10,6 +10,7 @@ import { useToast } from "@/components/ui/Toast";
 import { useCameraStream } from "@/hooks/use-camera-stream";
 import { usePendingUploads } from "@/hooks/use-upload-queue";
 import { getAppServices } from "@/lib/app-services";
+import { cameraReturnHref, type CameraReturnTarget } from "@/lib/camera/camera-links";
 import { captureStill } from "@/lib/camera/capture";
 import { CAMERA_CONFIG } from "@/lib/camera/config";
 import { noopQualityChecker, type CaptureQualityWarning } from "@/lib/camera/quality";
@@ -38,7 +39,9 @@ interface PreviewState {
 /**
  * Guided capture: shows the current shot, its framing guide and progress,
  * captures a full-resolution photo, stores it (offline-safe queue) and
- * automatically advances to the next missing shot.
+ * automatically advances to the next missing shot – or, with `returnTo`
+ * (retake of one shot from "Fotos überprüfen" / "Fotos bearbeiten"), goes
+ * back there.
  */
 export function CameraCapture({
   vehicle,
@@ -51,7 +54,7 @@ export function CameraCapture({
   photos: readonly VehiclePhotoWithUrls[];
   template: ShotTemplate;
   initialShotKey: string | null;
-  returnTo: "fotos" | null;
+  returnTo: CameraReturnTarget | null;
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -65,8 +68,9 @@ export function CameraCapture({
   const [flashKey, setFlashKey] = useState(0);
   const [preview, setPreview] = useState<PreviewState | null>(null);
 
-  const detailHref = `/fahrzeuge/${vehicle.id}`;
-  const reviewHref = `/fahrzeuge/${vehicle.id}/fotos`;
+  const reviewHref = cameraReturnHref(vehicle.id, "fotos");
+  /** Close button / after a single retake: back to where the retake was started. */
+  const exitHref = cameraReturnHref(vehicle.id, returnTo);
   const shots = useMemo(() => getOrderedShots(template).filter((s) => s.required), [template]);
   const slots = useMemo(() => buildPhotoSlots(template, photos, pending).required, [template, photos, pending]);
   const capturedKeys = useMemo(
@@ -95,8 +99,8 @@ export function CameraCapture({
     (state: PreviewState) => {
       URL.revokeObjectURL(state.url);
       setPreview(null);
-      if (returnTo === "fotos") {
-        router.push(reviewHref);
+      if (returnTo) {
+        router.push(exitHref);
       } else if (state.nextKey) {
         setSelectedKey(state.nextKey);
       } else {
@@ -104,7 +108,7 @@ export function CameraCapture({
         router.push(reviewHref);
       }
     },
-    [returnTo, reviewHref, router, toast],
+    [returnTo, exitHref, reviewHref, router, toast],
   );
 
   // Show the captured photo briefly, then advance automatically.
@@ -187,7 +191,7 @@ export function CameraCapture({
       <header className="pt-safe shrink-0 px-3 pb-2 short:pb-1">
         <div className="flex h-14 items-center gap-2 short:h-10">
           <Link
-            href={returnTo === "fotos" ? reviewHref : detailHref}
+            href={exitHref}
             className="flex size-11 items-center justify-center rounded-xl hover:bg-white/10"
             aria-label="Kamera schließen"
           >

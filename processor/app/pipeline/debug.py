@@ -1,7 +1,8 @@
 """Optional debug artifacts (PROCESSOR_DEBUG=true).
 
-Files per job: original.jpg, mask.png, vehicle-transparent.png,
-background.jpg, composite-before-shadow.jpg, shadow.png, final.jpg,
+Files per job: original.jpg, mask.png, geometry.jpg (mask outline, bbox,
+tyre contacts), vehicle-transparent.png, background.jpg (branded plate),
+composite-before-shadow.jpg, shadow.png (grounding darkening), final.jpg,
 metadata.json. Never enable debug output on a publicly reachable instance.
 """
 
@@ -17,6 +18,7 @@ from .export import encode_jpeg, encode_png
 DEBUG_FILE_NAMES = (
     "original.jpg",
     "mask.png",
+    "geometry.jpg",
     "vehicle-transparent.png",
     "background.jpg",
     "composite-before-shadow.jpg",

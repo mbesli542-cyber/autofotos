@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_SHOT_TEMPLATE, getOrderedShots } from "@/lib/shots/shot-template";
 import {
   DEV_SHOWROOM_WIDTH,
   DEV_TEST_API,
+  SHOWROOM_PLATE_SHOTS,
+  isShowroomPlateShot,
   parseProcessorHealth,
   parseProcessorJob,
   parseShowroomSource,
@@ -20,18 +23,36 @@ function job(metadata: unknown) {
 
 describe("parseShowroomSource", () => {
   it("accepts only the known values", () => {
+    expect(parseShowroomSource("plates")).toBe("plates");
+    expect(parseShowroomSource("missing")).toBe("missing");
     expect(parseShowroomSource("master")).toBe("master");
     expect(parseShowroomSource("fallback")).toBe("fallback");
-    for (const value of ["Master", "placeholder", "", null, undefined, 1, true, {}]) {
+    for (const value of ["Plates", "placeholder", "", null, undefined, 1, true, {}]) {
       expect(parseShowroomSource(value)).toBeNull();
+    }
+  });
+});
+
+describe("SHOWROOM_PLATE_SHOTS", () => {
+  it("are exactly the exterior shots of the template, in order", () => {
+    const exterior = getOrderedShots(DEFAULT_SHOT_TEMPLATE)
+      .filter((shot) => shot.category === "exterior")
+      .map((shot) => shot.key);
+    expect([...SHOWROOM_PLATE_SHOTS]).toEqual(exterior);
+  });
+
+  it("rejects interior, extra and unknown shots", () => {
+    expect(isShowroomPlateShot("rear_right_45")).toBe(true);
+    for (const value of ["cockpit", "wheel_detail", "extra_01", "../front", "FRONT", "", null, 3]) {
+      expect(isShowroomPlateShot(value)).toBe(false);
     }
   });
 });
 
 describe("showroom status in job metadata", () => {
   it("reads showroomSource and keeps showroomPlaceholder consistent", () => {
-    expect(job({ showroomSource: "master", showroomPlaceholder: false })?.metadata).toMatchObject({
-      showroomSource: "master",
+    expect(job({ showroomSource: "plates", showroomPlaceholder: false })?.metadata).toMatchObject({
+      showroomSource: "plates",
       showroomPlaceholder: false,
     });
     expect(job({ showroomSource: "fallback" })?.metadata).toMatchObject({
@@ -45,9 +66,34 @@ describe("showroom status in job metadata", () => {
       showroomSource: "fallback",
       showroomPlaceholder: true,
     });
-    expect(job({ showroomSource: "master", showroomPlaceholder: true })?.metadata).toMatchObject({
+    expect(job({ showroomSource: "plates", showroomPlaceholder: true })?.metadata).toMatchObject({
       showroomSource: "fallback",
       showroomPlaceholder: true,
+    });
+  });
+
+  it("reads plateUsed, errorCode and keeps the other fields as details", () => {
+    const metadata = job({
+      showroomSource: "plates",
+      plateUsed: "front_right_45",
+      errorCode: "perspective_mismatch",
+      qualityGate: { contactRiseRatio: 0.41 },
+      placement: { targetWidthRatio: 0.81, achievedWidthRatio: 0.78 },
+      timingsMs: { total: 1200 },
+      debugFiles: ["mask.png"],
+    })?.metadata;
+    expect(metadata).toMatchObject({
+      plateUsed: "front_right_45",
+      errorCode: "perspective_mismatch",
+      details: {
+        qualityGate: { contactRiseRatio: 0.41 },
+        placement: { targetWidthRatio: 0.81, achievedWidthRatio: 0.78 },
+      },
+    });
+    expect(Object.keys(metadata?.details ?? {}).sort()).toEqual(["placement", "qualityGate"]);
+    expect(job({ plateUsed: "cockpit", errorCode: "Bad Code" })?.metadata).toMatchObject({
+      plateUsed: null,
+      errorCode: null,
     });
   });
 
@@ -66,9 +112,12 @@ describe("showroom status in job metadata", () => {
 
 describe("parseProcessorHealth", () => {
   it("reads showroomSource", () => {
-    expect(parseProcessorHealth({ status: "ok", showroomSource: "master" })).toMatchObject({
-      showroomSource: "master",
+    expect(parseProcessorHealth({ status: "ok", showroomSource: "plates", showroomPlaceholder: false })).toMatchObject({
+      showroomSource: "plates",
       showroomPlaceholder: false,
+    });
+    expect(parseProcessorHealth({ status: "ok", showroomSource: "missing" })).toMatchObject({
+      showroomSource: "missing",
     });
     expect(parseProcessorHealth({ status: "ok", showroomSource: "fallback" })).toMatchObject({
       showroomSource: "fallback",
@@ -84,7 +133,7 @@ describe("parseProcessorHealth", () => {
   });
 
   it("still rejects unusable responses", () => {
-    expect(parseProcessorHealth({ status: "error", showroomSource: "master" })).toBeNull();
+    expect(parseProcessorHealth({ status: "error", showroomSource: "plates" })).toBeNull();
     expect(parseProcessorHealth(null)).toBeNull();
   });
 });
@@ -120,12 +169,12 @@ describe("showroomPreviewWidth", () => {
 });
 
 describe("DEV_TEST_API.showroom", () => {
-  it("builds the proxy URL", () => {
-    expect(DEV_TEST_API.showroom("autoexperten_standard")).toBe(
-      "/api/dev/processing-test/showroom?preset=autoexperten_standard&width=1600",
+  it("builds the proxy URL for the plate of a shot", () => {
+    expect(DEV_TEST_API.showroom("autoexperten_standard", "front_left_45")).toBe(
+      "/api/dev/processing-test/showroom?preset=autoexperten_standard&shot=front_left_45&width=1600",
     );
-    expect(DEV_TEST_API.showroom("autoexperten_standard", 2048)).toBe(
-      "/api/dev/processing-test/showroom?preset=autoexperten_standard&width=2048",
+    expect(DEV_TEST_API.showroom("autoexperten_standard", "rear", 2048)).toBe(
+      "/api/dev/processing-test/showroom?preset=autoexperten_standard&shot=rear&width=2048",
     );
   });
 });

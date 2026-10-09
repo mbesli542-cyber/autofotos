@@ -20,10 +20,21 @@ from pathlib import Path
 from ..config import Settings
 from ..pipeline.debug import DEBUG_FILE_NAMES, NULL_DEBUG, DebugSink
 from ..pipeline.decode import DecodeError
-from ..pipeline.pipeline import ShowroomNotReleasedError, process_photo
+from ..pipeline.pipeline import process_photo
 from ..pipeline.placement import PlacementError
-from ..pipeline.segmentation import ModelUnavailableError, SegmentationError, VehicleSegmenter
-from ..presets import BackgroundProvider, PresetConfigError, PresetError, load_preset
+from ..pipeline.quality import QualityGateError
+from ..pipeline.segmentation import (
+    ModelUnavailableError,
+    SegmentationError,
+    VehicleSegmenter,
+)
+from ..presets import (
+    BackgroundProvider,
+    PresetConfigError,
+    PresetError,
+    ShowroomUnavailableError,
+    load_preset,
+)
 from ..storage.base import PhotoNotFoundError, PhotoStore, StorageError
 
 log = logging.getLogger(__name__)
@@ -243,8 +254,6 @@ class JobManager:
                 shot_key=shot_key,
                 debug=debug,
                 progress=lambda value, _step: self._update(job, progress=min(0.99, max(job.progress, value))),
-                # results never use the emergency fallback showroom (unless explicitly allowed)
-                require_master_showroom=not self.settings.allow_fallback_showroom,
             )
             (job.directory / "result.jpg").write_bytes(outcome.jpeg)
             if job.kind == "contract":
@@ -277,6 +286,16 @@ class JobManager:
                 warnings=[w.__dict__ for w in outcome.warnings],
                 metadata=metadata,
             )
+        except QualityGateError as error:
+            # the photo would give a bad listing image: nothing is stored, the app asks for a retake
+            log.info("Job %s rejected by the quality gate: %s", job.id, error.code)
+            debug_files = [name for name in debug.files if name in DEBUG_FILE_NAMES] if debug.enabled else []
+            self._update(
+                job,
+                status="failed",
+                error=error.user_message,
+                metadata={"errorCode": error.code, "qualityGate": error.details, "debugFiles": debug_files},
+            )
         except Exception as error:  # noqa: BLE001 - mapped to user-facing messages
             code = _error_code(error)
             if code in ("unknown", "service", "configuration"):
@@ -296,7 +315,7 @@ class JobManager:
 def _error_code(error: Exception) -> str:
     if isinstance(error, ModelUnavailableError):
         return "service"
-    if isinstance(error, ShowroomNotReleasedError):
+    if isinstance(error, ShowroomUnavailableError):
         return "showroom"
     if isinstance(error, (PresetConfigError, PlacementError)):
         return "configuration"

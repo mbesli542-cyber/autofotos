@@ -305,14 +305,8 @@ def _clip(element: _Element, width: int, height: int):
     return x0, y0, x1, y1, sx, sy
 
 
-def apply_branding(
-    rgb: np.ndarray, cfg: BrandingConfig, brand_dir: Path
-) -> tuple[np.ndarray, BrandingLayout]:
-    """Return a branded copy of the sRGB uint8 background and the element boxes."""
-    height, width = rgb.shape[:2]
-    if not cfg.enabled:
-        return rgb, BrandingLayout(boxes=())
-    elements = [
+def _elements(cfg: BrandingConfig, brand_dir: Path, width: int, height: int) -> list[_Element]:
+    return [
         e
         for e in (
             _logo_element(cfg.logo, brand_dir, width, height),
@@ -322,24 +316,33 @@ def apply_branding(
         )
         if e is not None
     ]
-    if not elements:
-        return rgb, BrandingLayout(boxes=())
 
-    # Only the band that contains the branding (plus shadow and light-map
-    # margins) is processed; all other rows are copied unchanged.
+
+def _band(cfg: BrandingConfig, elements: list[_Element], height: int) -> int:
+    """Rows that contain the branding (plus shadow and light-map margins)."""
+    sigma = max(2.0, 0.02 * height)
+    return min(height, max(e.y + e.alpha.shape[0] for e in elements) + _shadow_pad(cfg, height) + int(3 * sigma) + 1)
+
+
+def _shadow_pad(cfg: BrandingConfig, height: int) -> int:
+    mount = cfg.mount
+    return int(np.ceil(4 * mount.shadow_blur * height + abs(mount.shadow_offset) * height)) + 2
+
+
+def _composite(linear: np.ndarray, cfg: BrandingConfig, elements: list[_Element], height: int) -> list[tuple]:
+    """Composite the elements into the LINEAR band `linear` (rows 0..band) in place."""
+    band, width = linear.shape[:2]
     mount = cfg.mount
     sigma = max(2.0, 0.02 * height)
-    shadow_pad = int(np.ceil(4 * mount.shadow_blur * height + abs(mount.shadow_offset) * height)) + 2
-    band = min(height, max(e.y + e.alpha.shape[0] for e in elements) + shadow_pad + int(3 * sigma) + 1)
-    if band <= 0:
-        return rgb, BrandingLayout(boxes=())
-    linear = _srgb_to_linear(rgb[:band].astype(np.float32) / 255.0)
+    shadow_pad = _shadow_pad(cfg, height)
     # Wall light around the branding (brightness only), used by lightMatch;
     # computed on a 4x smaller luminance map (it is very smooth anyway).
-    luminance = linear @ np.array([0.2126, 0.7152, 0.0722], np.float32)
-    small = cv2.resize(luminance, (max(1, width // 4), max(1, band // 4)), interpolation=cv2.INTER_AREA)
-    small = cv2.GaussianBlur(small, (0, 0), max(0.5, sigma / 4))
-    light = cv2.resize(small, (width, band), interpolation=cv2.INTER_LINEAR)
+    light = None
+    if cfg.light_match > 0:
+        luminance = linear @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+        small = cv2.resize(luminance, (max(1, width // 4), max(1, band // 4)), interpolation=cv2.INTER_AREA)
+        small = cv2.GaussianBlur(small, (0, 0), max(0.5, sigma / 4))
+        light = cv2.resize(small, (width, band), interpolation=cv2.INTER_LINEAR)
 
     boxes = []
     for element in elements:
@@ -363,7 +366,7 @@ def apply_branding(
             shadow = cv2.GaussianBlur(shadow, (0, 0), max(0.8, mount.shadow_blur * height))
             linear[sy0:sy1, sx0:sx1] *= (1.0 - float(np.clip(mount.shadow_opacity, 0, 1)) * shadow)[..., None]
 
-        if cfg.light_match > 0:
+        if light is not None:
             region = light[y0:y1, x0:x1]
             reference = float(np.percentile(light[max(0, y0 - (y1 - y0)) : y1 + (y1 - y0), x0:x1], 90))
             factor = np.clip(region / max(reference, 1e-6), 0.85, 1.0)
@@ -373,7 +376,53 @@ def apply_branding(
         area = linear[y0:y1, x0:x1]
         linear[y0:y1, x0:x1] = premul + area * (1.0 - alpha[..., None])
         boxes.append((element.name, x0, y0, x1, y1))
+    return boxes
 
+
+def apply_branding(
+    rgb: np.ndarray, cfg: BrandingConfig, brand_dir: Path
+) -> tuple[np.ndarray, BrandingLayout]:
+    """Return a branded copy of the sRGB uint8 image and the element boxes.
+
+    Positions are fractions of this image's width/height. The showroom plates
+    are branded in wall space instead (app/showroom/wall_branding.py), which
+    runs this layout on a canvas that represents the brand wall.
+    """
+    height, width = rgb.shape[:2]
+    if not cfg.enabled:
+        return rgb, BrandingLayout(boxes=())
+    elements = _elements(cfg, brand_dir, width, height)
+    if not elements:
+        return rgb, BrandingLayout(boxes=())
+    # Only the band that contains the branding is processed; other rows are copied unchanged.
+    band = _band(cfg, elements, height)
+    if band <= 0:
+        return rgb, BrandingLayout(boxes=())
+    linear = _srgb_to_linear(rgb[:band].astype(np.float32) / 255.0)
+    boxes = _composite(linear, cfg, elements, height)
     out = rgb.copy()
     out[:band] = _linear_to_srgb_u8(linear)
     return out, BrandingLayout(boxes=tuple(boxes))
+
+
+def brand_uniform_band(
+    value: tuple[float, float, float], width: int, height: int, cfg: BrandingConfig, brand_dir: Path
+) -> tuple[np.ndarray, BrandingLayout] | None:
+    """Brand a uniform LINEAR canvas of `width` × `height` filled with `value`.
+
+    Only the band of rows that contains the branding (and its mount shadow) is
+    built and returned (band × width × 3, float32) – every row below it would
+    keep `value` exactly. None when nothing is drawn.
+    """
+    if not cfg.enabled:
+        return None
+    elements = _elements(cfg, brand_dir, width, height)
+    if not elements:
+        return None
+    band = _band(cfg, elements, height)
+    if band <= 0:
+        return None
+    linear = np.empty((band, width, 3), np.float32)
+    linear[:] = np.asarray(value, np.float32)
+    boxes = _composite(linear, cfg, elements, height)
+    return linear, BrandingLayout(boxes=tuple(boxes))

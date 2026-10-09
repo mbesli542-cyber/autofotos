@@ -20,7 +20,7 @@ const CHIP_LABELS: Record<ProcessorConnectionState, string> = {
 /**
  * Status of the real image processor at the top of "Fotos bearbeiten":
  * green chip when connected, amber chip + message when not, and the
- * showroom problem (e.g. master photo missing) when processing cannot run.
+ * showroom problem (e.g. plate set missing) when processing cannot run.
  */
 export function ProcessingStatusPanel({
   state,
@@ -62,7 +62,8 @@ export function ProcessingStatusPanel({
           <div className="text-ae-muted">
             <p className="font-semibold text-ae-text">{showroomError}</p>
             <p className="mt-1">
-              Die Bearbeitung ist erst möglich, wenn das AutoExperten Showroom-Foto auf dem Server hinterlegt ist.
+              Die Bearbeitung ist erst möglich, wenn der AutoExperten Showroom auf dem Server vollständig
+              eingerichtet ist.
             </p>
           </div>
         </div>

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { VehiclePhotoWithUrls } from "@/lib/domain/types";
-import { processPhoto, type PhotoProcessingDeps } from "./photo-processing";
+import { ProcessingJobFailedError, processPhoto, type PhotoProcessingDeps } from "./photo-processing";
 import type { ProcessingJob } from "./types";
 
 const JOB_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -35,6 +35,7 @@ function job(overrides: Partial<ProcessingJob>): ProcessingJob {
     updatedAt: "",
     result: null,
     error: null,
+    errorCode: null,
     warnings: [],
     ...overrides,
   };
@@ -83,6 +84,25 @@ describe("processPhoto – demo upload adapter", () => {
     await expect(processPhoto(PHOTO, "autoexperten_standard", ctx.deps)).rejects.toThrow(
       "Das Fahrzeug konnte im Foto nicht erkannt werden.",
     );
+    expect(ctx.api.downloadProcessingResult).not.toHaveBeenCalled();
+    expect(ctx.data.saveProcessedPhoto).not.toHaveBeenCalled();
+  });
+
+  it("passes the quality-gate code of a rejected photo on and saves nothing", async () => {
+    const ctx = setup(
+      "demo",
+      job({
+        status: "failed",
+        error: "Fahrzeug im Originalfoto zu klein. Bitte näher fotografieren.",
+        errorCode: "vehicle_too_small",
+      }),
+    );
+    const error = await processPhoto(PHOTO, "autoexperten_standard", ctx.deps).catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(ProcessingJobFailedError);
+    expect(error).toMatchObject({
+      errorCode: "vehicle_too_small",
+      message: "Fahrzeug im Originalfoto zu klein. Bitte näher fotografieren.",
+    });
     expect(ctx.api.downloadProcessingResult).not.toHaveBeenCalled();
     expect(ctx.data.saveProcessedPhoto).not.toHaveBeenCalled();
   });

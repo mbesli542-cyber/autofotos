@@ -45,8 +45,9 @@ def wait_for(client, job_id, statuses=("complete", "failed"), timeout=60, header
 
 
 @pytest.fixture
-def photo(vehicle):
-    return encode_jpeg(vehicle[0], 95)
+def photo(three_quarter):
+    """Synthetic front-left 3/4 photo – matches the default shot key front_left_45."""
+    return encode_jpeg(three_quarter[0], 95)
 
 
 @pytest.fixture
@@ -68,8 +69,10 @@ def test_health_needs_no_auth_but_details_do(make_client):
     assert public.status_code == 200
     assert public.json() == {"status": "ok", "version": details["version"]}  # nothing else leaks
     assert details["auth"] is True
-    assert details["showroomSource"] == "master"  # test assets contain a master photo
+    assert details["showroomSource"] == "plates"  # test assets contain a (synthetic) plate set
+    assert details["showroomMasterError"] is None
     assert details["showroomPlaceholder"] is False
+    assert "fallbackShowroomAllowed" not in details
 
 
 def test_unauthenticated_requests_are_rejected_before_the_body_is_parsed(make_client):
@@ -211,8 +214,8 @@ def test_upload_job_returns_downloadable_result(make_client, photo):
     assert result.headers["content-type"] == "image/jpeg"
     image = Image.open(io.BytesIO(result.content))
     assert image.size == (done["result"]["width"], done["result"]["height"])
-    assert not any(w["code"] == "showroom_fallback" for w in done["warnings"])
-    assert done["metadata"]["showroomSource"] == "master"
+    assert done["metadata"]["showroomSource"] == "plates"
+    assert done["metadata"]["plateUsed"] == "front_left_45"
 
 
 def test_job_reports_queued_processing_complete_in_order(make_client, fake_segmenter, photo):
@@ -359,50 +362,54 @@ def test_contract_jobs_are_not_limited_by_the_upload_queue(make_client, fake_seg
     assert codes == [202] * 8
 
 
-def test_showroom_preview_is_the_branded_background(make_client):
+def test_showroom_preview_is_the_branded_plate_of_a_shot(make_client):
     client, _ = make_client(api_key="secret")
     auth = {"Authorization": "Bearer secret"}
     with client:
-        assert client.get("/showroom/autoexperten_standard.jpg").status_code == 401
-        response = client.get("/showroom/autoexperten_standard.jpg?width=1200", headers=auth)
-        assert client.get("/showroom/magic.jpg", headers=auth).status_code == 404
-        assert client.get("/showroom/autoexperten_standard.jpg?width=99999", headers=auth).status_code == 400
+        assert client.get("/showroom/autoexperten_standard/front_left_45.jpg").status_code == 401
+        response = client.get("/showroom/autoexperten_standard/rear_right_45.jpg?width=1200", headers=auth)
+        assert client.get("/showroom/magic/front_left_45.jpg", headers=auth).status_code == 404
+        assert client.get("/showroom/autoexperten_standard/cockpit.jpg", headers=auth).status_code == 404
+        assert client.get("/showroom/autoexperten_standard.jpg", headers=auth).status_code == 404  # old single master
+        assert client.get("/showroom/autoexperten_standard/front.jpg?width=99999", headers=auth).status_code == 400
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/jpeg"
-    assert response.headers["x-showroom-source"] == "master"
+    assert response.headers["x-showroom-source"] == "plates"
     image = Image.open(io.BytesIO(response.content))
     assert image.size == (1200, 900)
 
 
-def test_missing_master_fails_every_exterior_job_with_a_clear_message(make_client, settings, photo):
-    master = settings.presets_dir / "autoexperten-standard-showroom.jpg"
-    master.unlink()
+def test_missing_plates_fail_every_exterior_job_with_a_clear_message(make_client, settings, photo):
+    (settings.presets_dir / "autoexperten-standard" / "front_left_45.jpg").unlink()
     body = {"vehicleId": VEHICLE_ID, "photoId": PHOTO_ID, "preset": "autoexperten_standard"}
     client, store = make_client()
     with client:
         health = client.get("/health").json()
         upload = wait_for(client, client.post("/jobs/upload", files={"file": ("car.jpg", photo, "image/jpeg")}).json()["jobId"])
         contract = wait_for(client, client.post("/jobs", json=body).json()["jobId"])
-    assert health["showroomSource"] == "fallback" and health["showroomPlaceholder"] is True
+        preview = client.get("/showroom/autoexperten_standard/front.jpg")
+    assert health["showroomSource"] == "missing" and health["showroomPlaceholder"] is False
+    assert "front_left_45.jpg" in health["showroomMasterError"]
+    assert preview.status_code == 503 and preview.json()["error"]["message"] == "AutoExperten Showroom-Master fehlt."
     for done in (upload, contract):
         assert done["status"] == "failed"
         assert done["error"] == "AutoExperten Showroom-Master fehlt."
+        assert done["metadata"]["errorCode"] == "showroom"
     assert store.stored == []  # nothing was written to vehicle-processed
 
 
-def test_fallback_showroom_only_with_the_explicit_developer_override(make_client, settings, photo):
-    (settings.presets_dir / "autoexperten-standard-showroom.jpg").unlink()
-    client, _ = make_client(allow_fallback_showroom=True)
+def test_a_broken_plates_json_is_reported_as_missing_showroom(make_client, settings, photo):
+    (settings.presets_dir / "autoexperten-standard" / "plates.json").write_text('{"version": 1, "plates": {}}')
+    client, _ = make_client()
     with client:
-        job = client.post("/jobs/upload", files={"file": ("car.jpg", photo, "image/jpeg")}).json()
-        done = wait_for(client, job["jobId"])
-    assert done["status"] == "complete"
-    assert done["metadata"]["showroomSource"] == "fallback"
-    assert any(w["code"] == "showroom_fallback" for w in done["warnings"])
+        health = client.get("/health").json()
+        done = wait_for(client, client.post("/jobs/upload", files={"file": ("car.jpg", photo, "image/jpeg")}).json()["jobId"])
+    assert health["showroomSource"] == "missing" and "plates missing" in health["showroomMasterError"]
+    assert done["error"] == "AutoExperten Showroom-Master fehlt."
 
 
-def test_interior_shots_do_not_need_the_showroom_master(make_client, settings, photo):
-    (settings.presets_dir / "autoexperten-standard-showroom.jpg").unlink()
+def test_interior_shots_do_not_need_the_plates(make_client, settings, photo):
+    (settings.presets_dir / "autoexperten-standard" / "plates.json").unlink()
     client, _ = make_client()
     with client:
         job = client.post(
@@ -413,12 +420,54 @@ def test_interior_shots_do_not_need_the_showroom_master(make_client, settings, p
     assert done["metadata"]["shotKind"] == "interior_passthrough"
 
 
+def test_quality_gate_rejection_fails_the_job_with_code_and_german_message(make_client, fake_segmenter):
+    from tests.conftest import make_vehicle_photo
+
+    rgb, mask = make_vehicle_photo(2400, 1800, body_ratio=0.3)  # far away: 30 % of the photo width
+    fake_segmenter.register(mask)
+    small = encode_jpeg(rgb, 95)
+    client, store = make_client(store=FakeStore(small, shot_key="left_side"))
+    body = {"vehicleId": VEHICLE_ID, "photoId": PHOTO_ID, "preset": "autoexperten_standard"}
+    with client:
+        upload = wait_for(
+            client,
+            client.post("/jobs/upload", files={"file": ("car.jpg", small, "image/jpeg")}, data={"shotKey": "left_side"}).json()["jobId"],
+        )
+        contract = wait_for(client, client.post("/jobs", json=body).json()["jobId"])
+        result = client.get(f"/jobs/{upload['jobId']}/result")
+    for done in (upload, contract):
+        assert done["status"] == "failed"
+        assert done["error"] == "Fahrzeug im Originalfoto zu klein. Bitte näher fotografieren."
+        assert done["metadata"]["errorCode"] == "vehicle_too_small"
+        assert done["metadata"]["qualityGate"]["checks"]["upscale"]["passed"] is False
+        assert done["metadata"]["qualityGate"]["plateUsed"] == "left_side"
+        assert done["result"] is None
+    assert result.status_code == 409  # no result file
+    assert store.stored == []  # nothing stored
+
+
+def test_small_photos_are_rejected_before_segmentation(make_client, fake_segmenter):
+    from tests.conftest import make_vehicle_photo
+
+    rgb, mask = make_vehicle_photo(1200, 900)
+    fake_segmenter.register(mask)
+    client, _ = make_client()
+    with client:
+        job = client.post(
+            "/jobs/upload", files={"file": ("car.jpg", encode_jpeg(rgb), "image/jpeg")}, data={"shotKey": "left_side"}
+        ).json()
+        done = wait_for(client, job["jobId"])
+    assert done["metadata"]["errorCode"] == "source_resolution_too_low"
+    assert done["error"] == "Die Auflösung des Fotos ist zu gering. Bitte Foto in voller Kamera-Auflösung neu aufnehmen."
+    assert fake_segmenter.calls == 0
+
+
 def test_misconfigured_preset_is_reported_not_crashing(make_client, settings, photo):
     (settings.presets_dir / "autoexperten-standard.json").write_text("{broken", encoding="utf-8")
     client, _ = make_client()
     with client:
         health = client.get("/health").json()
-        showroom = client.get("/showroom/autoexperten_standard.jpg")
+        showroom = client.get("/showroom/autoexperten_standard/front.jpg")
         job = client.post("/jobs/upload", files={"file": ("car.jpg", photo, "image/jpeg")}).json()
         done = wait_for(client, job["jobId"])
     assert health["presetError"] and health["showroomSource"] is None

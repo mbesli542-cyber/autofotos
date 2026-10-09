@@ -32,16 +32,24 @@ import {
   DEV_TEST_MAX_UPLOAD_MB,
   DEV_TEST_PRESETS,
   isDevTestPresetId,
+  isShowroomPlateShot,
   isValidDebugFileName,
   showroomPreviewWidth,
   type DevTestPresetId,
   type ProcessorErrorBody,
   type ProcessorHealth,
   type ProcessorJob,
+  type ShowroomPlateShot,
   type ShowroomSource,
 } from "@/lib/processing/dev-test-types";
+import { isQualityGateErrorCode } from "@/lib/processing/quality-gate";
 import { PROCESSING_JOB_STATUS_LABELS, isTerminalJobStatus } from "@/lib/processing/types";
-import { getOrderedShots } from "@/lib/shots/shot-template";
+import { getOrderedShots, getShot } from "@/lib/shots/shot-template";
+
+/** German title of a shot (e.g. "Vorne links (45°)"), else the key. */
+function shotTitle(key: string): string {
+  return getShot(getShotTemplate(), key)?.title ?? key;
+}
 
 const POLL_INTERVAL_MS = 1_000;
 const POLL_TIMEOUT_MS = 10 * 60_000;
@@ -69,6 +77,7 @@ const DEBUG_ONLY_MESSAGE = "Nur mit PROCESSOR_DEBUG=true verfügbar";
 const DEBUG_LABELS: Record<string, string> = {
   "original.jpg": "Original (normalisiert)",
   "mask.png": "Maske",
+  "geometry.jpg": "Geometrie (Reifenkontakte)",
   "vehicle-transparent.png": "Fahrzeug freigestellt",
   "background.jpg": "Hintergrund",
   "composite-before-shadow.jpg": "Komposition ohne Schatten",
@@ -206,12 +215,15 @@ interface ComparisonTile {
  */
 function buildComparisonTiles({
   job,
+  shot,
   previewUrl,
   previewFailed,
   failedImages,
   busy,
 }: {
   job: ProcessorJob;
+  /** Shot the photo was sent as (the plate preview falls back to it). */
+  shot: ShowroomPlateShot;
   previewUrl: string | null;
   previewFailed: boolean;
   failedImages: ReadonlySet<string>;
@@ -268,11 +280,13 @@ function buildComparisonTiles({
         message: previewUrl ? "Dieses Format kann der Browser nicht anzeigen." : "Kein Original vorhanden.",
       };
 
-  // 4. Showroom: debug background, else the processor's showroom preview.
+  // 4. Showroom: debug background, else the processor's preview of the plate
+  //    used (the mirrored 3/4 plate if the processor switched), else the shot's plate.
   const backgroundDebug = debugUrl(COMPARISON_DEBUG_FILES.background);
   const preset = isDevTestPresetId(job.preset) ? job.preset : DEFAULT_DEV_TEST_PRESET;
   const resultFile = job.result?.kind === "file" ? job.result : null;
-  const showroomUrl = DEV_TEST_API.showroom(preset, showroomPreviewWidth(resultFile?.width));
+  const plate = job.metadata.plateUsed ?? shot;
+  const showroomUrl = DEV_TEST_API.showroom(preset, plate, showroomPreviewWidth(resultFile?.width));
   const showroomSrc = backgroundDebug ?? (failedImages.has(showroomUrl) ? null : showroomUrl);
   const showroom: ComparisonTile = {
     key: "showroom",
@@ -281,7 +295,7 @@ function buildComparisonTiles({
       ? {
           src: showroomSrc,
           alt: "Showroom-Hintergrund ohne Fahrzeug",
-          source: backgroundDebug ? COMPARISON_DEBUG_FILES.background : "Showroom-Vorschau",
+          source: backgroundDebug ? COMPARISON_DEBUG_FILES.background : `Showroom-Plate ${plate}`,
         }
       : null,
     message: "Showroom konnte nicht geladen werden.",
@@ -350,7 +364,9 @@ export function ProcessingTestScreen() {
   const [selection, setSelection] = useState<Selection | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [preset, setPreset] = useState<DevTestPresetId>(DEFAULT_DEV_TEST_PRESET);
-  const [shotKey, setShotKey] = useState(DEFAULT_DEV_TEST_SHOT_KEY);
+  const [shotKey, setShotKey] = useState<string>(DEFAULT_DEV_TEST_SHOT_KEY);
+  /** Shot of the current/last job (the select may change afterwards). */
+  const [runShot, setRunShot] = useState<ShowroomPlateShot>(DEFAULT_DEV_TEST_SHOT_KEY);
   const [phase, setPhase] = useState<Phase>("idle");
   const [job, setJob] = useState<ProcessorJob | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -435,6 +451,7 @@ export function ProcessingTestScreen() {
     setError(null);
     setJob(null);
     setFailedImages(new Set());
+    setRunShot(isShowroomPlateShot(shotKey) ? shotKey : DEFAULT_DEV_TEST_SHOT_KEY);
     setPhase("uploading");
 
     try {
@@ -495,13 +512,17 @@ export function ProcessingTestScreen() {
   const resultFailed = job !== null && failedImages.has(DEV_TEST_API.result(job.jobId));
   const debugFiles = job?.metadata.debugFiles.filter(isValidDebugFileName) ?? [];
   const timings = job ? Object.entries(job.metadata.timingsMs) : [];
+  const metadataDetails = job ? job.metadata.details : {};
+  const hasMetadataDetails = Object.keys(metadataDetails).length > 0;
+  /** Reason of a failed job (quality gate etc.), shown with the error. */
+  const failedCode = job?.status === "failed" ? job.metadata.errorCode : null;
   // Only the job's own value: interior shots are not composited, failed jobs may
   // not have reached the showroom step – the service status line shows /health.
   const showroomSource: ShowroomSource | null = job ? job.metadata.showroomSource : null;
   // Debug files exist only once the job has ended (complete, or failed mid-way).
   const comparisonTiles =
     job && (job.status === "complete" || (job.status === "failed" && debugFiles.length > 0))
-      ? buildComparisonTiles({ job, previewUrl, previewFailed, failedImages, busy })
+      ? buildComparisonTiles({ job, shot: runShot, previewUrl, previewFailed, failedImages, busy })
       : null;
 
   return (
@@ -647,7 +668,18 @@ export function ProcessingTestScreen() {
                 className="flex gap-3 rounded-xl border border-ae-danger/35 bg-ae-danger/8 p-4 text-sm"
               >
                 <TriangleAlert className="size-5 shrink-0 text-ae-danger" aria-hidden />
-                <p>{error}</p>
+                <div className="min-w-0">
+                  <p>{error}</p>
+                  {failedCode && (
+                    <p className="mt-1 text-xs text-ae-muted">
+                      {isQualityGateErrorCode(failedCode) ? "Qualitätsprüfung abgelehnt" : "Fehlercode"}:{" "}
+                      <code className="rounded bg-ae-bg/60 px-1 py-px font-mono text-[12px] text-ae-text">
+                        {failedCode}
+                      </code>
+                      {isQualityGateErrorCode(failedCode) && " · In der App: „Foto neu aufnehmen“."}
+                    </p>
+                  )}
+                </div>
               </div>
             )}
 
@@ -710,7 +742,9 @@ export function ProcessingTestScreen() {
               </div>
             )}
 
-            {job && showroomSource && <ShowroomStatus source={showroomSource} />}
+            {job && showroomSource && (
+              <ShowroomStatus source={showroomSource} plateUsed={job.metadata.plateUsed} shot={runShot} />
+            )}
 
             {job && job.warnings.length > 0 && (
               <Notice tone="warning" icon={<TriangleAlert className="size-5 shrink-0 text-ae-warning" aria-hidden />}>
@@ -723,7 +757,7 @@ export function ProcessingTestScreen() {
               </Notice>
             )}
 
-            {job && (job.metadata.segmenter || timings.length > 0) && (
+            {job && (job.metadata.segmenter || timings.length > 0 || hasMetadataDetails) && (
               <details className="group rounded-xl border border-ae-border bg-ae-surface text-sm">
                 <summary className="cursor-pointer list-none px-4 py-3 font-semibold marker:hidden">
                   Technische Details
@@ -739,6 +773,18 @@ export function ProcessingTestScreen() {
                         <dd>{job.metadata.shotKind}</dd>
                       </>
                     )}
+                    {job.metadata.plateUsed && (
+                      <>
+                        <dt className="text-ae-muted">Showroom-Plate</dt>
+                        <dd className="break-all">{job.metadata.plateUsed}</dd>
+                      </>
+                    )}
+                    {job.metadata.errorCode && (
+                      <>
+                        <dt className="text-ae-muted">Fehlercode</dt>
+                        <dd className="break-all font-mono">{job.metadata.errorCode}</dd>
+                      </>
+                    )}
                     {job.metadata.segmenter && (
                       <>
                         <dt className="text-ae-muted">Freistellung</dt>
@@ -752,13 +798,9 @@ export function ProcessingTestScreen() {
                       <TimingRow key={step} step={step} ms={ms} />
                     ))}
                   </dl>
-                  {(job.metadata.placement || job.metadata.adjustments) && (
-                    <pre className="mt-3 max-h-64 overflow-auto rounded-lg bg-ae-bg p-3 text-[11px] leading-relaxed text-ae-muted">
-                      {JSON.stringify(
-                        { placement: job.metadata.placement, adjustments: job.metadata.adjustments },
-                        null,
-                        2,
-                      )}
+                  {hasMetadataDetails && (
+                    <pre className="mt-3 max-h-96 overflow-auto rounded-lg bg-ae-bg p-3 text-[11px] leading-relaxed text-ae-muted">
+                      {JSON.stringify(metadataDetails, null, 2)}
                     </pre>
                   )}
                 </div>
@@ -856,8 +898,8 @@ function ServiceStatus({ state }: { state: HealthState }) {
           {health.showroomSource && (
             <>
               {" · "}
-              <span className={cn(health.showroomSource === "fallback" && "font-semibold text-ae-warning")}>
-                {health.showroomSource === "master" ? "Showroom: finales Master-Foto" : "Showroom: Fallback"}
+              <span className={cn(health.showroomSource !== "plates" && "font-semibold text-ae-warning")}>
+                {SHOWROOM_SOURCE_LABELS[health.showroomSource]}
               </span>
             </>
           )}
@@ -867,15 +909,36 @@ function ServiceStatus({ state }: { state: HealthState }) {
   );
 }
 
-/** Which showroom the job was composited onto (fallback → clear amber notice). */
-function ShowroomStatus({ source }: { source: ShowroomSource }) {
-  if (source === "master") {
+const SHOWROOM_SOURCE_LABELS: Record<ShowroomSource, string> = {
+  plates: "Showroom: 3D-Showroom (8 Plates)",
+  missing: "Showroom: Plates fehlen",
+  master: "Showroom: veraltetes Einzel-Foto",
+  fallback: "Showroom: Fallback",
+};
+
+/** Which showroom the job was composited onto (anything but the plates → clear amber notice). */
+function ShowroomStatus({
+  source,
+  plateUsed,
+  shot,
+}: {
+  source: ShowroomSource;
+  plateUsed: ShowroomPlateShot | null;
+  shot: ShowroomPlateShot;
+}) {
+  if (source === "plates") {
+    const switched = plateUsed !== null && plateUsed !== shot;
     return (
-      <p>
+      <p className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-1.5 rounded-full border border-ae-border-strong bg-ae-surface-2 px-2.5 py-0.5 text-xs font-semibold text-ae-muted">
           <span className="size-1.5 rounded-full bg-current" aria-hidden />
-          Showroom: finales Master-Foto
+          Showroom-Plate: {shotTitle(plateUsed ?? shot)}
         </span>
+        {switched && (
+          <span className="text-xs text-ae-warning">
+            Andere Perspektive als die gewählte Aufnahmeposition ({shotTitle(shot)}).
+          </span>
+        )}
       </p>
     );
   }
@@ -883,12 +946,14 @@ function ShowroomStatus({ source }: { source: ShowroomSource }) {
     <div className="flex gap-3 rounded-xl border border-ae-warning/45 bg-ae-warning/10 p-4 text-sm text-ae-text">
       <TriangleAlert className="size-5 shrink-0 text-ae-warning" aria-hidden />
       <p className="min-w-0">
-        <strong className="font-semibold text-ae-warning">Fallback-Showroom aktiv</strong> – das finale
-        AutoExperten-Showroom-Foto fehlt. Bitte die Datei{" "}
+        <strong className="font-semibold text-ae-warning">
+          {source === "master" ? "Veraltetes Showroom-Foto" : "Kein AutoExperten-Showroom"}
+        </strong>{" "}
+        – der Prozessor hat nicht mit den 8 Showroom-Plates gearbeitet. Bitte den Plate-Satz{" "}
         <code className="rounded bg-ae-bg/60 px-1 py-px text-[13px] [overflow-wrap:anywhere]">
-          public/<wbr />presets/<wbr />autoexperten-standard-showroom.jpg
+          public/<wbr />presets/<wbr />autoexperten-standard/
         </code>{" "}
-        ablegen.
+        (plates.json + Plates) bereitstellen und den Prozessor aktualisieren.
       </p>
     </div>
   );

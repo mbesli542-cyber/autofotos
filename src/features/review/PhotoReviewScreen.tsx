@@ -16,6 +16,7 @@ import { useToast } from "@/components/ui/Toast";
 import { usePendingUploads } from "@/hooks/use-upload-queue";
 import { useVehicleDetail } from "@/hooks/use-vehicle-data";
 import { getAppServices, getShotTemplate } from "@/lib/app-services";
+import { cameraHref } from "@/lib/camera/camera-links";
 import { toUserMessage } from "@/lib/errors";
 import { vehicleDisplayName } from "@/lib/format";
 import { buildPhotoSlots, type PhotoSlot } from "@/lib/photos/photo-slots";
@@ -43,7 +44,6 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
   const progress = getShotProgress(template, savedKeys);
   const uploadsInProgress = pending.some((item) => item.status !== "failed");
 
-  const cameraHref = `/fahrzeuge/${vehicleId}/kamera`;
   const detailHref = `/fahrzeuge/${vehicleId}`;
 
   function handleRetake(slot: PhotoSlot) {
@@ -52,7 +52,7 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
       fileInputRef.current?.click();
       return;
     }
-    router.push(`${cameraHref}?shot=${encodeURIComponent(slot.key)}&zurueck=fotos`);
+    router.push(cameraHref(vehicleId, { shot: slot.key, returnTo: "fotos" }));
   }
 
   async function handleDelete(slot: PhotoSlot) {

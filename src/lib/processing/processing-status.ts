@@ -1,11 +1,17 @@
 /**
  * GET /api/processing-status – pure decision whether real processing can run.
+ *
+ * Only a processor reporting the complete set of showroom plates
+ * (`showroomSource: "plates"`) is usable. Anything else – "missing", the
+ * retired single master photo ("master"), the emergency fallback or no
+ * answer – blocks processing with "AutoExperten Showroom-Master fehlt.".
  */
 import type { BackendMode } from "@/lib/data/types";
 import type { ImageProcessorKind } from "./processor-config";
 import {
   SHOWROOM_CONFIG_ERROR_MESSAGE,
   SHOWROOM_MASTER_MISSING_MESSAGE,
+  USABLE_SHOWROOM_SOURCE,
   type ProcessingStatus,
   type ProcessorHealthReport,
 } from "./types";
@@ -24,7 +30,7 @@ export function buildProcessingStatus(input: {
   }
   let showroomError: string | null = null;
   if (health.presetError) showroomError = SHOWROOM_CONFIG_ERROR_MESSAGE;
-  else if (health.showroomSource !== "master" || health.showroomMasterError) {
+  else if (health.showroomSource !== USABLE_SHOWROOM_SOURCE || health.showroomMasterError) {
     showroomError = SHOWROOM_MASTER_MISSING_MESSAGE;
   }
   return { ...base, connected: true, showroomSource: health.showroomSource, showroomError };
