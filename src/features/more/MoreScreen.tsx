@@ -2,7 +2,7 @@
 
 import { Building2, Globe, LogOut, Phone, RotateCcw, UserRound } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { PageContainer } from "@/components/layout/PageContainer";
 import { Button } from "@/components/ui/Button";
@@ -12,6 +12,7 @@ import { APP_INFO, BRAND } from "@/config/brand";
 import { useAuthState } from "@/hooks/use-auth";
 import { getAppServices, getBackendMode, getShotTemplate } from "@/lib/app-services";
 import { MockDataProvider } from "@/lib/data/mock/mock-data-provider";
+import { toUserMessage } from "@/lib/errors";
 import { getOrderedShots, SHOT_CATEGORY_LABELS } from "@/lib/shots/shot-template";
 
 function Card({ title, children }: { title: string; children: ReactNode }) {
@@ -32,19 +33,27 @@ export function MoreScreen() {
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
 
+  // The route stays mounted while hidden: leaving it dismisses the question.
+  useEffect(() => () => setConfirmReset(false), []);
+
   async function handleSignOut() {
     await getAppServices().authStore.signOut();
     router.replace("/login");
   }
 
   async function handleResetDemo() {
-    const { data } = getAppServices().backend;
+    const { backend, uploads } = getAppServices();
+    const { data } = backend;
     if (!(data instanceof MockDataProvider)) return;
     setResetting(true);
     try {
+      // Captures still waiting for their upload belong to the old demo data.
+      await uploads.clear();
       await data.resetDemoData();
       toast.success("Demo-Daten wurden zurückgesetzt.");
       setConfirmReset(false);
+    } catch (error) {
+      toast.error(toUserMessage(error));
     } finally {
       setResetting(false);
     }
@@ -64,7 +73,7 @@ export function MoreScreen() {
                 {auth.status === "authenticated" ? (auth.user.email ?? "Angemeldet") : "–"}
               </p>
               <p className="text-xs text-ae-muted">
-                {isDemo ? "Demo-Modus · Daten nur auf diesem Gerät" : "Verbunden mit Supabase"}
+                {isDemo ? "Demo-Modus · Daten nur auf diesem Gerät" : "Angemeldet · Daten werden online gespeichert"}
               </p>
             </div>
           </div>
@@ -117,8 +126,7 @@ export function MoreScreen() {
         {isDemo && (
           <Card title="Demo-Modus">
             <p className="text-sm text-ae-muted">
-              Supabase ist nicht konfiguriert. Fahrzeuge und Fotos werden nur lokal in diesem Browser
-              gespeichert.
+              Fahrzeuge und Fotos werden nur lokal in diesem Browser gespeichert.
             </p>
             <Button
               variant="danger"

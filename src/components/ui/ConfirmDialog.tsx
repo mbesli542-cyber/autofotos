@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { Button } from "./Button";
 import { LoadingButton } from "./LoadingButton";
 
@@ -34,6 +34,10 @@ export function ConfirmDialog({
     if (open && !dialog.open) dialog.showModal();
     if (!open && dialog.open) dialog.close();
   }, [open]);
+
+  // Close when the route gets hidden (Next.js keeps routes mounted): a modal
+  // left open in the hidden route would block the page that is shown.
+  useLayoutEffect(() => () => ref.current?.close(), []);
 
   return (
     <dialog

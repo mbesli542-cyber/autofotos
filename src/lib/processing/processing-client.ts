@@ -3,7 +3,7 @@
  * functions – it never talks to the processor directly and never sees its
  * URL, key or result URLs.
  */
-import { AppError } from "@/lib/errors";
+import { AppError, type AppErrorCode } from "@/lib/errors";
 import type { ProcessingPresetId } from "@/lib/domain/types";
 import {
   ACCESS_CODE_REQUIRED_CODE,
@@ -19,22 +19,49 @@ import {
   type ProcessingStatus,
 } from "./types";
 
+/** A non-OK answer of the app's processing API (`status`: its HTTP status). */
+class ProcessingApiError extends AppError {
+  constructor(
+    readonly status: number,
+    code: AppErrorCode,
+    options: { userMessage?: string } = {},
+  ) {
+    super(code, options);
+  }
+}
+
 /** The processor is busy (queue full) – worth retrying after a short wait. */
-class ProcessingBusyError extends AppError {}
+class ProcessingBusyError extends ProcessingApiError {}
 
 /** Demo mode: PROCESSING_ACCESS_CODE is set and the code is missing or wrong. */
-export class AccessCodeRequiredError extends AppError {}
+export class AccessCodeRequiredError extends ProcessingApiError {}
 
 /** No real processor is configured or reachable. */
-export class ProcessingNotConnectedError extends AppError {}
+export class ProcessingNotConnectedError extends ProcessingApiError {}
 
 /** 409: the result file is not available yet. */
-class ResultNotReadyError extends AppError {}
+class ResultNotReadyError extends ProcessingApiError {}
 
-/** Waits between attempts when the processor is busy (≈ 1 min in total). */
-const BUSY_RETRY_DELAYS_MS = [3_000, 8_000, 15_000, 30_000];
+/**
+ * A full processor queue (503 processing_busy) is retried until this long
+ * after the first attempt – with several employees processing at once a
+ * photo may have to wait minutes for a free slot.
+ */
+const BUSY_RETRY_DEADLINE_MS = 10 * 60_000;
+/**
+ * Busy back-off: the wait doubles from the first to the longest one, with
+ * jitter. Demo uploads send the photo copy (up to 4 MB) again with every
+ * attempt, so in a long busy phase a photo is re-sent at most about once a minute.
+ */
+const BUSY_RETRY_FIRST_WAIT_MS = 3_000;
+const BUSY_RETRY_MAX_WAIT_MS = 60_000;
 /** Waits when the result file is not ready yet although the job reported "complete". */
 const RESULT_RETRY_DELAYS_MS = [700, 1_500, 3_000];
+/** Waits after failed requests (the job keeps running on the processor); the last one repeats. */
+const POLL_ERROR_DELAYS_MS = [2_000, 4_000, 8_000, 15_000];
+/** A lost connection while downloading a finished result is retried this long (the result stays). */
+const RESULT_ERROR_RETRY_MS = 60_000;
+const SLOW_JOB_MESSAGE = "Die Bearbeitung dauert ungewöhnlich lange. Bitte später erneut versuchen.";
 
 export interface ProcessingRequestOptions {
   /** Demo mode: value of PROCESSING_ACCESS_CODE entered on this device. */
@@ -52,21 +79,35 @@ async function readError(response: Response): Promise<AppError> {
   } catch {
     // ignore
   }
-  if (response.status === 503 && code === PROCESSING_BUSY_CODE) {
-    return new ProcessingBusyError("unknown", { userMessage: message });
+  const { status } = response;
+  if (status === 503 && code === PROCESSING_BUSY_CODE) {
+    return new ProcessingBusyError(status, "unknown", { userMessage: message });
   }
-  if (response.status === 503 && code === PROCESSING_NOT_CONNECTED_CODE) {
-    return new ProcessingNotConnectedError("unknown", { userMessage: message ?? PROCESSING_NOT_CONNECTED_MESSAGE });
+  if (status === 503 && code === PROCESSING_NOT_CONNECTED_CODE) {
+    return new ProcessingNotConnectedError(status, "unknown", {
+      userMessage: message ?? PROCESSING_NOT_CONNECTED_MESSAGE,
+    });
   }
-  if (response.status === 401 && code === ACCESS_CODE_REQUIRED_CODE) {
-    return new AccessCodeRequiredError("unauthorized", { userMessage: message });
+  if (status === 401 && code === ACCESS_CODE_REQUIRED_CODE) {
+    return new AccessCodeRequiredError(status, "unauthorized", { userMessage: message });
   }
-  if (response.status === 409 && code === "not_ready") {
-    return new ResultNotReadyError("unknown", { userMessage: message });
+  if (status === 409 && code === "not_ready") {
+    return new ResultNotReadyError(status, "unknown", { userMessage: message });
   }
-  if (response.status === 401) return new AppError("unauthorized", { userMessage: message });
-  if (response.status === 404) return new AppError("not_found", { userMessage: message });
-  return new AppError("unknown", { userMessage: message });
+  if (status === 401) return new ProcessingApiError(status, "unauthorized", { userMessage: message });
+  if (status === 404) return new ProcessingApiError(status, "not_found", { userMessage: message });
+  return new ProcessingApiError(status, "unknown", { userMessage: message });
+}
+
+/**
+ * A failed GET that is worth repeating (status poll, result download): no
+ * connection or a server / gateway error (5xx). 4xx answers (401 session or
+ * access code, 404 unknown job) and "no processor configured" are final.
+ */
+function isTransientError(error: unknown): boolean {
+  if (error instanceof ProcessingNotConnectedError) return false;
+  if (error instanceof ProcessingApiError) return error.status >= 500;
+  return error instanceof AppError && error.code === "network";
 }
 
 function buildHeaders(options: ProcessingRequestOptions, extra: Record<string, string> = {}): Headers {
@@ -116,14 +157,25 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** Retries `call` while the processor queue is full (503 processing_busy). */
+/**
+ * Exponential back-off with "equal jitter" (half fixed, half random), so
+ * devices waiting for the same processor do not retry in lockstep.
+ */
+function busyRetryWait(attempt: number): number {
+  const wait = Math.min(BUSY_RETRY_MAX_WAIT_MS, BUSY_RETRY_FIRST_WAIT_MS * 2 ** attempt);
+  return wait / 2 + Math.random() * (wait / 2);
+}
+
+/** Retries `call` while the processor queue is full (503 processing_busy), up to BUSY_RETRY_DEADLINE_MS. */
 async function withBusyRetry<T>(call: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const deadline = Date.now() + BUSY_RETRY_DEADLINE_MS;
   for (let attempt = 0; ; attempt += 1) {
     try {
       return await call();
     } catch (error) {
-      const wait = BUSY_RETRY_DELAYS_MS[attempt];
-      if (!(error instanceof ProcessingBusyError) || wait === undefined) throw error;
+      if (!(error instanceof ProcessingBusyError)) throw error;
+      const wait = busyRetryWait(attempt);
+      if (Date.now() + wait > deadline) throw error;
       await delay(wait, signal);
     }
   }
@@ -179,53 +231,97 @@ export function fetchProcessingJob(jobId: string, options: ProcessingRequestOpti
   });
 }
 
-/** Polls a job until it is complete or failed. */
+/**
+ * Polls a job until it is complete or failed.
+ *
+ * `timeoutMs` counts from when the processor starts working on the job;
+ * while the job still waits in the processor's queue (other photos first)
+ * the generous `queuedTimeoutMs` applies. A failed poll (no connection, 5xx)
+ * does not stop the job on the processor: it is repeated with back-off as
+ * long as the last answer is at most `timeoutMs` old.
+ */
 export async function waitForProcessingJob(
   jobId: string,
   options: ProcessingRequestOptions & {
     intervalMs?: number;
     timeoutMs?: number;
+    queuedTimeoutMs?: number;
     onUpdate?: (job: ProcessingJob) => void;
   } = {},
 ): Promise<ProcessingJob> {
-  const { intervalMs = 1_000, timeoutMs = 5 * 60_000, signal, onUpdate } = options;
-  const startedAt = Date.now();
+  const { intervalMs = 1_000, timeoutMs = 5 * 60_000, queuedTimeoutMs = 30 * 60_000, signal, onUpdate } = options;
+  let deadline = Date.now() + queuedTimeoutMs;
+  let processing = false;
+  let lastAnswerAt = Date.now();
+  let failedPolls = 0;
   for (;;) {
-    const job = await fetchProcessingJob(jobId, options);
-    onUpdate?.(job);
-    if (isTerminalJobStatus(job.status)) return job;
-    if (Date.now() - startedAt > timeoutMs) {
-      throw new AppError("unknown", {
-        userMessage: "Die Bearbeitung dauert ungewöhnlich lange. Bitte später erneut versuchen.",
-      });
+    try {
+      const job = await fetchProcessingJob(jobId, options);
+      lastAnswerAt = Date.now();
+      failedPolls = 0;
+      onUpdate?.(job);
+      if (isTerminalJobStatus(job.status)) return job;
+      if (job.status !== "queued" && !processing) {
+        processing = true;
+        deadline = Date.now() + timeoutMs;
+      }
+    } catch (error) {
+      if (signal?.aborted || !isTransientError(error)) throw error;
+      if (Date.now() - lastAnswerAt > timeoutMs || Date.now() > deadline) throw error;
+      failedPolls += 1;
     }
-    await delay(intervalMs, signal);
+    if (Date.now() > deadline) throw new AppError("unknown", { userMessage: SLOW_JOB_MESSAGE });
+    const backoff = POLL_ERROR_DELAYS_MS[Math.min(failedPolls, POLL_ERROR_DELAYS_MS.length) - 1];
+    await delay(failedPolls === 0 ? intervalMs : (backoff ?? intervalMs), signal);
+  }
+}
+
+/** The body of an answer; a connection lost while it streams is a network error (worth retrying). */
+async function readBlob(response: Response, signal?: AbortSignal): Promise<Blob> {
+  try {
+    return await response.blob();
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new AppError("network", { cause: error });
   }
 }
 
 /**
  * Upload jobs: downloads the processed JPEG via GET /api/process-job/:jobId/result
- * (the app's own route – never the processor's URL).
+ * (the app's own route – never the processor's URL). A result that is not
+ * ready yet (409) and a lost connection (also while the file streams) or
+ * gateway error are retried; the finished result stays on the processor
+ * meanwhile.
  */
 export async function downloadProcessingResult(
   jobId: string,
   options: ProcessingRequestOptions = {},
 ): Promise<Blob> {
-  for (let attempt = 0; ; attempt += 1) {
-    let response: Response;
+  const startedAt = Date.now();
+  let notReady = 0;
+  let failedAttempts = 0;
+  for (;;) {
+    let type: string | undefined;
+    let blob: Blob;
     try {
-      response = await send(`/api/process-job/${encodeURIComponent(jobId)}/result`, {
+      const response = await send(`/api/process-job/${encodeURIComponent(jobId)}/result`, {
         headers: buildHeaders(options, { Accept: "image/jpeg" }),
         signal: options.signal,
       });
+      type = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+      blob = await readBlob(response, options.signal);
     } catch (error) {
-      const wait = RESULT_RETRY_DELAYS_MS[attempt];
-      if (!(error instanceof ResultNotReadyError) || wait === undefined) throw error;
+      if (options.signal?.aborted) throw error;
+      let wait: number | undefined;
+      if (error instanceof ResultNotReadyError) {
+        wait = RESULT_RETRY_DELAYS_MS[notReady++];
+      } else if (isTransientError(error) && Date.now() - startedAt < RESULT_ERROR_RETRY_MS) {
+        wait = POLL_ERROR_DELAYS_MS[Math.min(failedAttempts++, POLL_ERROR_DELAYS_MS.length - 1)];
+      }
+      if (wait === undefined) throw error;
       await delay(wait, options.signal);
       continue;
     }
-    const type = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
-    const blob = await response.blob();
     if (type !== "image/jpeg" || blob.size === 0) {
       throw new AppError("unknown", { userMessage: "Das bearbeitete Foto konnte nicht geladen werden." });
     }

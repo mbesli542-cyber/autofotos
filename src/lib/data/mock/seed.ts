@@ -100,6 +100,7 @@ export function buildSeedData(now: Date = new Date()): {
         originalStoragePath: asset,
         processedStoragePath: null,
         processedPreset: null,
+        processingWarnings: [],
         thumbnailStoragePath: null,
         width: 1600,
         height: 1200,

@@ -6,6 +6,7 @@ import {
   buildProcessedStoragePath,
   buildThumbnailStoragePath,
   getFileExtensionForMimeType,
+  normalizeImageMimeType,
   sanitizeFileNameSegment,
 } from "./file-naming";
 
@@ -84,5 +85,19 @@ describe("storage paths", () => {
     expect(getFileExtensionForMimeType("image/jpeg")).toBe("jpg");
     expect(getFileExtensionForMimeType("image/HEIC")).toBe("heic");
     expect(getFileExtensionForMimeType("application/octet-stream")).toBe("jpg");
+  });
+});
+
+describe("normalizeImageMimeType", () => {
+  it("maps non-standard JPEG spellings to image/jpeg (the storage buckets only accept standard types)", () => {
+    expect(normalizeImageMimeType("image/jpg")).toBe("image/jpeg");
+    expect(normalizeImageMimeType("IMAGE/JPG")).toBe("image/jpeg");
+    expect(normalizeImageMimeType("image/pjpeg")).toBe("image/jpeg");
+  });
+
+  it("keeps standard and unknown types and treats an empty type as JPEG", () => {
+    expect(normalizeImageMimeType("image/heic")).toBe("image/heic");
+    expect(normalizeImageMimeType("image/avif")).toBe("image/avif");
+    expect(normalizeImageMimeType("")).toBe("image/jpeg");
   });
 });

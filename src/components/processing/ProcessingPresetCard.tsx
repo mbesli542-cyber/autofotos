@@ -3,7 +3,10 @@ import { LOGO_ASSETS } from "@/config/brand";
 import { cn } from "@/lib/cn";
 import type { ProcessingPreset } from "@/lib/processing/presets";
 
-/** Selectable style card with a small visual impression of the preset. */
+/**
+ * Selectable style card with a small visual impression of the preset.
+ * Styles the processor does not implement yet cannot be chosen ("Demnächst verfügbar").
+ */
 export function ProcessingPresetCard({
   preset,
   selected,
@@ -23,7 +26,7 @@ export function ProcessingPresetCard({
       type="button"
       role="radio"
       aria-checked={selected}
-      disabled={disabled}
+      disabled={disabled || !preset.available}
       onClick={onSelect}
       className={cn(
         "flex w-full gap-3.5 rounded-2xl border p-3 text-left transition-colors disabled:opacity-60",
@@ -73,6 +76,11 @@ export function ProcessingPresetCard({
             {selected && <Check className="size-3.5" strokeWidth={3} />}
           </span>
         </div>
+        {!preset.available && (
+          <span className="mt-1 inline-flex rounded-full border border-ae-border-strong px-2 py-0.5 text-xs font-semibold text-ae-muted">
+            Demnächst verfügbar
+          </span>
+        )}
         <p className="mt-1 text-sm leading-snug text-ae-muted">{preset.description}</p>
       </div>
     </button>

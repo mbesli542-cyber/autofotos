@@ -9,19 +9,21 @@
  */
 import type {
   DataProvider,
+  RecordProcessedPhotoInput,
   SavePhotoInput,
   SaveProcessedPhotoInput,
+  UpdateVehicleOptions,
   VehicleWithPhotos,
 } from "@/lib/data/types";
 import type {
-  ProcessingPresetId,
   Vehicle,
   VehicleInput,
   VehiclePhoto,
   VehiclePhotoWithUrls,
   VehicleStatus,
 } from "@/lib/domain/types";
-import { AppError } from "@/lib/errors";
+import { AppError, VehicleChangedError } from "@/lib/errors";
+import { createId } from "@/lib/ids";
 import {
   buildOriginalStoragePath,
   buildProcessedStoragePath,
@@ -30,6 +32,8 @@ import {
   STORAGE_BUCKETS,
 } from "@/lib/naming/file-naming";
 import { IdbDatabase } from "@/lib/offline/idb";
+import { isOlderThanSavedPhoto } from "@/lib/photos/capture-order";
+import { parseProcessingWarnings } from "@/lib/processing/processing-warnings";
 import { DEMO_STORES, migrateDemoData } from "./migrations";
 import { buildSeedData, STATIC_PATH_PREFIX, type StoredPhoto } from "./seed";
 
@@ -52,10 +56,25 @@ export function createDemoDatabase(name: string = DB_NAME): IdbDatabase {
   ]);
 }
 
+/**
+ * A new `updatedAt` for a changed record: now – but always later than the
+ * previous one (two changes in the same millisecond must differ, the
+ * conditional update of "Fahrzeugdaten" compares them).
+ */
+function laterTimestamp(previous: string): string {
+  const before = Date.parse(previous);
+  const now = Date.now();
+  return new Date(Number.isNaN(before) || now > before ? now : before + 1).toISOString();
+}
+
+/** Stored record → photo. Records from older app versions have no `processingWarnings`. */
 function stripArchived(photo: StoredPhoto): VehiclePhoto {
   const rest: Partial<StoredPhoto> = { ...photo };
   delete rest.archivedAt;
-  return rest as VehiclePhoto;
+  return {
+    ...(rest as VehiclePhoto),
+    processingWarnings: photo.processedStoragePath ? parseProcessingWarnings(photo.processingWarnings) : [],
+  };
 }
 
 export class MockDataProvider implements DataProvider {
@@ -122,7 +141,7 @@ export class MockDataProvider implements DataProvider {
     await this.ensureReady();
     const now = new Date().toISOString();
     const vehicle: Vehicle = {
-      id: crypto.randomUUID(),
+      id: createId(),
       userId: "demo-user",
       ...input,
       status: "new",
@@ -133,10 +152,12 @@ export class MockDataProvider implements DataProvider {
     return vehicle;
   }
 
-  async updateVehicle(vehicleId: string, input: VehicleInput): Promise<Vehicle> {
+  async updateVehicle(vehicleId: string, input: VehicleInput, options: UpdateVehicleOptions = {}): Promise<Vehicle> {
     const existing = await this.getVehicle(vehicleId);
     if (!existing) throw new AppError("not_found");
-    const updated: Vehicle = { ...existing, ...input, updatedAt: new Date().toISOString() };
+    // Like the conditional update in Supabase: never over a change made since the input's data was loaded.
+    if (options.expectedUpdatedAt && existing.updatedAt !== options.expectedUpdatedAt) throw new VehicleChangedError();
+    const updated: Vehicle = { ...existing, ...input, updatedAt: laterTimestamp(existing.updatedAt) };
     await this.db.put(STORES.vehicles, updated);
     return updated;
   }
@@ -144,7 +165,7 @@ export class MockDataProvider implements DataProvider {
   async setVehicleStatus(vehicleId: string, status: VehicleStatus): Promise<void> {
     const existing = await this.getVehicle(vehicleId);
     if (!existing) throw new AppError("not_found");
-    await this.db.put(STORES.vehicles, { ...existing, status, updatedAt: new Date().toISOString() });
+    await this.db.put(STORES.vehicles, { ...existing, status, updatedAt: laterTimestamp(existing.updatedAt) });
   }
 
   async listPhotos(vehicleId: string): Promise<VehiclePhoto[]> {
@@ -215,12 +236,18 @@ export class MockDataProvider implements DataProvider {
     }
 
     const now = new Date().toISOString();
-    // Archive the previous photo of this shot (kept, never overwritten).
-    const previous = (await this.activePhotos(input.vehicleId)).filter(
+    const active = (await this.activePhotos(input.vehicleId)).filter(
       (photo) => photo.shotKey === input.shotKey,
     );
-    for (const photo of previous) {
-      await this.db.put<StoredPhoto>(STORES.photos, { ...photo, archivedAt: now, updatedAt: now });
+    // A capture older than the active photo (uploaded late, e.g. a queued
+    // upload retried after a retake) is kept as archived; the newer photo
+    // stays. Otherwise the previous photo is archived (kept, never overwritten).
+    // The same rule as add_vehicle_photo (src/lib/photos/capture-order.ts).
+    const supersededOnArrival = active.some((photo) => isOlderThanSavedPhoto(input.takenAt, photo));
+    if (!supersededOnArrival) {
+      for (const photo of active) {
+        await this.db.put<StoredPhoto>(STORES.photos, { ...photo, archivedAt: now, updatedAt: now });
+      }
     }
 
     const record: StoredPhoto = {
@@ -232,13 +259,14 @@ export class MockDataProvider implements DataProvider {
       originalStoragePath: originalPath,
       processedStoragePath: null,
       processedPreset: null,
+      processingWarnings: [],
       thumbnailStoragePath: thumbnailPath,
       width: input.width,
       height: input.height,
       takenAt: input.takenAt,
       createdAt: now,
       updatedAt: now,
-      archivedAt: null,
+      archivedAt: supersededOnArrival ? now : null,
     };
     await this.db.put(STORES.photos, record);
     return stripArchived(record);
@@ -252,8 +280,8 @@ export class MockDataProvider implements DataProvider {
     await this.db.put<StoredPhoto>(STORES.photos, { ...photo, archivedAt: now, updatedAt: now });
   }
 
-  /** Stores a REAL processor result (separate file; the original is untouched). */
-  async saveProcessedPhoto({ photo, preset, file }: SaveProcessedPhotoInput): Promise<VehiclePhoto> {
+  /** Stores a REAL processor result (separate file; the original is untouched) with its hints. */
+  async saveProcessedPhoto({ photo, preset, file, warnings }: SaveProcessedPhotoInput): Promise<VehiclePhoto> {
     await this.ensureReady();
     const path = `${STORAGE_BUCKETS.processed}/${buildProcessedStoragePath({
       vehicleId: photo.vehicleId,
@@ -271,15 +299,16 @@ export class MockDataProvider implements DataProvider {
       URL.revokeObjectURL(cachedUrl);
       this.objectUrls.delete(path);
     }
-    await this.recordProcessedPhoto({ photoId: photo.id, preset, processedStoragePath: path });
-    return { ...photo, processedStoragePath: path, processedPreset: preset };
+    await this.recordProcessedPhoto({ photoId: photo.id, preset, processedStoragePath: path, warnings });
+    return {
+      ...photo,
+      processedStoragePath: path,
+      processedPreset: preset,
+      processingWarnings: parseProcessingWarnings(warnings),
+    };
   }
 
-  async recordProcessedPhoto(input: {
-    photoId: string;
-    preset: ProcessingPresetId;
-    processedStoragePath: string;
-  }): Promise<void> {
+  async recordProcessedPhoto(input: RecordProcessedPhotoInput): Promise<void> {
     await this.ensureReady();
     const stored = await this.db.get<StoredPhoto>(STORES.photos, input.photoId);
     if (!stored) throw new AppError("not_found");
@@ -287,6 +316,8 @@ export class MockDataProvider implements DataProvider {
       ...stored,
       processedStoragePath: input.processedStoragePath,
       processedPreset: input.preset,
+      // The hints of this result replace those of an earlier processing.
+      processingWarnings: parseProcessingWarnings(input.warnings),
       updatedAt: new Date().toISOString(),
     });
   }

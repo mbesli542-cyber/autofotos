@@ -31,7 +31,7 @@
       "caseId": "coupe_fr45",
       "category": "body_style",
       "shotKey": "front_right_45",
-      "expected": "accept",
+      "expected": "mask_low_confidence",
       "file": "coupe_fr45.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f1/Nissan_350Z_Premium_Pack_sunset_orange%2C_2003%2C_view_front_right.jpg/3840px-Nissan_350Z_Premium_Pack_sunset_orange%2C_2003%2C_view_front_right.jpg",
       "landingUrl": "https://commons.wikimedia.org/wiki/File:Nissan_350Z_Premium_Pack_sunset_orange%2C_2003%2C_view_front_right.jpg",
@@ -42,20 +42,21 @@
       "width": 3840,
       "height": 2571,
       "sha256": "540ecfaba7bc4a0cb967944314c2f0cac783104cb1a1819185534032d30d4098",
-      "notes": "Nissan 350Z (Z33) coupe, metallic orange, front-right 3/4: front on the right of the frame, right flank running to the left; LHD steering wheel on the far side, consistent with seeing the right flank. Industrial yard/loading bay, strong sun, part of the car in hard building shadow, strong paint reflections. Car ~84 % of the frame width (~8 % margin left/right), whole car visible, eye height. German plate blank. File is the Wikimedia 3840px-wide rendition of the 3872x2592 original (upload.wikimedia.org rate-limits original downloads).",
+      "notes": "Nissan 350Z (Z33) coupe, metallic orange, front-right 3/4: front on the right of the frame, right flank running to the left; LHD steering wheel on the far side, consistent with seeing the right flank. Industrial yard/loading bay, strong sun, part of the car in hard building shadow, strong paint reflections. Car ~84 % of the frame width (~8 % margin left/right), whole car visible, eye height. German plate blank. File is the Wikimedia 3840px-wide rendition of the 3872x2592 original (upload.wikimedia.org rate-limits original downloads). Expected mask_low_confidence (reason foreign_object, check 'foreign'): an object of the background is merged into the car's outline and cannot be cut with a certain cut line (audit VQ-1) – see foreignObjects.",
       "authorUrl": "https://commons.wikimedia.org/wiki/User:TeEmKah",
       "bodyStyle": "coupe",
       "source": "wikimedia",
       "originalUrl": "https://upload.wikimedia.org/wikipedia/commons/f/f1/Nissan_350Z_Premium_Pack_sunset_orange%2C_2003%2C_view_front_right.jpg",
       "originalWidth": 3872,
-      "originalHeight": 2592
+      "originalHeight": 2592,
+      "foreignObjects": "yellow/black hazard bollard standing right behind the far mirror (source x 2484-2613, y 822-930) – merged into the outline by BiRefNet; no COCO class, the detector's zoomed vehicle mask leaves it out (found as an unclaimed region in the upper part of the car)"
     },
     {
       "id": "suv_fr45",
       "caseId": "suv_fr45",
       "category": "body_style",
       "shotKey": "front_right_45",
-      "expected": "accept",
+      "expected": "mask_low_confidence",
       "file": "suv_fr45.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/04/Nissan_X-Trail_%E2%80%93_front_right_side_view.jpg/3840px-Nissan_X-Trail_%E2%80%93_front_right_side_view.jpg",
       "landingUrl": "https://commons.wikimedia.org/wiki/File:Nissan_X-Trail_%E2%80%93_front_right_side_view.jpg",
@@ -66,13 +67,14 @@
       "width": 3840,
       "height": 2880,
       "sha256": "57233db8285bd668a09f8785bdc20b528d33d120a9303dc363d219dda6e9ada1",
-      "notes": "Nissan X-Trail (T31) SUV, black, front-right 3/4: front on the right, right flank to the left. Snowy Polish used-car lot, overcast. Car ~70 % of the frame width, whole car visible, phone at chest/eye height. A white car is parked behind the front corner (background, not occluding). Same car as side_right. File is the Wikimedia 3840px-wide rendition of the 4032x3024 original (upload.wikimedia.org rate-limits original downloads).",
+      "notes": "Nissan X-Trail (T31) SUV, black, front-right 3/4: front on the right, right flank to the left. Snowy Polish used-car lot, overcast. Car ~70 % of the frame width, whole car visible, phone at chest/eye height. A white car is parked behind the front corner (background, not occluding). Same car as side_right. File is the Wikimedia 3840px-wide rendition of the 4032x3024 original (upload.wikimedia.org rate-limits original downloads). Expected mask_low_confidence (reason foreign_object, check 'foreign'): an object of the background is merged into the car's outline and cannot be cut with a certain cut line (audit VQ-1) – see foreignObjects.",
       "authorUrl": "https://commons.wikimedia.org/wiki/User:Acgskup",
       "bodyStyle": "suv",
       "source": "wikimedia",
       "originalUrl": "https://upload.wikimedia.org/wikipedia/commons/0/04/Nissan_X-Trail_%E2%80%93_front_right_side_view.jpg",
       "originalWidth": 4032,
-      "originalHeight": 3024
+      "originalHeight": 3024,
+      "foreignObjects": "front wheel of the white car parked behind, fused to the front corner beside the headlight (source x 3255-3333, y 1473-1601) – claimed by the detector's instance of that car"
     },
     {
       "id": "hatch_fl",
@@ -103,7 +105,7 @@
       "caseId": "estate_rr45",
       "category": "body_style",
       "shotKey": "rear_right_45",
-      "expected": "accept",
+      "expected": "mask_low_confidence",
       "file": "estate_rr45.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e2/2023_Audi_A4_B9_Avant_Allroad_-_right_back_view.jpg/3840px-2023_Audi_A4_B9_Avant_Allroad_-_right_back_view.jpg",
       "landingUrl": "https://commons.wikimedia.org/wiki/File:2023_Audi_A4_B9_Avant_Allroad_-_right_back_view.jpg",
@@ -114,13 +116,14 @@
       "width": 3840,
       "height": 2880,
       "sha256": "342d740040e2ceb4c6d105723e8a150a752e39413d529b9169525498c95a5540",
-      "notes": "Audi A4 B9 Avant allroad (estate), black, rear-right 3/4: rear on the left of the frame, right flank running to the right (matches the rear-right-45 overlay). Snowy Polish used-car lot, overcast, other cars parked on both sides in the background. Car ~69 % of the frame width, whole car visible, eye height. Same car as dark_paint_rl45 (opposite corner). File is the Wikimedia 3840px-wide rendition of the 4032x3024 original (upload.wikimedia.org rate-limits original downloads).",
+      "notes": "Audi A4 B9 Avant allroad (estate), black, rear-right 3/4: rear on the left of the frame, right flank running to the right (matches the rear-right-45 overlay). Snowy Polish used-car lot, overcast, other cars parked on both sides in the background. Car ~69 % of the frame width, whole car visible, eye height. Same car as dark_paint_rl45 (opposite corner). File is the Wikimedia 3840px-wide rendition of the 4032x3024 original (upload.wikimedia.org rate-limits original downloads). Expected mask_low_confidence (reason foreign_object, check 'foreign'): an object of the background is merged into the car's outline and cannot be cut with a certain cut line (audit VQ-1) – see foreignObjects.",
       "authorUrl": "https://commons.wikimedia.org/wiki/User:Acgskup",
       "bodyStyle": "estate",
       "source": "wikimedia",
       "originalUrl": "https://upload.wikimedia.org/wikipedia/commons/e/e2/2023_Audi_A4_B9_Avant_Allroad_-_right_back_view.jpg",
       "originalWidth": 4032,
-      "originalHeight": 3024
+      "originalHeight": 3024,
+      "foreignObjects": "a strip of the alloy wheel of the white car parked behind, glued to the Audi's rear-left corner (source x 780-807, y 1530-1680) – claimed by the detector's instance of that car (found by the semantic check; not listed in the audit)"
     },
     {
       "id": "old_hardlight",
@@ -223,7 +226,7 @@
       "caseId": "side_right",
       "category": "angle",
       "shotKey": "right_side",
-      "expected": "accept",
+      "expected": "mask_low_confidence",
       "file": "side_right.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/98/Nissan_X-Trail_%E2%80%93_right_side_view.jpg/3840px-Nissan_X-Trail_%E2%80%93_right_side_view.jpg",
       "landingUrl": "https://commons.wikimedia.org/wiki/File:Nissan_X-Trail_%E2%80%93_right_side_view.jpg",
@@ -234,20 +237,21 @@
       "width": 3840,
       "height": 2880,
       "sha256": "051ddf7c576a7e71cfbbd857c8529f0e572b4ef749b73b464bf72c797381766a",
-      "notes": "Nissan X-Trail (T31) SUV, black, straight right-side profile (nose to the right, mirrored side overlay). Snowy Polish used-car lot, overcast; cars and a person in the background. Car ~90 % of the frame width (front bumper ~4 % from the right edge), matching the side overlay; whole car visible, eye height. Same car as suv_fr45. File is the Wikimedia 3840px-wide rendition of the 4032x3024 original (upload.wikimedia.org rate-limits original downloads).",
+      "notes": "Nissan X-Trail (T31) SUV, black, straight right-side profile (nose to the right, mirrored side overlay). Snowy Polish used-car lot, overcast; cars and a person in the background. Car ~90 % of the frame width (front bumper ~4 % from the right edge), matching the side overlay; whole car visible, eye height. Same car as suv_fr45. File is the Wikimedia 3840px-wide rendition of the 4032x3024 original (upload.wikimedia.org rate-limits original downloads). Expected mask_low_confidence (reason foreign_object, check 'foreign'): an object of the background is merged into the car's outline and cannot be cut with a certain cut line (audit VQ-1) – see foreignObjects.",
       "authorUrl": "https://commons.wikimedia.org/wiki/User:Acgskup",
       "bodyStyle": "suv",
       "source": "wikimedia",
       "originalUrl": "https://upload.wikimedia.org/wikipedia/commons/9/98/Nissan_X-Trail_%E2%80%93_right_side_view.jpg",
       "originalWidth": 4032,
-      "originalHeight": 3024
+      "originalHeight": 3024,
+      "foreignObjects": "silver hubcap of the blue car behind, glued to the rear corner (source x 218-295, y 1718-1869) – claimed by the detector's instance of that car"
     },
     {
       "id": "front",
       "caseId": "front",
       "category": "angle",
       "shotKey": "front",
-      "expected": "accept",
+      "expected": "mask_low_confidence",
       "file": "front.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/18/Front_view_of_a_grey_Toyota_Yaris_%28GR_Sport_trim%29_parked_outdoors.jpg/3840px-Front_view_of_a_grey_Toyota_Yaris_%28GR_Sport_trim%29_parked_outdoors.jpg",
       "landingUrl": "https://commons.wikimedia.org/wiki/File:Front_view_of_a_grey_Toyota_Yaris_%28GR_Sport_trim%29_parked_outdoors.jpg",
@@ -258,13 +262,30 @@
       "width": 3840,
       "height": 2880,
       "sha256": "5cb90908d52d4a7a034b92980650fa6f1618763727c822ab41ef6d7df95419d8",
-      "notes": "Toyota Yaris GR Sport hybrid (XP210) hatchback, grey, straight front view centred on the car. Slushy Polish used-car lot, overcast. Car ~53 % of the frame width, whole car visible, camera slightly above bonnet height and close (phone wide-angle perspective). Dealer 'GWARANCJA' plate. File is the Wikimedia 3840px-wide rendition of the 4032x3024 original (upload.wikimedia.org rate-limits original downloads).",
+      "notes": "Toyota Yaris GR Sport hybrid (XP210) hatchback, grey, straight front view centred on the car. Slushy Polish used-car lot, overcast. Car ~53 % of the frame width, whole car visible, camera slightly above bonnet height and close (phone wide-angle perspective). Dealer 'GWARANCJA' plate. File is the Wikimedia 3840px-wide rendition of the 4032x3024 original (upload.wikimedia.org rate-limits original downloads). Expected mask_low_confidence (reason vehicle_part_missing, check 'parts'): BiRefNet drops the car's left side mirror (right in the photo – a black housing in front of the dark car parked behind; its alpha there is ≈ 0.01, also in 13 of 14 other framings tried), the vehicle detector's instance claims it – see missingParts. Until the missing-part check this case was accepted without that mirror.",
       "authorUrl": "https://commons.wikimedia.org/wiki/User:Acgskup",
       "bodyStyle": "hatchback",
       "source": "wikimedia",
       "originalUrl": "https://upload.wikimedia.org/wikipedia/commons/1/18/Front_view_of_a_grey_Toyota_Yaris_%28GR_Sport_trim%29_parked_outdoors.jpg",
       "originalWidth": 4032,
-      "originalHeight": 3024
+      "originalHeight": 3024,
+      "missingParts": "left side mirror, right in the photo (source x 2526-2634, y 1083-1209): claimed by the detector's vehicle instance (zoom-tile cover 0.99), missing from the BiRefNet mask",
+      "requiredParts": [
+        {
+          "part": "right side mirror (left in the photo)",
+          "point": [
+            1215,
+            1150
+          ]
+        },
+        {
+          "part": "left side mirror (right in the photo)",
+          "point": [
+            2585,
+            1140
+          ]
+        }
+      ]
     },
     {
       "id": "rear",
@@ -319,7 +340,7 @@
       "caseId": "white_car",
       "category": "paint",
       "shotKey": "front_left_45",
-      "expected": "accept",
+      "expected": "mask_low_confidence",
       "file": "white_car.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/88/Volkswagen_Passat_%28B8%29_%E2%80%93_front_view_%282017%29.jpg/3840px-Volkswagen_Passat_%28B8%29_%E2%80%93_front_view_%282017%29.jpg",
       "landingUrl": "https://commons.wikimedia.org/wiki/File:Volkswagen_Passat_%28B8%29_%E2%80%93_front_view_%282017%29.jpg",
@@ -330,13 +351,14 @@
       "width": 3840,
       "height": 2880,
       "sha256": "b69108d4040d8e8b15a62c288ecbcb41e762544f7dc8d5314f2afaba26a58c85",
-      "notes": "Volkswagen Passat B8 Variant (estate), white, front-left 3/4 (front on the left, left flank to the right). White car on a snowy Polish used-car lot, overcast - hard low-contrast segmentation case. Car ~70 % of the frame width, whole car visible, eye height. Commons title says 'front view' but the photo is a front-left 3/4. File is the Wikimedia 3840px-wide rendition of the 4032x3024 original (upload.wikimedia.org rate-limits original downloads).",
+      "notes": "Volkswagen Passat B8 Variant (estate), white, front-left 3/4 (front on the left, left flank to the right). White car on a snowy Polish used-car lot, overcast - hard low-contrast segmentation case. Car ~70 % of the frame width, whole car visible, eye height. Commons title says 'front view' but the photo is a front-left 3/4. File is the Wikimedia 3840px-wide rendition of the 4032x3024 original (upload.wikimedia.org rate-limits original downloads). Expected mask_low_confidence (reason foreign_object, check 'foreign'): an object of the background is merged into the car's outline and cannot be cut with a certain cut line (audit VQ-1) – see foreignObjects.",
       "authorUrl": "https://commons.wikimedia.org/wiki/User:Acgskup",
       "bodyStyle": "estate",
       "source": "wikimedia",
       "originalUrl": "https://upload.wikimedia.org/wikipedia/commons/8/88/Volkswagen_Passat_%28B8%29_%E2%80%93_front_view_%282017%29.jpg",
       "originalWidth": 4032,
-      "originalHeight": 3024
+      "originalHeight": 3024,
+      "foreignObjects": "rear of a second white car with its tail light, glued to the Passat's rear (source x 3228-3351, y 902-1150) – claimed by the detector's instance of that car"
     },
     {
       "id": "cropped",
@@ -361,6 +383,56 @@
       "originalUrl": "https://upload.wikimedia.org/wikipedia/commons/2/22/Broken_car_front_bumper.jpg",
       "originalWidth": 4640,
       "originalHeight": 3480
+    },
+    {
+      "id": "showroom_sign_fr45",
+      "caseId": "showroom_sign_fr45",
+      "category": "foreign_object",
+      "shotKey": "front_right_45",
+      "expected": "mask_low_confidence",
+      "file": "showroom_sign_fr45.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/77/2023_MG_5_SW_Trophy_Long_Range_in_Arctic_White_%28Front%29.jpg/3840px-2023_MG_5_SW_Trophy_Long_Range_in_Arctic_White_%28Front%29.jpg",
+      "landingUrl": "https://commons.wikimedia.org/wiki/File:2023_MG_5_SW_Trophy_Long_Range_in_Arctic_White_%28Front%29.jpg",
+      "title": "2023 MG 5 SW Trophy Long Range in Arctic White (Front)",
+      "author": "MoCars",
+      "authorUrl": "https://commons.wikimedia.org/wiki/User:MoCars",
+      "license": "CC0 1.0",
+      "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/deed.en/",
+      "width": 3840,
+      "height": 2160,
+      "sha256": "e99596a3533f12b86187e3ccad8f936ed52eea6ee6d1b8f2b46f9bfecd91fa82",
+      "bodyStyle": "estate",
+      "source": "wikimedia",
+      "originalUrl": "https://upload.wikimedia.org/wikipedia/commons/7/77/2023_MG_5_SW_Trophy_Long_Range_in_Arctic_White_%28Front%29.jpg",
+      "originalWidth": 4160,
+      "originalHeight": 2340,
+      "notes": "MG5 SW EV (2023), arctic white, front-right 3/4 in an MG dealership showroom (UK): white tiles, red wall, a price placard standing on the roof. Car ~68 % of the frame width, whole car visible. Behind the roof hangs the dealer's chrome/red 'MG' wall sign, which BiRefNet merges into the roof (it stood on the roof in the accepted listing image before the semantic check, audit VQ-1 case white_car__b); a white side table touches the front fender. Expected mask_low_confidence (reason foreign_object). File is the Wikimedia 3840px rendition of the 4160x2340 original.",
+      "foreignObjects": "chrome/red MG wall sign above the roof (source x 534-990, y 69-477), white side table at the front fender (source x 2704-2894, y 877-949)"
+    },
+    {
+      "id": "lot_car_behind_fl45",
+      "caseId": "lot_car_behind_fl45",
+      "category": "foreign_object",
+      "shotKey": "front_left_45",
+      "expected": "mask_low_confidence",
+      "file": "lot_car_behind_fl45.jpg",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Mitsubishi_Lancer_%282008%29_%E2%80%93_left_front_view.jpg/3840px-Mitsubishi_Lancer_%282008%29_%E2%80%93_left_front_view.jpg",
+      "landingUrl": "https://commons.wikimedia.org/wiki/File:Mitsubishi_Lancer_%282008%29_%E2%80%93_left_front_view.jpg",
+      "title": "Mitsubishi Lancer (2008) – left front view",
+      "author": "Acgskup",
+      "authorUrl": "https://commons.wikimedia.org/wiki/User:Acgskup",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+      "width": 3840,
+      "height": 2880,
+      "sha256": "a13496a51c0c014e0f800ba10eae1cd8fb70e8c0a67ad0bca783ed85fba7d068",
+      "bodyStyle": "sedan",
+      "source": "wikimedia",
+      "originalUrl": "https://upload.wikimedia.org/wikipedia/commons/d/d4/Mitsubishi_Lancer_%282008%29_%E2%80%93_left_front_view.jpg",
+      "originalWidth": 4032,
+      "originalHeight": 3024,
+      "notes": "Mitsubishi Lancer (2008) saloon, beige, front-left 3/4 on a snowy Polish dealer lot, overcast, chest/eye height, car ~68 % of the frame width (same car as side_left). The snow-covered rear of a car parked behind sticks out above the trunk and merges into the outline (audit VQ-1 case sedan_fl45__a). Expected mask_low_confidence (reason foreign_object). File is the Wikimedia 3840px rendition of the 4032x3024 original.",
+      "foreignObjects": "snowy rear of a car parked behind, above the trunk (source x 3201-3360, y 903-1018)"
     }
   ]
 }

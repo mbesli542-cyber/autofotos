@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { CameraCapture } from "@/components/camera/CameraCapture";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { Spinner } from "@/components/ui/Spinner";
@@ -18,12 +19,16 @@ export function CameraScreen({
   returnTo: CameraReturnTarget | null;
 }) {
   const { state, reload } = useVehicleDetail(vehicleId);
+  // Routes stay mounted (React Activity). Every navigation into the camera
+  // (link, "Foto wiederholen", …) gets a fresh camera at the requested or
+  // first open shot; browser Back/Forward show the camera as it was left
+  // (bfcacheId only changes on push/replace navigations).
+  const { bfcacheId } = useRouter();
 
   if (state.status === "ready") {
     return (
       <CameraCapture
-        // Remount when the requested shot changes (routes stay mounted).
-        key={`${initialShotKey ?? "auto"}-${returnTo ?? ""}`}
+        key={`${bfcacheId}-${initialShotKey ?? "auto"}-${returnTo ?? ""}`}
         vehicle={state.vehicle}
         photos={state.photos}
         template={getShotTemplate()}

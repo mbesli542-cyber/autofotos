@@ -41,6 +41,8 @@ export function VehicleForm({
   loadingText,
   submitIcon,
   onSubmit,
+  onEdit,
+  readOnly = false,
 }: {
   initialValues?: VehicleFormValues;
   submitLabel: string;
@@ -48,6 +50,10 @@ export function VehicleForm({
   submitIcon?: ReactNode;
   /** Should throw (with a German message) on failure. */
   onSubmit: (input: VehicleInput) => Promise<void>;
+  /** Called when the employee changes a field (the form now holds unsaved input). */
+  onEdit?: () => void;
+  /** Fields read-only and saving off (e.g. while the newest data is still loading). */
+  readOnly?: boolean;
 }) {
   const [values, setValues] = useState<VehicleFormValues>(initialValues ?? emptyVehicleFormValues());
   const [errors, setErrors] = useState<VehicleFormErrors>({});
@@ -59,16 +65,20 @@ export function VehicleForm({
       id: name,
       value: values[name],
       error: errors[name],
+      readOnly,
       onChange: (event: { target: { value: string } }) => {
+        if (readOnly) return;
         const value = event.target.value;
         setValues((current) => ({ ...current, [name]: value }));
         if (errors[name]) setErrors((current) => ({ ...current, [name]: undefined }));
+        onEdit?.();
       },
     };
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (readOnly) return;
     setSubmitError(null);
     const result = validateVehicleForm(values);
     if (!result.ok) {
@@ -187,6 +197,7 @@ export function VehicleForm({
           fullWidth
           loading={submitting}
           loadingText={loadingText}
+          disabled={readOnly}
           icon={submitIcon}
           className="sm:w-auto sm:min-w-80"
         >

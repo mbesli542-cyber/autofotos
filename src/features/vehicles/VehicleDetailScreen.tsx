@@ -1,14 +1,14 @@
 "use client";
 
-import { Camera, CloudOff, ImageOff, Images, Pencil } from "lucide-react";
+import { Camera, CloudOff, ImageOff, Images, Pencil, TriangleAlert } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useState } from "react";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { PageContainer } from "@/components/layout/PageContainer";
 import { PhotoGrid } from "@/components/photos/PhotoGrid";
 import { PhotoVersionToggle } from "@/components/photos/PhotoVersionToggle";
 import { PhotoViewer } from "@/components/photos/PhotoViewer";
-import type { PhotoVariant } from "@/components/photos/ShotThumbnail";
+import { processedNeedsCheck, type PhotoVariant } from "@/components/photos/ShotThumbnail";
 import { ButtonLink } from "@/components/ui/Button";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { ProgressBar } from "@/components/ui/ProgressBar";
@@ -19,12 +19,12 @@ import { VehicleInfoCard } from "@/components/vehicles/VehicleInfoCard";
 import { usePendingUploads } from "@/hooks/use-upload-queue";
 import { useVehicleDetail } from "@/hooks/use-vehicle-data";
 import { getAppServices, getShotTemplate } from "@/lib/app-services";
-import { toUserMessage } from "@/lib/errors";
 import { vehicleDisplayName } from "@/lib/format";
 import { buildPhotoSlots, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { getShotProgress } from "@/lib/shots/shot-progress";
 import { canProcessVehicle } from "@/lib/vehicles/status";
 import { deletePhotoAndSyncStatus } from "@/lib/workflow/vehicle-workflow";
+import { useExtraPhotoRetake } from "@/features/review/use-extra-photo-retake";
 import { VehicleNotFound } from "./VehicleNotFound";
 
 export function VehicleDetailScreen({
@@ -39,8 +39,15 @@ export function VehicleDetailScreen({
   const template = getShotTemplate();
   const { state, reload } = useVehicleDetail(vehicleId);
   const pending = usePendingUploads(vehicleId);
-  const [variant, setVariant] = useState<PhotoVariant>(initialVariant);
+  const extraRetake = useExtraPhotoRetake(vehicleId);
+  // The link picks the version (?ansicht=bearbeitet, e.g. "Ergebnisse ansehen").
+  // Routes stay mounted, so a choice made with the toggle only holds while the
+  // page is shown: coming back follows the link again.
+  const [chosenVariant, setChosenVariant] = useState<PhotoVariant | null>(null);
+  const variant = chosenVariant ?? initialVariant;
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+
+  useLayoutEffect(() => () => setChosenVariant(null), []);
 
   const photos = useMemo(() => (state.status === "ready" ? state.photos : []), [state]);
   const slots = useMemo(() => buildPhotoSlots(template, photos, pending), [template, photos, pending]);
@@ -53,20 +60,21 @@ export function VehicleDetailScreen({
   const reviewHref = `/fahrzeuge/${vehicleId}/fotos`;
   const processHref = `/fahrzeuge/${vehicleId}/bearbeiten`;
 
+  /** From the large view – it shows why a delete failed (a toast would be hidden behind it). */
   async function handleDelete(slot: PhotoSlot) {
     if (!slot.photo) return;
-    try {
-      await deletePhotoAndSyncStatus(getAppServices().backend.data, template, slot.photo);
-      toast.success("Foto gelöscht.");
-      reload();
-    } catch (error) {
-      toast.error(toUserMessage(error));
-      throw error;
-    }
+    await deletePhotoAndSyncStatus(getAppServices().backend.data, template, slot.photo);
+    toast.success("Foto gelöscht.");
+    reload();
   }
 
   function handleRetake(slot: PhotoSlot) {
     setSelectedKey(null);
+    if (!slot.required) {
+      // Not part of the guided camera: ONE picked file replaces exactly this photo.
+      extraRetake.retake(slot);
+      return;
+    }
     router.push(`${cameraHref}?shot=${encodeURIComponent(slot.key)}`);
   }
 
@@ -86,7 +94,13 @@ export function VehicleDetailScreen({
   const { vehicle } = state;
   const cover = photos[0];
   const coverUrl = cover ? (variant === "processed" ? cover.urls.processed : cover.urls.original) : null;
-  const failedUploads = pending.filter((item) => item.status === "failed").length;
+  const failed = pending.filter((item) => item.status === "failed");
+  /** Failed uploads a retry can still save. */
+  const failedUploads = failed.filter((item) => item.retryable).length;
+  /** Files the server refused for good: only "Verwerfen" in the large view helps. */
+  const refusedUploads = failed.length - failedUploads;
+  /** Processed versions the processor asks to check ("Bearbeitet" view). */
+  const toCheck = allSlots.filter((slot) => processedNeedsCheck(slot, variant)).length;
 
   return (
     <>
@@ -112,7 +126,7 @@ export function VehicleDetailScreen({
                 <Camera className="size-10" aria-hidden />
               </div>
             )}
-            <StatusBadge status={vehicle.status} className="absolute top-3 left-3 bg-ae-bg/80 backdrop-blur" />
+            <StatusBadge status={vehicle.status} onImage className="absolute top-3 left-3" />
           </div>
           <div className="p-4">
             <h2 className="text-xl font-bold tracking-tight">{vehicleDisplayName(vehicle)}</h2>
@@ -169,11 +183,19 @@ export function VehicleDetailScreen({
             role="status"
           >
             <CloudOff className="size-5 shrink-0 text-ae-warning" aria-hidden />
-            <p className="flex-1 text-ae-muted">
-              {failedUploads > 0
-                ? `${failedUploads} Foto(s) konnten noch nicht gespeichert werden. Sie bleiben auf diesem Gerät.`
-                : `${pending.length} Foto(s) werden gespeichert…`}
-            </p>
+            <div className="flex flex-1 flex-col gap-1 text-ae-muted">
+              {failedUploads > 0 && (
+                <p>{`${failedUploads} Foto(s) konnten noch nicht gespeichert werden. Sie bleiben auf diesem Gerät.`}</p>
+              )}
+              {refusedUploads > 0 && (
+                <p>
+                  {refusedUploads === 1
+                    ? "1 Foto kann nicht gespeichert werden. Bitte das Foto antippen und in der Großansicht „Verwerfen“ wählen."
+                    : `${refusedUploads} Fotos können nicht gespeichert werden. Bitte die Fotos antippen und in der Großansicht „Verwerfen“ wählen.`}
+                </p>
+              )}
+              {failed.length === 0 && <p>{`${pending.length} Foto(s) werden gespeichert…`}</p>}
+            </div>
             {failedUploads > 0 && (
               <button
                 type="button"
@@ -193,9 +215,17 @@ export function VehicleDetailScreen({
               Aufnahmen
             </h2>
             {(hasProcessed || variant === "processed") && (
-              <PhotoVersionToggle value={variant} onChange={setVariant} />
+              <PhotoVersionToggle value={variant} onChange={setChosenVariant} />
             )}
           </div>
+          {toCheck > 0 && (
+            <p className="mb-3 flex items-start gap-1.5 text-sm text-ae-warning">
+              <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+              {toCheck === 1
+                ? "Bitte ein bearbeitetes Foto prüfen – Hinweis in der Großansicht."
+                : `Bitte ${toCheck} bearbeitete Fotos prüfen – Hinweise in der Großansicht.`}
+            </p>
+          )}
           <PhotoGrid slots={slots.required} variant={variant} onSelect={(slot) => setSelectedKey(slot.key)} label="Pflichtfotos" />
           {slots.extras.length > 0 && (
             <>
@@ -207,6 +237,8 @@ export function VehicleDetailScreen({
 
         <VehicleInfoCard vehicle={vehicle} editHref={`/fahrzeuge/${vehicleId}/daten`} />
       </PageContainer>
+
+      {extraRetake.input}
 
       <PhotoViewer
         // Re-created when the grid switches version, so the viewer opens in that version.

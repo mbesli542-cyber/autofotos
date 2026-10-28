@@ -13,7 +13,9 @@
  * is processed or saved.
  */
 import type { BackendMode } from "@/lib/data/types";
-import { isProcessingPresetId, type ProcessingPresetId } from "@/lib/domain/types";
+import { isProcessingPresetId, type ProcessingPresetId, type ProcessingWarning } from "@/lib/domain/types";
+
+export type { ProcessingWarning } from "@/lib/domain/types";
 
 export const PROCESSING_JOB_STATUSES = [
   "queued",
@@ -66,12 +68,6 @@ export interface ProcessPhotoResponse {
 export type ProcessingJobResult =
   | { kind: "stored"; processedStoragePath: string }
   | { kind: "file"; width: number | null; height: number | null; bytes: number | null };
-
-export interface ProcessingWarning {
-  code: string;
-  /** German, user-presentable. */
-  message: string;
-}
 
 /** GET /api/process-job/:jobId response. */
 export interface ProcessingJob {
@@ -139,6 +135,11 @@ export interface ProcessorHealthReport {
   showroomMasterError: boolean;
   /** The showroom preset (JSON) is broken. */
   presetError: boolean;
+  /**
+   * The processor can read originals from and store results in the vehicle
+   * storage itself (its `supabase: true`) – required in Supabase mode.
+   */
+  storageConnected: boolean;
 }
 
 /** A processed JPEG streamed from the processor. */
@@ -170,6 +171,11 @@ export interface ProcessingStatus {
   showroomSource: ShowroomSource | null;
   /** German message when the showroom is not ready (e.g. plate set missing). */
   showroomError: string | null;
+  /**
+   * German message why an answering processor still cannot be used
+   * (Supabase mode: it has no access to the vehicle storage); null otherwise.
+   */
+  connectionError: string | null;
   /** Demo mode with PROCESSING_ACCESS_CODE set. */
   accessCodeRequired: boolean;
   dataBackend: BackendMode;
@@ -201,6 +207,9 @@ export const PROCESSING_NOT_CONNECTED_CODE = "processing_not_connected";
 export const PROCESSING_NOT_CONNECTED_MESSAGE = "Echte Showroom-Bearbeitung ist noch nicht verbunden.";
 
 export const SHOWROOM_MASTER_MISSING_MESSAGE = "AutoExperten Showroom-Master fehlt.";
+/** Supabase mode, processor without storage access (no backend names for staff). */
+export const PROCESSOR_STORAGE_MISSING_MESSAGE =
+  "Der Bildverarbeitungs-Service ist nicht mit der Fahrzeug-Datenbank verbunden. Bitte den Administrator informieren.";
 export const SHOWROOM_CONFIG_ERROR_MESSAGE =
   "Der AutoExperten Showroom ist auf dem Server nicht richtig eingerichtet.";
 

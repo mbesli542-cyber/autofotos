@@ -1,9 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import type { VehiclePhotoWithUrls } from "@/lib/domain/types";
 import { ProcessingJobFailedError, processPhoto, type PhotoProcessingDeps } from "./photo-processing";
-import type { ProcessingJob } from "./types";
+import type { ProcessingJob, ProcessingWarning } from "./types";
 
 const JOB_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const MIRRORED: ProcessingWarning = {
+  code: "plate_mirrored",
+  message:
+    "Das Foto zeigt das Fahrzeug von der anderen Seite – es wurde der Showroom-Hintergrund „Vorne rechts (45°)“ verwendet. Bitte die Aufnahmeposition prüfen.",
+};
+const UPSCALED: ProcessingWarning = {
+  code: "low_resolution",
+  message: "Das Fahrzeug musste vergrößert werden – für beste Qualität näher heran oder mit höherer Auflösung fotografieren.",
+};
 
 const PHOTO: VehiclePhotoWithUrls = {
   id: "photo_1",
@@ -14,6 +23,7 @@ const PHOTO: VehiclePhotoWithUrls = {
   originalStoragePath: "vehicle-originals/veh_1/front_left_45/photo_1.jpg",
   processedStoragePath: null,
   processedPreset: null,
+  processingWarnings: [],
   thumbnailStoragePath: null,
   width: 4032,
   height: 3024,
@@ -75,8 +85,23 @@ describe("processPhoto – demo upload adapter", () => {
       { accessCode: "code-1", signal: undefined },
     );
     expect(ctx.api.downloadProcessingResult).toHaveBeenCalledWith(JOB_ID, { accessCode: "code-1", signal: undefined });
-    expect(ctx.data.saveProcessedPhoto).toHaveBeenCalledWith({ photo: PHOTO, preset: "autoexperten_standard", file: ctx.result });
+    expect(ctx.data.saveProcessedPhoto).toHaveBeenCalledWith({
+      photo: PHOTO,
+      preset: "autoexperten_standard",
+      file: ctx.result,
+      warnings: [],
+    });
     expect(ctx.api.submitPhotoProcessing).not.toHaveBeenCalled();
+  });
+
+  it("saves the processor's hints with the result and returns them", async () => {
+    const ctx = setup(
+      "demo",
+      job({ result: { kind: "file", width: 3200, height: 2400, bytes: 8 }, warnings: [MIRRORED, UPSCALED] }),
+    );
+    const outcome = await processPhoto(PHOTO, "autoexperten_standard", ctx.deps);
+    expect(outcome).toEqual({ warnings: [MIRRORED, UPSCALED] });
+    expect(ctx.data.saveProcessedPhoto).toHaveBeenCalledWith(expect.objectContaining({ warnings: [MIRRORED, UPSCALED] }));
   });
 
   it("keeps the processor's German error and saves nothing", async () => {
@@ -133,10 +158,25 @@ describe("processPhoto – Supabase contract adapter", () => {
       photoId: "photo_1",
       preset: "autoexperten_standard",
       processedStoragePath: "veh_1/autoexperten_standard/front_left_45/photo_1.jpg",
+      warnings: [],
     });
     expect(ctx.deps.loadOriginal).not.toHaveBeenCalled();
     expect(ctx.api.submitUploadProcessing).not.toHaveBeenCalled();
     expect(ctx.data.saveProcessedPhoto).not.toHaveBeenCalled();
+  });
+
+  it("records the processor's hints with the stored result and returns them", async () => {
+    const ctx = setup(
+      "supabase",
+      job({
+        result: { kind: "stored", processedStoragePath: "veh_1/autoexperten_standard/front_left_45/photo_1.jpg" },
+        // As the browser receives it – anything unusable is dropped.
+        warnings: [MIRRORED, { code: "x" } as unknown as ProcessingWarning],
+      }),
+    );
+    const outcome = await processPhoto(PHOTO, "autoexperten_standard", ctx.deps);
+    expect(outcome).toEqual({ warnings: [MIRRORED] });
+    expect(ctx.data.recordProcessedPhoto).toHaveBeenCalledWith(expect.objectContaining({ warnings: [MIRRORED] }));
   });
 
   it("refuses file results (nothing stored on the server)", async () => {

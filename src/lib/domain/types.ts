@@ -70,6 +70,18 @@ export function isProcessingPresetId(
 }
 
 /**
+ * A hint of the image processor on a finished result (e.g. "plate_mirrored":
+ * the photo shows the other side of the car). See
+ * src/lib/processing/processing-warnings.ts.
+ */
+export interface ProcessingWarning {
+  /** Machine-readable reason (snake_case). */
+  code: string;
+  /** German, user-presentable (the processor's own text). */
+  message: string;
+}
+
+/**
  * One captured photo for one shot of a vehicle.
  *
  * `originalStoragePath` is immutable: a retake creates a NEW photo record and
@@ -84,6 +96,11 @@ export interface VehiclePhoto {
   originalStoragePath: string;
   processedStoragePath: string | null;
   processedPreset: ProcessingPresetId | null;
+  /**
+   * The processor's hints on the processed version (replaced by every new
+   * processing); empty without a processed version or when it had none.
+   */
+  processingWarnings: ProcessingWarning[];
   thumbnailStoragePath: string | null;
   width: number | null;
   height: number | null;

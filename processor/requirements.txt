@@ -5,8 +5,13 @@ uvicorn~=0.54
 python-multipart~=0.0.32
 pydantic~=2.13
 httpx~=0.28
+# httpx's CA bundle: floor so that stale venvs/images drop the distrusted emSign ECC G3 root
+# (GHSA-6q48-6c7w-9gw2) – fresh installs resolve a newer certifi anyway.
+certifi>=2026.10.19
 numpy~=2.5
-pillow~=12.3
+# Pillow 13: fixes 40 advisories of 12.3 (e.g. APNG canvas allocated before the
+# decompression-bomb check, quadratic eXIf parsing) – never pin below 13.0.
+pillow~=13.0
 pillow-heif~=1.8
 opencv-python-headless~=5.0
 onnxruntime~=1.30

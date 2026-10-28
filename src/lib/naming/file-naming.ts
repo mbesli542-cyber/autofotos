@@ -32,6 +32,24 @@ export function getFileExtensionForMimeType(mimeType: string): string {
   return MIME_EXTENSIONS[mimeType.toLowerCase()] ?? "jpg";
 }
 
+/** Non-standard spellings some browsers and apps report. */
+const MIME_ALIASES: Record<string, string> = {
+  "image/jpg": "image/jpeg",
+  "image/pjpeg": "image/jpeg",
+};
+
+/**
+ * The MIME type stored with an image file: lower case, aliases like
+ * "image/jpg" mapped to the standard type (the storage buckets only accept
+ * standard types). An unknown type is kept – the bucket decides; an empty one
+ * is treated as JPEG (camera captures always are).
+ */
+export function normalizeImageMimeType(mimeType: string): string {
+  const type = mimeType.trim().toLowerCase();
+  if (!type) return "image/jpeg";
+  return MIME_ALIASES[type] ?? type;
+}
+
 const TRANSLITERATIONS: Record<string, string> = {
   ä: "ae",
   ö: "oe",

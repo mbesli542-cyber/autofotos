@@ -17,6 +17,7 @@ export function CaptureControls({
   nextLabel,
   onNext,
   onUpload,
+  uploadDisabled = false,
 }: {
   previousThumbnailUrl: string | null;
   previousTitle: string | null;
@@ -29,6 +30,7 @@ export function CaptureControls({
   nextLabel: "Weiter" | "Übersicht";
   onNext: () => void;
   onUpload: () => void;
+  uploadDisabled?: boolean;
 }) {
   return (
     <div className="pb-safe flex w-full flex-col items-center gap-2 px-4 pt-3 landscape:h-full landscape:justify-center landscape:px-3">
@@ -91,7 +93,8 @@ export function CaptureControls({
       <button
         type="button"
         onClick={onUpload}
-        className="flex h-9 items-center gap-1.5 rounded-lg px-3 text-[13px] font-medium text-white/70 hover:text-white landscape:mt-2 short:mt-0 short:h-8"
+        disabled={uploadDisabled}
+        className="flex h-9 items-center gap-1.5 rounded-lg px-3 text-[13px] font-medium text-white/70 hover:text-white disabled:opacity-35 landscape:mt-2 short:mt-0 short:h-8"
       >
         <ImageUp className="size-4" aria-hidden />
         Foto hochladen

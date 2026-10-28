@@ -29,7 +29,10 @@ Re-running a label with ``--cases`` replaces only those cases in run.json.
 Outcomes: ``accepted``; ``rejected:<code>`` for any exception with a ``code``
 attribute (QualityGateError and its successors); ``crash:<ExceptionType>`` for
 everything else (traceback in result.json). A case passes when it is expected
-to be accepted and was, or was rejected with exactly the expected code.
+to be accepted and was, or was rejected with exactly the expected code. A case
+with ``requiredParts`` ([{"part": …, "point": [x, y]}], px of the decoded photo,
+e.g. both side mirrors) never passes when it is accepted without one of them
+(checked in ``debug/mask.png``; result.json ``requiredParts``/``missingParts``).
 
 Masks: the coarse segmentation is cached as 16-bit PNG in
 ``/opt/ae-regression/masks/`` (key = sha256 of the decoded RGB bytes + shape +
@@ -37,7 +40,19 @@ segmenter name). On a hit the model is never loaded. A miss runs the real
 segmenter in a child process under the shared lock
 ``/opt/ae-regression/birefnet.lock`` (one BiRefNet run at a time on the machine;
 its ~7 GB are returned when the child exits). ``--no-cache`` bypasses the cache,
-``--refresh-masks`` recomputes and overwrites it.
+``--refresh-masks`` recomputes and overwrites it. The second BiRefNet pass of
+portrait/square photos (a window around the vehicle) is cached the same way
+(its key is the window's pixels).
+
+Vehicle detector: the semantic check (app/pipeline/detection.py) runs in this
+process (RF-DETR-Seg, a few hundred MB, ≈ 0.5 s per call on idle cores, 4–12 calls per photo),
+each call under the same lock. ``--no-detector`` runs the pipeline without it
+(the shape-based clean-up only – e.g. to compare the visual stages on photos the
+semantic check rejects); ``--whole-frame`` segments portrait/square photos on
+the whole frame like before the window pass (comparison runs).
+
+Portrait cases: ``scripts/make_portrait_cases.py`` derives upright frames from
+the regression photos and writes a manifest for ``--manifest``/``--cache-dir``.
 
 ``--legacy-dir`` runs the old test photos car1.jpg … car8.jpg with fixed shot
 keys instead of the manifest (expected outcome: none).
@@ -111,6 +126,9 @@ class Case:
     path: Path
     sha256: str | None = None
     credit: dict = field(default_factory=dict)
+    #: Vehicle parts an accepted result must contain: [{"part": name, "point": [x, y]}] in px of
+    #: the decoded photo – checked in the final mask (debug/mask.png ≥ 0.5).
+    required_parts: list = field(default_factory=list)
 
 
 def manifest_cases(manifest_path: Path, cache_dir: Path | None) -> list[Case]:
@@ -127,6 +145,7 @@ def manifest_cases(manifest_path: Path, cache_dir: Path | None) -> list[Case]:
                 path=cache / entry["file"],
                 sha256=entry.get("sha256"),
                 credit=credit,
+                required_parts=list(entry.get("requiredParts") or []),
             )
         )
     return cases
@@ -201,19 +220,25 @@ def segmenter_name(settings) -> str:
     return f"{settings.segmenter}:{settings.segmentation_model}"
 
 
+def segmenter_code_digest(settings) -> str | None:
+    """What makes a cached mask stale: the segmenter class (pre/post-processing) and the
+    registered model file – not the rest of segmentation.py (window pass, detector wiring)."""
+    try:
+        from app.pipeline.segmentation import MODEL_REGISTRY, OnnxSegmenter
+
+        spec = MODEL_REGISTRY.get(settings.segmentation_model)
+        source = inspect.getsource(OnnxSegmenter) + repr(spec)
+    except (ImportError, OSError, TypeError):
+        return None
+    return hashlib.sha256(source.encode()).hexdigest()
+
+
 def mask_key(rgb: np.ndarray, name: str) -> str:
     rgb = np.ascontiguousarray(rgb)
     digest = hashlib.sha256()
     digest.update(memoryview(rgb).cast("B"))
     digest.update(f"|{rgb.shape}|{rgb.dtype.str}|{name}".encode())
     return digest.hexdigest()
-
-
-def _file_digest(path: Path) -> str | None:
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError:
-        return None
 
 
 def _rebuild_error(status: dict, proc: subprocess.CompletedProcess) -> Exception:
@@ -296,13 +321,15 @@ class CachedSegmenter:
 
     def __init__(self, settings, cache_dir: Path, lock_path: Path, *, read: bool = True, write: bool = True):
         self.name = segmenter_name(settings)
+        #: The vehicle detector the pipeline uses next to the segmenter (``LockedDetector`` or None).
+        self.detector = None
         self._settings = settings
         self._cache_dir = cache_dir
         self._lock_path = lock_path
         self._read = read
         self._write = write
         self._real = None
-        self._seg_source = _file_digest(PROCESSOR_ROOT / "app" / "pipeline" / "segmentation.py")
+        self._seg_source = segmenter_code_digest(settings)
         self.calls: list[dict] = []
 
     def segment(self, rgb: np.ndarray) -> np.ndarray:
@@ -314,8 +341,8 @@ class CachedSegmenter:
             if mask is not None and mask.dtype == np.uint16 and mask.shape == rgb.shape[:2]:
                 info.update(cache="hit", seconds=0.0)
                 sidecar = _get_sidecar(path)
-                if sidecar.get("segmentationPySha256") not in (None, self._seg_source):
-                    info["staleWarning"] = "mask cached with another app/pipeline/segmentation.py (use --refresh-masks)"
+                if sidecar.get("segmenterCodeSha256") not in (None, self._seg_source):
+                    info["staleWarning"] = "mask cached with other segmenter code or model (use --refresh-masks)"
                 self.calls.append(info)
                 return mask.astype(np.float32) / MASK_SCALE
             info["cache"] = "corrupt"
@@ -335,7 +362,7 @@ class CachedSegmenter:
                     "shape": list(rgb.shape),
                     "createdAt": _now_iso(),
                     "modelSeconds": child.get("modelSeconds"),
-                    "segmentationPySha256": self._seg_source,
+                    "segmenterCodeSha256": self._seg_source,
                 },
             )
             alpha = quantised.astype(np.float32) / MASK_SCALE
@@ -359,6 +386,43 @@ class CachedSegmenter:
                 return value(*args, **kwargs)
 
         return locked
+
+
+class LockedDetector:
+    """The real vehicle detector (in-process), every call under the shared model lock."""
+
+    def __init__(self, settings, lock_path: Path):
+        from app.pipeline.detection import create_detector
+
+        self._real = create_detector(settings)
+        self.name = self._real.name
+        self.spec = self._real.spec
+        self._lock_path = lock_path
+        self.calls = 0
+        self.seconds = 0.0
+        self.lock_wait = 0.0
+
+    @property
+    def loaded(self) -> bool:
+        return self._real.loaded
+
+    def warm_up(self) -> None:
+        with exclusive_lock(self._lock_path):
+            self._real.warm_up()
+
+    def detect(self, rgb, window=None):
+        with exclusive_lock(self._lock_path) as waited:
+            started = time.perf_counter()
+            result = self._real.detect(rgb, window)
+        self.calls += 1
+        self.seconds += time.perf_counter() - started
+        self.lock_wait += waited
+        return result
+
+    def reset(self) -> dict:
+        stats = {"calls": self.calls, "seconds": round(self.seconds, 2), "lockWaitSeconds": round(self.lock_wait, 1)}
+        self.calls, self.seconds, self.lock_wait = 0, 0.0, 0.0
+        return stats
 
 
 def _get_sidecar(png: Path) -> dict:
@@ -467,6 +531,20 @@ def verdict(expected: str, status: str, code: str | None) -> bool | None:
     if expected == "accept":
         return status == "accepted"
     return status == "rejected" and code == expected
+
+
+def check_required_parts(parts: list, mask_path: Path) -> list[dict]:
+    """Every required part (a point inside it) must be in the accepted cut-out."""
+    if not parts:
+        return []
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED) if mask_path.is_file() else None
+    checked = []
+    for part in parts:
+        x, y = (int(v) for v in part["point"])
+        inside = mask is not None and 0 <= y < mask.shape[0] and 0 <= x < mask.shape[1]
+        present = bool(inside and mask[y, x] >= (32768 if mask.dtype == np.uint16 else 128))
+        checked.append({"part": part.get("part", f"{x},{y}"), "point": [x, y], "present": present})
+    return checked
 
 
 def extract_metrics(metadata: dict, details: dict, source_size: tuple[int, int] | None, warnings: list[dict]) -> dict:
@@ -586,6 +664,8 @@ def run_case(case: Case, ctx: RunContext) -> dict:
 
     debug = DebugSink(case_dir / "debug")
     ctx.segmenter.calls.clear()
+    if ctx.segmenter.detector is not None:
+        ctx.segmenter.detector.reset()
     wanted = {
         "preset": ctx.preset,
         "segmenter": ctx.segmenter,
@@ -623,17 +703,30 @@ def run_case(case: Case, ctx: RunContext) -> dict:
     seconds = time.perf_counter() - started
     logging.getLogger().removeHandler(collector)
     debug_dir = case_dir / "debug"
+    detection = ctx.segmenter.detector.reset() if ctx.segmenter.detector is not None else None
+    passed = verdict(case.expected, status, code)
+    parts = check_required_parts(case.required_parts, debug_dir / "mask.png") if status == "accepted" else []
+    if parts:
+        record["requiredParts"] = parts
+        if not all(p["present"] for p in parts):
+            # accepted without a part of the vehicle: never a pass, whatever was expected
+            record["missingParts"] = [p["part"] for p in parts if not p["present"]]
+            passed = False
     record.update(
         outcome=outcome,
         status=status,
         code=code,
-        passed=verdict(case.expected, status, code),
+        passed=passed,
         seconds=round(seconds, 2),
-        # without segmentation (model run + lock wait) – the pipeline's own cost
+        # without segmentation (model run + lock wait) and detector lock waits – the pipeline's own cost
         pipelineSeconds=round(
-            seconds - sum((c.get("seconds") or 0.0) + (c.get("lockWaitSeconds") or 0.0) for c in ctx.segmenter.calls), 2
+            seconds
+            - sum((c.get("seconds") or 0.0) + (c.get("lockWaitSeconds") or 0.0) for c in ctx.segmenter.calls)
+            - ((detection or {}).get("lockWaitSeconds") or 0.0),
+            2,
         ),
         segmentation=list(ctx.segmenter.calls),
+        detection=detection,
         metrics=extract_metrics(metadata, details, source_size, warnings),
         warnings=warnings,
         logWarnings=collector.records,
@@ -666,6 +759,14 @@ def run_cases(args, cases: list[Case], out: Path, label: str, set_name: str) -> 
         read=not (args.no_cache or args.refresh_masks),
         write=not args.no_cache,
     )
+    if not args.no_detector:
+        segmenter.detector = LockedDetector(settings, args.lock_file)
+    if args.whole_frame:
+        # comparison runs: BiRefNet on the whole frame also for portrait/square photos
+        def whole_frame(rgb, segmenter, vehicle_box=None):
+            return segmenter.segment(rgb), {"passes": [{"window": None}], "forcedWholeFrame": True}
+
+        pipeline_module.segment_vehicle = whole_frame
     process_photo = pipeline_module.process_photo
     _, dropped = pipeline_kwargs(process_photo, {"require_master_showroom": True})
     digest_before = assets_digest(settings)
@@ -692,6 +793,8 @@ def run_cases(args, cases: list[Case], out: Path, label: str, set_name: str) -> 
         # the preset as loaded once at the start (the JSON may change while the run is going on)
         "presetEffective": json_safe(dataclasses.asdict(preset)) if dataclasses.is_dataclass(preset) else None,
         "segmenter": segmenter.name,
+        "detector": segmenter.detector.name if segmenter.detector is not None else None,
+        "wholeFrameOnly": bool(args.whole_frame),
         "maskCache": "off" if args.no_cache else str(args.mask_cache),
         "processPhotoKwargsDropped": dropped,
         "git": git_info(),
@@ -908,10 +1011,11 @@ def metrics_lines(record: dict) -> list[str]:
     plate = f"plate {m.get('plateUsed', '–')}" + (" (mirrored)" if m.get("plateSwitched") else "")
     seg = record.get("segmentation") or []
     mask = ",".join(s.get("cache", "?") for s in seg) or "-"
+    det = record.get("detection") or {}
     lines.append(
         f"{plate}  ·  contacts {len(m.get('contacts') or [])}  ·  aspect× {_num(m.get('aspectFactor'))}"
         f"  rise× {_num(m.get('riseFactor'))}  ·  {_num(record.get('pipelineSeconds', record.get('seconds')), 0)} s"
-        f" + mask {mask}"
+        f" + mask {mask}" + (f"  ·  detector {det.get('calls')}× {_num(det.get('seconds'), 1)} s" if det else "")
     )
     notes = []
     for name, reasons in (m.get("failedChecks") or {}).items():
@@ -1207,6 +1311,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK, help="shared segmentation lock (flock)")
     parser.add_argument("--no-cache", action="store_true", help="bypass the mask cache (neither read nor write)")
     parser.add_argument("--refresh-masks", action="store_true", help="recompute every mask and overwrite the cache")
+    parser.add_argument(
+        "--no-detector", action="store_true", help="run without the vehicle detector (no semantic mask check)"
+    )
+    parser.add_argument(
+        "--whole-frame",
+        action="store_true",
+        help="comparison: segment portrait/square photos on the whole frame (no window pass)",
+    )
     parser.add_argument("--preset", default=DEFAULT_PRESET)
     parser.add_argument(
         "--preset-override",

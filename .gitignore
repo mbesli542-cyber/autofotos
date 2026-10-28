@@ -58,3 +58,6 @@ next-env.d.ts
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Supabase CLI working files
+/supabase/.temp/

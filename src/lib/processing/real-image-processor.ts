@@ -21,7 +21,7 @@
  *   GET  {url}/health              status, model and showroom state
  * Originals are never modified.
  */
-import { asMessage, parseProcessorHealth, parseProcessorJob } from "./processor-contract";
+import { parseProcessorHealth, parseProcessorJob, processorErrorMessage } from "./processor-contract";
 import {
   isValidProcessingJobId,
   type ImageProcessor,
@@ -99,7 +99,7 @@ async function errorFromResponse(response: Response): Promise<ProcessingServiceE
     const body = (await response.json()) as { error?: { code?: unknown; message?: unknown } } | null;
     const rawCode = body?.error?.code;
     code = typeof rawCode === "string" && /^[a-z_]{1,40}$/.test(rawCode) ? rawCode : null;
-    processorMessage = asMessage(body?.error?.message);
+    processorMessage = processorErrorMessage(code, body?.error?.message);
   } catch {
     // not JSON – keep the status only
   }
@@ -192,7 +192,15 @@ export class RealImageProcessor implements ImageProcessor {
     } catch (error) {
       // 503 = model cannot be loaded; the body still carries the details.
       if (!(error instanceof ProcessingServiceError) || error.status !== 503) return null;
-      return { ok: false, authorized: true, modelError: true, showroomSource: null, showroomMasterError: false, presetError: false };
+      return {
+        ok: false,
+        authorized: true,
+        modelError: true,
+        showroomSource: null,
+        showroomMasterError: false,
+        presetError: false,
+        storageConnected: false,
+      };
     }
     try {
       return parseProcessorHealth(response.status, await response.json());

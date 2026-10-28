@@ -35,3 +35,19 @@ export function cameraReturnHref(vehicleId: string, returnTo: CameraReturnTarget
   const base = `/fahrzeuge/${encodeURIComponent(vehicleId)}`;
   return returnTo ? `${base}/${returnTo}` : base;
 }
+
+/**
+ * Whether a history entry (absolute URL) shows the page `href` leads to from
+ * `currentUrl` – same origin and path, any query. Leaving the camera then
+ * goes back to that entry instead of adding the page a second time.
+ */
+export function isEntryForPage(entryUrl: string | null | undefined, href: string, currentUrl: string): boolean {
+  if (!entryUrl) return false;
+  try {
+    const entry = new URL(entryUrl);
+    const target = new URL(href, currentUrl);
+    return entry.origin === target.origin && entry.pathname === target.pathname;
+  } catch {
+    return false;
+  }
+}

@@ -31,7 +31,7 @@ export function resolveBackendMode(
       : {
           mode: "demo",
           warning:
-            "NEXT_PUBLIC_DATA_BACKEND=supabase, but NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY are missing – running in demo mode.",
+            "NEXT_PUBLIC_DATA_BACKEND=supabase, but NEXT_PUBLIC_SUPABASE_URL or a key (NEXT_PUBLIC_SUPABASE_ANON_KEY / NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) is missing or empty – running in demo mode.",
         };
   }
   const mode: BackendMode = supabaseConfigured ? "supabase" : "demo";

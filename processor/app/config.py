@@ -68,6 +68,9 @@ class Settings:
     segmenter: str = "onnx"
     #: Model name from the registry in app/pipeline/segmentation.py.
     segmentation_model: str = "birefnet-general-lite"
+    #: Vehicle detector (instance segmentation, semantic check of the mask) from the
+    #: registry in app/pipeline/detection.py. Required like the segmentation model.
+    detector_model: str = "rf-detr-seg-medium"
     #: Download missing model weights on first use (verified by SHA-256).
     auto_download_models: bool = True
     #: Write intermediate images (mask, cutout, …) per job. Never enable on public instances.
@@ -110,6 +113,7 @@ class Settings:
             segmenter=_env("PROCESSOR_SEGMENTER", "onnx") or "onnx",
             segmentation_model=_env("PROCESSOR_SEGMENTATION_MODEL", "birefnet-general-lite")
             or "birefnet-general-lite",
+            detector_model=_env("PROCESSOR_DETECTOR_MODEL", "rf-detr-seg-medium") or "rf-detr-seg-medium",
             auto_download_models=_env_bool("PROCESSOR_AUTO_DOWNLOAD_MODELS", True),
             debug=_env_bool("PROCESSOR_DEBUG", False),
             concurrency=max(1, _env_int("PROCESSOR_CONCURRENCY", 1)),

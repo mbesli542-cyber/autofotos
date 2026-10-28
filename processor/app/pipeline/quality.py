@@ -7,17 +7,31 @@ section and are deliberately generous – normal phone photos (chest/eye height
 
 Codes (checked in this priority order, the first failing one is reported):
 
-- ``source_resolution_too_low``  source long edge too small (checked right after decoding)
+- ``source_resolution_too_low``  source long edge too small (checked right after decoding; the
+                                 resolution message in every orientation – turning the phone does
+                                 not change the long edge)
 - ``vehicle_cropped``            solid vehicle touches the left/right/bottom border (or the top over a long run)
 - ``vehicle_too_small`` / ``source_resolution_too_low``
                                  the vehicle would have to be enlarged more than ``maxUpscale``:
                                  "too small" if it covers less than ``minVehicleWidthRatio`` of the
-                                 photo width, otherwise the photo itself has too few pixels
-- ``mask_low_confidence``        the cut-out is unreliable (soft edges, split, coverage, fill, or a
-                                 foreign object detected in the outline that could not be cut)
+                                 photo width, otherwise the photo itself has too few pixels – for a
+                                 portrait/square exterior photo with the message to hold the phone
+                                 sideways (the car then gets the long side of the sensor)
+- ``mask_low_confidence``        the cut-out is unreliable (soft edges, split, coverage, fill)
 - ``perspective_mismatch``       bbox aspect / contact rise far from the plate's proxy car
                                  (camera much higher than the plate camera, e.g. a parking deck)
 - ``ground_contact_uncertain``   fewer than ``minContacts`` plausible tyre contacts (3/4 + side shots)
+- ``mask_low_confidence``        (check ``foreign``, reason ``foreign_object``, own message) an object
+                                 behind the car merged into its outline and could not be cut (a spike
+                                 without a certain cut line, or a region the vehicle detector does not
+                                 see as part of the vehicle). Checked after perspective and contacts:
+                                 a photo that also has the wrong perspective or hidden tyres gets that
+                                 retake hint first – the objects found in a photo taken from above are
+                                 often its own shadow.
+- ``mask_low_confidence``        (check ``parts``, reason ``vehicle_part_missing``, own message) the
+                                 vehicle detector sees a part of the vehicle (e.g. a dark side mirror
+                                 in front of a dark car) that the cut-out lacks – the listing image
+                                 would show the car without it. Checked last.
 """
 
 from __future__ import annotations
@@ -51,8 +65,24 @@ MESSAGES = {
     ),
 }
 
+#: ``source_resolution_too_low`` of the upscale check for a portrait (or square) exterior photo:
+#: an upright phone gives the vehicle only the short side of the sensor – held sideways the same
+#: camera passes. Not used by the long-edge check (turning the phone keeps the long edge).
+PORTRAIT_RESOLUTION_MESSAGE = "Für Außenaufnahmen das Smartphone bitte quer halten."
+#: ``mask_low_confidence`` with reason ``foreign_object``.
+FOREIGN_OBJECT_MESSAGE = (
+    "Ein anderes Objekt (z. B. ein Fahrzeug, Schild oder Pfosten im Hintergrund) berührt die Fahrzeugkontur. "
+    "Bitte so fotografieren, dass hinter dem Fahrzeug freier Hintergrund ist."
+)
+
+#: ``mask_low_confidence`` with reason ``vehicle_part_missing``.
+VEHICLE_PART_MESSAGE = (
+    "Ein Teil des Fahrzeugs (z. B. ein Außenspiegel) hebt sich nicht vom Hintergrund ab und würde im Ergebnis "
+    "fehlen. Bitte vor ruhigerem Hintergrund neu fotografieren."
+)
+
 #: Gate checks in reporting priority (first failing check wins).
-CHECK_ORDER = ("resolution", "cropped", "upscale", "mask", "perspective", "contacts")
+CHECK_ORDER = ("resolution", "cropped", "upscale", "mask", "perspective", "contacts", "foreign", "parts")
 
 #: Shots whose tyres must be visible (3/4 and side views).
 CONTACT_SHOTS = frozenset(
@@ -67,11 +97,11 @@ MIN_PROXY_RISE = 0.04
 class QualityGateError(Exception):
     """The photo fails the quality gate – `.code`, German `.user_message`, `.details`."""
 
-    def __init__(self, code: str, details: dict | None = None):
+    def __init__(self, code: str, details: dict | None = None, message: str | None = None):
         if code not in MESSAGES:
             raise ValueError(f"unknown quality gate code {code!r}")
         self.code = code
-        self.user_message = MESSAGES[code]
+        self.user_message = message or MESSAGES[code]
         self.details = dict(details or {})
         super().__init__(f"{code}: {self.user_message}")
 
@@ -81,25 +111,43 @@ class GateReport:
     """Decisions of every check (metadata) and the error to raise, if any."""
 
     checks: dict[str, dict] = field(default_factory=dict)
+    #: German message of a failed check that differs from MESSAGES[code].
+    messages: dict[str, str] = field(default_factory=dict)
 
-    def add(self, name: str, code: str | None, **values) -> None:
+    def add(self, name: str, code: str | None, *, message: str | None = None, **values) -> None:
         self.checks[name] = {"passed": code is None, **({"code": code} if code else {}), **_round(values)}
+        if code is not None and message:
+            self.messages[name] = message
+        else:
+            self.messages.pop(name, None)
 
-    @property
-    def failed_code(self) -> str | None:
+    def _failed(self) -> str | None:
         for name in CHECK_ORDER:
             check = self.checks.get(name)
             if check is not None and not check["passed"]:
-                return check["code"]
+                return name
         return None
+
+    @property
+    def failed_code(self) -> str | None:
+        name = self._failed()
+        return None if name is None else self.checks[name]["code"]
+
+    @property
+    def failed_message(self) -> str | None:
+        name = self._failed()
+        if name is None:
+            return None
+        return self.messages.get(name) or MESSAGES[self.checks[name]["code"]]
 
     def as_dict(self) -> dict:
         return {"passed": self.failed_code is None, "checks": self.checks}
 
     def raise_if_failed(self, **context) -> None:
-        code = self.failed_code
-        if code is not None:
-            raise QualityGateError(code, {"code": code, **self.as_dict(), **context})
+        name = self._failed()
+        if name is not None:
+            code = self.checks[name]["code"]
+            raise QualityGateError(code, {"code": code, **self.as_dict(), **context}, self.messages.get(name))
 
 
 def _round(values: dict) -> dict:
@@ -118,12 +166,18 @@ def _round(values: dict) -> dict:
 
 
 def check_source_resolution(width: int, height: int, cfg: QualityConfig) -> None:
-    """Raise before any expensive work when the photo has too few pixels."""
+    """Raise before any expensive work when the photo has too few pixels. Always with the
+    resolution message: held sideways, an upright photo keeps its long edge and would fail
+    again ("quer halten" is the cure only in ``check_upscale``)."""
     long_edge = max(width, height)
     if long_edge < cfg.min_source_long_edge:
         report = GateReport()
         report.add(
-            "resolution", "source_resolution_too_low", longEdge=long_edge, minLongEdge=cfg.min_source_long_edge
+            "resolution",
+            "source_resolution_too_low",
+            longEdge=long_edge,
+            minLongEdge=cfg.min_source_long_edge,
+            portrait=height >= width,
         )
         report.raise_if_failed()
 
@@ -173,10 +227,6 @@ def check_mask(report: GateReport, alpha: np.ndarray, bbox: BBox, info: MaskInfo
         reasons.append("coverage")
     if fill < cfg.min_fill_ratio:
         reasons.append("fill")
-    if info.foreign_suspected:
-        # a background object (cone, post) sticks out of the outline and the cut line was not
-        # certain – an accepted result must never contain it, and guessing could cut the car
-        reasons.append("foreign_object")
     report.add(
         "mask",
         "mask_low_confidence" if reasons else None,
@@ -185,20 +235,55 @@ def check_mask(report: GateReport, alpha: np.ndarray, bbox: BBox, info: MaskInfo
         splitParts=info.split_parts,
         coverage=float(info.coverage),
         fillRatio=fill,
+    )
+
+
+def check_foreign(report: GateReport, info: MaskInfo) -> None:
+    """An object behind the car (another car's wheel or rear, a sign, a cone, a post) sticks
+    out of the outline and was not cut because the cut line is not certain – an accepted
+    result must never contain it, and guessing could cut the car."""
+    reasons = ["foreign_object"] if info.foreign_suspected else []
+    report.add(
+        "foreign",
+        "mask_low_confidence" if reasons else None,
+        message=FOREIGN_OBJECT_MESSAGE if reasons else None,
+        reasons=reasons,
         foreignSuspected=len(info.foreign_suspected),
+        foreignRemoved=len(info.foreign_removed),
+        vehicleDetected=info.vehicle_detected,
+    )
+
+
+def check_parts(report: GateReport, info: MaskInfo) -> None:
+    """A vehicle part the detector sees (a mirror, verified in a zoom tile) is missing from the
+    cut-out – the car must stay complete and truthful; nothing is guessed or drawn in."""
+    reasons = ["vehicle_part_missing"] if info.parts_missing else []
+    report.add(
+        "parts",
+        "mask_low_confidence" if reasons else None,
+        message=VEHICLE_PART_MESSAGE if reasons else None,
+        reasons=reasons,
+        partsMissing=len(info.parts_missing),
     )
 
 
 def check_upscale(
-    report: GateReport, placement: PlacementResult, bbox: BBox, source_width: int, cfg: QualityConfig
+    report: GateReport,
+    placement: PlacementResult,
+    bbox: BBox,
+    source_width: int,
+    cfg: QualityConfig,
+    source_height: int | None = None,
 ) -> None:
     width_ratio = bbox.width / max(source_width, 1)
     code = None
     if placement.scale > cfg.max_upscale + 1e-6:
         code = "vehicle_too_small" if width_ratio < cfg.min_vehicle_width_ratio else "source_resolution_too_low"
+    portrait = source_height is not None and source_height >= source_width
     report.add(
         "upscale",
         code,
+        message=PORTRAIT_RESOLUTION_MESSAGE if code == "source_resolution_too_low" and portrait else None,
         scale=placement.scale,
         maxUpscale=cfg.max_upscale,
         vehicleWidthRatio=width_ratio,

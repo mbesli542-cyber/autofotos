@@ -13,8 +13,10 @@ export interface SupabasePublicConfig {
 export function getSupabasePublicConfig(): SupabasePublicConfig | null {
   // Must be referenced literally so Next.js can inline them at build time.
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  // `||`, not `??`: an empty ANON_KEY= line (as in .env.example) counts as
+  // missing, so the publishable key is used.
   const anonKey =
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
   if (!url || !anonKey) return null;
   return { url, anonKey };

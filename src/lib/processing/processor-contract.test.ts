@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { buildProcessingStatus } from "./processing-status";
-import { parseProcessorHealth, parseProcessorJob } from "./processor-contract";
-import { QUALITY_GATE_ERROR_CODES, QUALITY_GATE_MESSAGES } from "./quality-gate";
-import { SHOWROOM_MASTER_MISSING_MESSAGE, canStartProcessing, type ProcessorHealthReport } from "./types";
+import { parseProcessorHealth, parseProcessorJob, processorErrorMessage } from "./processor-contract";
+import { IMAGE_TOO_LARGE_MESSAGE, QUALITY_GATE_ERROR_CODES, QUALITY_GATE_MESSAGES } from "./quality-gate";
+import {
+  PROCESSOR_STORAGE_MISSING_MESSAGE,
+  SHOWROOM_MASTER_MISSING_MESSAGE,
+  canStartProcessing,
+  type ProcessorHealthReport,
+} from "./types";
 
 const JOB_ID = "fedcba9876543210fedcba9876543210";
 
@@ -91,6 +96,12 @@ describe("parseProcessorJob", () => {
     expect(QUALITY_GATE_MESSAGES.vehicle_too_small).toBe("Fahrzeug im Originalfoto zu klein. Bitte näher fotografieren.");
   });
 
+  it("explains a photo above the resolution limit when the processor sends no message", () => {
+    expect(
+      parseProcessorJob(job({ status: "failed", error: null, metadata: { errorCode: "image_too_large" } })),
+    ).toMatchObject({ status: "failed", errorCode: "image_too_large", error: IMAGE_TOO_LARGE_MESSAGE });
+  });
+
   it("drops malformed error codes", () => {
     for (const errorCode of ["Vehicle Too Small", "x".repeat(41), "../etc", 7, null]) {
       expect(parseProcessorJob(job({ status: "failed", metadata: { errorCode } }))?.errorCode).toBeNull();
@@ -141,12 +152,27 @@ describe("parseProcessorJob", () => {
   });
 });
 
+describe("processorErrorMessage", () => {
+  it("keeps the processor's German text but never shows staff its backend names", () => {
+    expect(processorErrorMessage("busy", " Der Bildverarbeitungs-Service ist ausgelastet. ")).toBe(
+      "Der Bildverarbeitungs-Service ist ausgelastet.",
+    );
+    // e.g. storage dropped after the status was checked (POST /jobs → 503 storage_not_configured)
+    expect(
+      processorErrorMessage("storage_not_configured", "Der Bildverarbeitungs-Service ist nicht mit Supabase verbunden."),
+    ).toBe(PROCESSOR_STORAGE_MISSING_MESSAGE);
+    expect(processorErrorMessage(null, "")).toBeNull();
+    expect(processorErrorMessage("constructor", null)).toBeNull();
+  });
+});
+
 describe("parseProcessorHealth + buildProcessingStatus", () => {
   const healthy = {
     status: "ok",
     version: "2",
     modelLoaded: true,
     modelError: false,
+    supabase: false,
     showroomSource: "plates",
     showroomMasterError: null,
     presetError: null,
@@ -162,10 +188,40 @@ describe("parseProcessorHealth + buildProcessingStatus", () => {
       processor: "real",
       showroomSource: "plates",
       showroomError: null,
+      connectionError: null,
       accessCodeRequired: false,
       dataBackend: "demo",
     });
     expect(canStartProcessing(status)).toBe(true);
+  });
+
+  it("reads whether the processor can use the vehicle storage", () => {
+    expect(parseProcessorHealth(200, { ...healthy, supabase: true })?.storageConnected).toBe(true);
+    for (const supabase of [false, "true", undefined]) {
+      expect(parseProcessorHealth(200, { ...healthy, supabase })?.storageConnected).toBe(false);
+    }
+  });
+
+  it("Supabase mode: a processor without access to the vehicle storage is not connected", () => {
+    const supabaseStatus = (supabase: boolean) =>
+      buildProcessingStatus({
+        processor: "real",
+        health: parseProcessorHealth(200, { ...healthy, supabase }),
+        accessCodeRequired: false,
+        dataBackend: "supabase",
+      });
+
+    const withoutStorage = supabaseStatus(false);
+    expect(withoutStorage).toMatchObject({ connected: false, connectionError: PROCESSOR_STORAGE_MISSING_MESSAGE });
+    expect(PROCESSOR_STORAGE_MISSING_MESSAGE).not.toMatch(/supabase/i);
+    expect(canStartProcessing(withoutStorage)).toBe(false);
+
+    const withStorage = supabaseStatus(true);
+    expect(withStorage).toMatchObject({ connected: true, connectionError: null });
+    expect(canStartProcessing(withStorage)).toBe(true);
+
+    // Demo mode uploads the photos – the processor needs no storage there.
+    expect(canStartProcessing(statusFor(parseProcessorHealth(200, { ...healthy, supabase: false })))).toBe(true);
   });
 
   it("blocks processing while the plate set is missing or unusable", () => {

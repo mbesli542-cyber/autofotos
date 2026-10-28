@@ -13,19 +13,46 @@ edges). Here:
    spoilers do not match the shape rules. A spike whose cut line is not certain
    is not cut but reported (``foreign_suspected``) – the quality gate then
    rejects the job (``mask_low_confidence``, reason ``foreign_object``).
-3. Fill enclosed holes in the UPPER part of the vehicle (windows/glass roofs
+3. Semantic check (with the vehicle detector, ``detection.py``): shape rules
+   cannot tell a neighbour car's wheel, a hubcap, the rear of a car parked
+   behind, a sign on the roof or a bollard behind a mirror from vehicle parts.
+   The detector's instance masks can: BiRefNet pixels that the vehicle instance
+   of a zoomed tile does not claim, that are thick and large enough, and that
+   another detected object claims – or that have a spike's shape but do not
+   reach far enough beyond the body, or form a LARGE protrusion at roof level –
+   are verified in a zoom tile centred on them (foreign: that tile's vehicle
+   instance does not cover them, and they reach beyond it by more than its
+   coarse outline's uncertainty). Verified foreign regions are
+   dropped when they are a separate part of the mask (nothing of the car is
+   touched); glued to the outline, the cut line between car and object is not
+   certain (the instance masks are coarse), so they are reported
+   (``foreign_suspected``) and the job is rejected. Thin parts (antenna masts,
+   mirror arms, wipers, roof rails, spoilers) are below the thickness limit.
+   The other direction as well: what the zoomed vehicle instance claims beyond
+   the BiRefNet mask – thick and large, in the upper part of the vehicle,
+   confirmed by a zoom tile centred on it – is a vehicle part the mask lost
+   (e.g. a dark side mirror in front of a dark car). It is reported
+   (``parts_missing``); the pipeline may take it from another segmentation pass,
+   otherwise the quality gate rejects the job – a listing image must never miss
+   a mirror.
+4. Fill enclosed holes in the UPPER part of the vehicle (windows/glass roofs
    that the model treated as see-through). Holes near the ground (the gap
    under the car between the wheels) are left open.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
 
 from .segmentation import SegmentationError
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .detection import Instance, VehicleDetector
 
 
 @dataclass(frozen=True)
@@ -67,6 +94,17 @@ class MaskInfo:
     foreign_removed: list[list[int]] = field(default_factory=list)
     #: Foreign objects detected but NOT cut because the cut line was not certain.
     foreign_suspected: list[list[int]] = field(default_factory=list)
+    #: Vehicle parts the detector sees but the mask lacks (photo px boxes [x0, y0, x1, y1]).
+    parts_missing: list[list[int]] = field(default_factory=list)
+    #: Their (core, claim) regions (bool, semantic working resolution, ``semantic_scale`` working
+    #: px per photo px; core: the claim without the instance mask's coarse band) – where the
+    #: pipeline may take the part from another segmentation pass.
+    part_regions: list[tuple[np.ndarray, np.ndarray]] = field(default_factory=list, repr=False)
+    semantic_scale: float = 1.0
+    #: The semantic check found the vehicle (None: no detector / no photo given).
+    vehicle_detected: bool | None = None
+    #: Semantic check details (metadata): vehicle instance, tiles, verified regions.
+    semantic: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -104,6 +142,15 @@ SPIKE_MIN_SUPPORT = 0.6
 #: … and end clearly below the roofline (× body height): roof parts (antennas,
 #: rails, racks, boxes, light bars, snorkels) reach the roof level and are kept.
 SPIKE_ROOF_ZONE = 0.08
+#: A roof-level protrusion is NOT exempt as a roof part when it is large: taller
+#: than this (× body height) – or wider than ROOF_LARGE_WIDTH (× vehicle width) and
+#: taller than ROOF_LARGE_MIN_HEIGHT (rails and spoilers are flat) – and thicker
+#: than an antenna rod. It is then a semantic candidate (kept only when the
+#: detector's vehicle instance covers it, e.g. a roof box; a sign on the wall
+#: behind the roof is not).
+ROOF_LARGE_HEIGHT = 0.10
+ROOF_LARGE_WIDTH = 0.20
+ROOF_LARGE_MIN_HEIGHT = 0.05
 #: The car's outline must meet the spike within this depth (× spike base width)
 #: below its contact – otherwise the cut is not certain and nothing is cut.
 SPIKE_MAX_DEPTH = 2.0
@@ -116,11 +163,14 @@ SPIKE_MAX_STUB = 2.0
 
 @dataclass
 class ForeignSpike:
-    """A protrusion found by ``find_foreign_spikes`` (work-resolution geometry)."""
+    """A protrusion found by ``find_protrusions`` (work-resolution geometry)."""
 
     mask: np.ndarray  # bool, work resolution
     contact_y: float  # work px: where it stands on the body
     scale: float  # work px per photo px
+    #: "spike" (every shape rule holds: cut, or suspected when the cut is not certain)
+    #: or "roof" (a large roof-level protrusion – only counts with the semantic check).
+    kind: str = "spike"
 
     def box(self) -> list[int]:
         ys, xs = np.nonzero(self.mask)
@@ -162,6 +212,12 @@ def find_foreign_spikes(binary: np.ndarray) -> list[ForeignSpike]:
     rods or short fins, rails/racks/boxes/spoilers are wide or at roof level –
     they do not match.
     """
+    return [p for p in find_protrusions(binary) if p.kind == "spike"]
+
+
+def find_protrusions(binary: np.ndarray) -> list[ForeignSpike]:
+    """Foreign spikes (``find_foreign_spikes``) plus the large protrusions at roof level
+    ("roof", see ``ROOF_LARGE_*``) – a semantic candidate, not a cut."""
     height, width = binary.shape
     scale = min(1.0, SPIKE_WORK_PX / float(max(height, width)))
     small = binary.astype(np.uint8)
@@ -189,7 +245,7 @@ def find_foreign_spikes(binary: np.ndarray) -> list[ForeignSpike]:
     dist_body = cv2.distanceTransform(1 - body, cv2.DIST_L2, 5)
     thickness = cv2.distanceTransform(small, cv2.DIST_L2, 5)
     near_body = cv2.dilate(body, np.ones((3, 3), np.uint8)).astype(bool)
-    spikes = []
+    found = []
     for label in range(1, pcount):
         x, y, w, h, _area = (int(v) for v in pstats[label])
         sel = plabels == label
@@ -200,18 +256,26 @@ def find_foreign_spikes(binary: np.ndarray) -> list[ForeignSpike]:
             continue
         contact_y = float(np.nonzero(contact)[0].mean())
         rise = contact_y - y
+        rod = 2.0 * float(thickness[sel].max()) < SPIKE_MIN_THICKNESS * vehicle_w  # antenna rod
+        roof = y < body_top + SPIKE_ROOF_ZONE * body_h  # reaches the roof level
+        if roof:
+            large = h >= ROOF_LARGE_HEIGHT * body_h or (
+                w >= ROOF_LARGE_WIDTH * vehicle_w and h >= ROOF_LARGE_MIN_HEIGHT * body_h
+            )
+            if large and not rod:
+                found.append(ForeignSpike(mask=sel, contact_y=contact_y, scale=scale, kind="roof"))
+            continue  # otherwise a roof part (antenna, rails, rack, fin, light bar): kept
         if (
             contact_y < y + SPIKE_BASE_ATTACH * h  # hangs on the body sideways (mirror) or from above
             or rise < SPIKE_MIN_RISE * body_h
             or rise < SPIKE_MIN_SLENDER * w
-            or 2.0 * float(thickness[sel].max()) < SPIKE_MIN_THICKNESS * vehicle_w  # antenna rod
-            or y < body_top + SPIKE_ROOF_ZONE * body_h  # reaches the roof level: roof part
+            or rod
             or _support(sel[y : y + h, x : x + w], small[y:, x : x + w], max(2, int(round(SPIKE_SUPPORT_DEPTH * rise))))
             < SPIKE_MIN_SUPPORT
         ):
             continue
-        spikes.append(ForeignSpike(mask=sel, contact_y=contact_y, scale=scale))
-    return spikes
+        found.append(ForeignSpike(mask=sel, contact_y=contact_y, scale=scale))
+    return found
 
 
 def _support(part: np.ndarray, below: np.ndarray, depth: int) -> float:
@@ -421,17 +485,285 @@ def _apply_cut(alpha: np.ndarray, cut: SpikeCut) -> np.ndarray:
     return out
 
 
+#: Semantic candidates (step 3): BiRefNet pixels at least this far (× vehicle width)
+#: from what the zoomed vehicle instance claims …
+SEMANTIC_MARGIN = 0.004
+#: … thicker than this (× vehicle width; antenna masts, mirror arms, wipers, roof
+#: rails and the cowl are thinner – measured 0.6–0.8 % of the width where a car
+#: behind claimed them, the glued wheels, hubcaps, car rears, table, sign 1.1–8 %) …
+SEMANTIC_MIN_THICKNESS = 0.009
+#: … and larger than this (× vehicle width²) …
+SEMANTIC_MIN_AREA = 1.0e-4
+#: … that another detected object claims (share of the region) – anywhere along the outline.
+SEMANTIC_OTHER_SHARE = 0.5
+#: Regions no detected object claims (e.g. a bollard: no COCO class) only count in the
+#: upper part of the vehicle (centre above this share of the bbox height – lower down
+#: they are ground, shadow, sills and tyres the instance masks are coarse at) and when
+#: thicker and larger than these (× vehicle width, × vehicle width²).
+SEMANTIC_UPPER_ZONE = 0.5
+SEMANTIC_UNCLAIMED_MIN_THICKNESS = 0.01
+SEMANTIC_UNCLAIMED_MIN_AREA = 2.0e-4
+#: A candidate is foreign when the vehicle instance of the zoom tile centred on it
+#: covers less than this share of it (glued objects 0.0–0.12, the car's own tail
+#: light that a coarse tile had given to a scooter behind it 0.98) …
+SEMANTIC_MAX_VEHICLE_COVER = 0.25
+#: … and when it reaches beyond that vehicle instance by more than this many mask cells of
+#: the tile – closer, the coarse instance outline cannot tell car from background (glued
+#: objects 5.7–43 cells; the car's own bonnet edge in front of a snowy car, which that car's
+#: instance claimed: 1.5 cells, vehicle cover 0.14).
+SEMANTIC_MIN_REACH_CELLS = 3.0
+#: At most this many candidates are verified (largest first, one detector run each).
+SEMANTIC_MAX_VERIFY = 6
+#: A verified region separate from the main body is dropped when it makes up at
+#: least this share of each mask component it touches.
+SEMANTIC_PART_SHARE = 0.5
+
+#: Missing vehicle parts: what the zoomed vehicle instance claims beyond the mask, after an
+#: opening of this many mask cells (the coarse band every instance mask has around the
+#: outline) …
+PART_OPEN_CELLS = 1.5
+#: … thicker than this (× vehicle width; side mirrors the mask lost 3.8–4.4 %; the remaining
+#: claims of the 57 evaluated masks: clipped edges such as an indicator lens or the gap under
+#: a mirror ≤ 1.5 %, ground under the bumpers up to 4 % but in the lowest quarter, PART_ZONE) …
+PART_MIN_THICKNESS = 0.025
+#: … larger than this (× vehicle width²; lost mirrors 0.0020–0.0025) …
+PART_MIN_AREA = 8.0e-4
+#: … with its centre in the upper part of the vehicle (× bbox height from the top; lower down
+#: the instance masks claim ground, shadow and the gap under the car) …
+PART_ZONE = 0.75
+#: … and covered by the vehicle instance of a zoom tile centred on it (lost mirrors 0.95–0.99).
+PART_MIN_VEHICLE_COVER = 0.6
+#: At most this many missing-part candidates are verified (largest first).
+PART_MAX_VERIFY = 4
+
+
+@dataclass
+class SemanticFinding:
+    """A region the semantic check verified (photo px)."""
+
+    box: list[int]
+    area: int
+    evidence: str  # "other_object" | "unclaimed" | "roof_protrusion" | "missing_part"
+    labels: list[str]
+    other_share: float
+    check: dict
+    foreign: bool
+    region: np.ndarray | None = None  # bool, semantic working resolution
+    action: str = "kept"  # "removed" | "suspected" | "kept" | "missing"
+    #: A vehicle part the mask lacks (evidence "missing_part", confirmed by the zoom tile).
+    missing: bool = False
+    #: The part as the vehicle instance claims it (bool, working resolution).
+    claim: np.ndarray | None = None
+
+    def as_dict(self) -> dict:
+        return {
+            "box": self.box,
+            "area": self.area,
+            "evidence": self.evidence,
+            "labels": self.labels,
+            "otherShare": round(self.other_share, 3),
+            "verify": self.check,
+            "foreign": self.foreign,
+            "missing": self.missing,
+            "action": self.action,
+        }
+
+
+def _region_box(region: np.ndarray, scale: float, shape: tuple[int, int]) -> list[int]:
+    ys, xs = np.nonzero(region)
+    h, w = shape
+    return [
+        int(xs.min() / scale),
+        int(ys.min() / scale),
+        min(int(np.ceil((xs.max() + 1) / scale)), w),
+        min(int(np.ceil((ys.max() + 1) / scale)), h),
+    ]
+
+
+def _missing_part_candidates(
+    sem, work: np.ndarray, vehicle_w: int, vehicle_h: int, top: int
+) -> list[tuple[np.ndarray, np.ndarray, int]]:
+    """(region, claim, area) of what the zoomed vehicle instance claims beyond the mask
+    ``work`` (working resolution): the coarse band removed (PART_OPEN_CELLS), thick and large
+    enough, centred in the upper part of the vehicle (``top``/``vehicle_*``: photo px);
+    ``claim`` is the region grown back over the band it lost. Largest first."""
+    s = sem.scale
+    claimed = sem.vehicle_px & ~work
+    radius = max(1, int(round(PART_OPEN_CELLS * max(sem.cell, 1.0))))
+    opened = cv2.morphologyEx(claimed.astype(np.uint8), cv2.MORPH_OPEN, _ellipse(radius))
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(opened, connectivity=8)
+    if count <= 1:
+        return []
+    dist = cv2.distanceTransform(opened, cv2.DIST_L2, 5)
+    found = []
+    for label in range(1, count):
+        area = int(stats[label, cv2.CC_STAT_AREA]) / (s * s)
+        region = labels == label
+        thick = 2.0 * float(dist[region].max()) / s
+        centre = (float(centroids[label][1]) / s - top) / max(vehicle_h, 1)
+        if thick < PART_MIN_THICKNESS * vehicle_w or area < PART_MIN_AREA * vehicle_w**2 or centre > PART_ZONE:
+            continue
+        claim = claimed & cv2.dilate(region.astype(np.uint8), _ellipse(radius + 1)).astype(bool)
+        found.append((region, claim, int(area)))
+    found.sort(key=lambda c: -c[2])
+    return found
+
+
+def semantic_findings(
+    binary: np.ndarray,
+    rgb: np.ndarray,
+    detector: VehicleDetector,
+    *,
+    detections: list[Instance] | None = None,
+    protrusions: Iterable[ForeignSpike] = (),
+):
+    """Step 3 of the module doc: (semantic map, verified findings) for the vehicle mask
+    ``binary`` (bool, photo size). Candidates beyond SEMANTIC_MAX_VERIFY are listed but
+    not verified (kept)."""
+    from .detection import vehicle_semantics, verify_region
+
+    sem = vehicle_semantics(rgb, binary, detector, full=detections)
+    findings: list[SemanticFinding] = []
+    if sem.vehicle is None or sem.vehicle_px is None:
+        return sem, findings
+    s, shape = sem.scale, sem.shape
+    work = cv2.resize(binary.astype(np.uint8) * 255, (shape[1], shape[0]), interpolation=cv2.INTER_AREA) >= 128
+    ys, xs = np.nonzero(binary)
+    vw, vh = int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)
+    margin = max(1, int(round(SEMANTIC_MARGIN * vw * s)))
+    free = work & ~cv2.dilate(sem.vehicle_px.astype(np.uint8), _ellipse(margin)).astype(bool)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(free.astype(np.uint8), connectivity=8)
+    dist = cv2.distanceTransform(free.astype(np.uint8), cv2.DIST_L2, 5)
+    upper = (ys.min() + SEMANTIC_UPPER_ZONE * vh) * s  # working px
+    candidates: list[tuple[str, np.ndarray, float, int]] = []
+    for label in range(1, count):
+        area = int(stats[label, cv2.CC_STAT_AREA]) / (s * s)
+        region = labels == label
+        thick = 2.0 * float(dist[region].max()) / s
+        if thick < SEMANTIC_MIN_THICKNESS * vw or area < SEMANTIC_MIN_AREA * vw * vw:
+            continue
+        other = float(np.mean(sem.other_px[region]))
+        if other >= SEMANTIC_OTHER_SHARE:
+            candidates.append(("other_object", region, other, int(area)))
+        elif (
+            float(np.nonzero(region)[0].mean()) < upper
+            and thick >= SEMANTIC_UNCLAIMED_MIN_THICKNESS * vw
+            and area >= SEMANTIC_UNCLAIMED_MIN_AREA * vw * vw
+        ):
+            candidates.append(("unclaimed", region, other, int(area)))
+    taken = np.zeros(shape, bool)
+    for _, region, _, _ in candidates:
+        taken |= region
+    for spike in protrusions:
+        if spike.kind != "roof":
+            continue
+        region = cv2.resize(spike.mask.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST) > 0
+        region &= work
+        if not region.any() or float(np.mean(taken[region])) >= 0.5:
+            continue
+        candidates.append(("roof_protrusion", region, float(np.mean(sem.other_px[region])), int(region.sum() / (s * s))))
+    candidates.sort(key=lambda c: -c[3])
+    for evidence, region, other, area in candidates[:SEMANTIC_MAX_VERIFY]:
+        check = verify_region(rgb, detector, sem, region, max(vw, vh))
+        foreign = (
+            check.conclusive
+            and check.vehicle_cover < SEMANTIC_MAX_VEHICLE_COVER
+            and check.reach_cells >= SEMANTIC_MIN_REACH_CELLS
+        )
+        labels_found = sorted({sem.labels[i] for i in np.unique(sem.other_label[region]) if i >= 0} | set(check.labels))
+        findings.append(
+            SemanticFinding(
+                box=_region_box(region, s, binary.shape),
+                area=area,
+                evidence=evidence,
+                labels=labels_found,
+                other_share=other,
+                check=check.as_dict(),
+                foreign=foreign,
+                region=region,
+            )
+        )
+    for evidence, region, other, area in candidates[SEMANTIC_MAX_VERIFY:]:
+        findings.append(
+            SemanticFinding(_region_box(region, s, binary.shape), area, evidence, [], other, {"skipped": True}, False)
+        )
+    # the other direction: vehicle parts the mask lost (a dark mirror in front of a dark car)
+    for region, claim, area in _missing_part_candidates(sem, work, vw, vh, int(ys.min()))[:PART_MAX_VERIFY]:
+        check = verify_region(rgb, detector, sem, region, max(vw, vh))
+        missing = check.conclusive and check.vehicle_cover >= PART_MIN_VEHICLE_COVER
+        findings.append(
+            SemanticFinding(
+                box=_region_box(region, s, binary.shape),
+                area=area,
+                evidence="missing_part",
+                labels=[],
+                other_share=float(np.mean(sem.other_px[region])),
+                check=check.as_dict(),
+                foreign=False,
+                region=region,
+                action="missing" if missing else "kept",
+                missing=missing,
+                claim=claim,
+            )
+        )
+    return sem, findings
+
+
+def _apply_semantic(
+    keep_mask: np.ndarray,
+    labels: np.ndarray,
+    main: int,
+    findings: list[SemanticFinding],
+    scale: float,
+    info: MaskInfo,
+) -> np.ndarray:
+    """Foreign findings: a separate part of the mask is dropped (the removed pixels are
+    returned, photo size; nothing of the car is touched), a region glued to the main
+    body is reported as suspected (its cut line is not certain)."""
+    removed = np.zeros(keep_mask.shape, bool)
+    for finding in findings:
+        if not finding.foreign or finding.region is None:
+            continue
+        ys, xs = np.nonzero(finding.region)
+        wx0, wy0, wx1, wy1 = int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+        x0, y0 = int(wx0 / scale), int(wy0 / scale)
+        x1, y1 = min(int(np.ceil(wx1 / scale)), keep_mask.shape[1]), min(int(np.ceil(wy1 / scale)), keep_mask.shape[0])
+        crop = finding.region[wy0:wy1, wx0:wx1].astype(np.uint8)
+        region = cv2.resize(crop, (x1 - x0, y1 - y0), interpolation=cv2.INTER_NEAREST).astype(bool)
+        region &= keep_mask[y0:y1, x0:x1] > 0
+        hit = labels[y0:y1, x0:x1][region]
+        parts = [int(v) for v in np.unique(hit) if v > 0]
+        detached = bool(parts) and main not in parts
+        for part in parts if detached else ():
+            share = np.count_nonzero(hit == part) / max(np.count_nonzero((labels == part) & (keep_mask > 0)), 1)
+            detached = detached and share >= SEMANTIC_PART_SHARE
+        if detached:
+            for part in parts:
+                part_px = labels == part
+                removed |= part_px & (keep_mask > 0)
+                keep_mask[part_px] = 0
+            finding.action = "removed"
+            info.foreign_removed.append(finding.box)
+        else:
+            finding.action = "suspected"
+            info.foreign_suspected.append(finding.box)
+    return removed
+
+
 def clean_mask(
     alpha: np.ndarray,
     *,
     rgb: np.ndarray | None = None,
     model: np.ndarray | None = None,
+    detector: VehicleDetector | None = None,
+    detections: list[Instance] | None = None,
     upper_fill_ratio: float = 0.62,
 ) -> tuple[np.ndarray, MaskInfo]:
     """Keep the vehicle in ``alpha``. ``rgb`` (the photo) lets a foreign spike be
     cut where the car's outline runs along one of its edges; ``model`` (the
     segmentation model's own alpha) is where ``model_fragments`` are counted
-    (default: ``alpha``)."""
+    (default: ``alpha``). With ``detector`` (and ``rgb``) the semantic check runs
+    (step 3; ``detections``: the detector's full-frame instances, if already known)."""
     info = MaskInfo()
     binary = (alpha >= 0.5).astype(np.uint8)
     count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
@@ -500,7 +832,10 @@ def clean_mask(
 
     # Foreign spikes standing behind the car (cone, bollard, post).
     cuts: list[SpikeCut] = []
-    for spike in find_foreign_spikes(keep_mask.astype(bool)):
+    protrusions = find_protrusions(keep_mask.astype(bool))
+    for spike in protrusions:
+        if spike.kind != "spike":
+            continue
         cut = cut_foreign_spike(keep_mask.astype(bool), spike, rgb)
         if cut is None:
             info.foreign_suspected.append(spike.box())
@@ -508,6 +843,25 @@ def clean_mask(
         info.foreign_removed.append(cut.box())
         keep_mask[cut.region] = 0
         cuts.append(cut)
+
+    # Semantic check: what the detector does not see as part of THE vehicle.
+    semantic_removed = None
+    if detector is not None and rgb is not None:
+        sem, findings = semantic_findings(
+            keep_mask.astype(bool), rgb, detector, detections=detections, protrusions=protrusions
+        )
+        info.vehicle_detected = sem.vehicle is not None
+        semantic_removed = _apply_semantic(keep_mask, labels, main, findings, sem.scale, info)
+        info.semantic_scale = sem.scale
+        for finding in findings:
+            if finding.missing and finding.region is not None and finding.claim is not None:
+                info.parts_missing.append(finding.box)
+                info.part_regions.append((finding.region, finding.claim))
+        info.semantic = {
+            "detector": getattr(detector, "name", type(detector).__name__),
+            **sem.as_dict(),
+            "findings": [f.as_dict() for f in findings],
+        }
 
     # Enclosed holes (background components not touching the border).
     ys, xs = np.nonzero(keep_mask)
@@ -539,6 +893,12 @@ def clean_mask(
     result = np.maximum(result, filled.astype(np.float32))
     for cut in cuts:
         result = _apply_cut(result, cut)
+    if semantic_removed is not None and semantic_removed.any():
+        # a dropped part and its own soft fringe go, the body's fringe stays
+        fringe = cv2.dilate(semantic_removed.astype(np.uint8), _ellipse(4)).astype(bool) & ~cv2.dilate(
+            keep_mask, _ellipse(2)
+        ).astype(bool)
+        result[semantic_removed | fringe] = 0.0
     vehicle = result >= 0.5
     total = int(vehicle.sum())
     info.coverage = total / float(result.size)
@@ -614,16 +974,25 @@ def assess_mask(alpha: np.ndarray, bbox: BBox, info: MaskInfo) -> list[QualityWa
         warnings.append(
             QualityWarning(
                 "background_object_removed",
-                "Ein Gegenstand hinter dem Fahrzeug (z. B. Leitkegel oder Pfosten) ragte in die Fahrzeugkontur "
-                "und wurde entfernt – bitte das Ergebnis prüfen.",
+                "Ein Gegenstand hinter dem Fahrzeug (z. B. Leitkegel, Pfosten oder Schild) ragte in die "
+                "Fahrzeugkontur und wurde entfernt – bitte das Ergebnis prüfen.",
             )
         )
     if info.foreign_suspected:
         warnings.append(
             QualityWarning(
                 "background_object_suspected",
-                "Ein Gegenstand hinter dem Fahrzeug (z. B. Leitkegel oder Pfosten) ragt in die Fahrzeugkontur und "
-                "konnte nicht sicher entfernt werden – bitte ohne Hindernis neu fotografieren.",
+                "Ein anderes Objekt (z. B. ein Fahrzeug, Schild oder Pfosten im Hintergrund) berührt die "
+                "Fahrzeugkontur und konnte nicht sicher entfernt werden – bitte so fotografieren, dass hinter dem "
+                "Fahrzeug freier Hintergrund ist.",
+            )
+        )
+    if info.vehicle_detected is False:
+        warnings.append(
+            QualityWarning(
+                "vehicle_not_detected",
+                "Die Fahrzeugerkennung hat das Fahrzeug nicht sicher erkannt – fremde Objekte an der "
+                "Fahrzeugkontur wurden nicht geprüft. Bitte das Ergebnis prüfen.",
             )
         )
     return warnings

@@ -4,6 +4,7 @@ import {
   RealImageProcessor,
   joinServiceUrl,
 } from "./real-image-processor";
+import { PROCESSOR_STORAGE_MISSING_MESSAGE } from "./types";
 
 const JOB_ID = "0123456789abcdef0123456789abcdef";
 
@@ -158,6 +159,21 @@ describe("RealImageProcessor – Supabase contract", () => {
     expect((busy as ProcessingServiceError).processorMessage).toBe("Der Bildverarbeitungs-Service ist ausgelastet.");
   });
 
+  it("replaces the processor's text naming its storage backend with the staff message", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        { error: { code: "storage_not_configured", message: "Der Bildverarbeitungs-Service ist nicht mit Supabase verbunden." } },
+        503,
+      ),
+    );
+    const error = await new RealImageProcessor({ baseUrl: "http://localhost:8000", apiKey: "key" })
+      .submit({ vehicleId: "veh_1", photoId: "photo_1", preset: "autoexperten_standard" }, { userId: "u1" })
+      .catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(ProcessingServiceError);
+    expect((error as ProcessingServiceError).code).toBe("storage_not_configured");
+    expect((error as ProcessingServiceError).processorMessage).toBe(PROCESSOR_STORAGE_MISSING_MESSAGE);
+  });
+
   it("reports network failures as ProcessingServiceError", async () => {
     fetchMock.mockRejectedValueOnce(new TypeError("fetch failed"));
     const processor = new RealImageProcessor({ baseUrl: "http://localhost:8000", apiKey: null });
@@ -272,6 +288,7 @@ describe("RealImageProcessor – health", () => {
         version: "1",
         modelLoaded: true,
         modelError: false,
+        supabase: true,
         showroomSource: "plates",
         showroomMasterError: null,
         presetError: null,
@@ -286,6 +303,7 @@ describe("RealImageProcessor – health", () => {
       showroomSource: "plates",
       showroomMasterError: false,
       presetError: false,
+      storageConnected: true,
     });
     const { url, headers } = lastCall();
     expect(url).toBe("https://host/processor/health");
@@ -301,7 +319,7 @@ describe("RealImageProcessor – health", () => {
   it("reports a model error (503) and unreachable services", async () => {
     const processor = new RealImageProcessor({ baseUrl: "http://localhost:8000", apiKey: null });
     fetchMock.mockResolvedValueOnce(jsonResponse({ status: "error", modelError: true }, 503));
-    await expect(processor.getHealth()).resolves.toMatchObject({ ok: false, modelError: true });
+    await expect(processor.getHealth()).resolves.toMatchObject({ ok: false, modelError: true, storageConnected: false });
 
     fetchMock.mockRejectedValueOnce(new TypeError("fetch failed"));
     await expect(processor.getHealth()).resolves.toBeNull();

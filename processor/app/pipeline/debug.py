@@ -1,9 +1,15 @@
 """Optional debug artifacts (PROCESSOR_DEBUG=true).
 
 Files per job: original.jpg, mask.png, geometry.jpg (mask outline, bbox,
-tyre contacts), vehicle-transparent.png, background.jpg (branded plate),
-composite-before-shadow.jpg, shadow.png (grounding darkening), final.jpg,
-metadata.json. Never enable debug output on a publicly reachable instance.
+tyre contacts, ground model), vehicle-transparent.png, background.jpg (branded
+plate), composite-before-shadow.jpg, grounding.jpg (ground model: footprint,
+floor line, tyre contacts on the composite), shadow.png (grounding darkening),
+final.jpg, metadata.json. Never enable debug output on a publicly reachable
+instance.
+
+DEBUG_FILE_NAMES is the allow-list of the API (GET /jobs/{id}/debug/{name}):
+a file the pipeline writes must be listed here, otherwise it is neither
+reported in the job metadata nor served.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ DEBUG_FILE_NAMES = (
     "vehicle-transparent.png",
     "background.jpg",
     "composite-before-shadow.jpg",
+    "grounding.jpg",
     "shadow.png",
     "final.jpg",
     "metadata.json",

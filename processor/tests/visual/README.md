@@ -1,10 +1,13 @@
 # Visual regression set (real photos)
 
-`regression_set.json` lists 15 real photographs of real cars. They are used to
+`regression_set.json` lists 17 real photographs of real cars. They are used to
 check the exterior pipeline (`processor/app/pipeline/`) for visual realism
 (showroom plate per shot, grounding/shadows, matting, light harmonisation) and
 to check that the quality gate (`app/pipeline/quality.py`) accepts and rejects
-the right photos.
+the right photos – including photos where an object behind the car (a car
+parked behind it, a hubcap, a dealer sign, a bollard) merges into its outline
+(category `foreign_object` and the cases expecting `mask_low_confidence`), and
+one where the cut-out loses a side mirror (`front`).
 
 **The images are not in this repository.** They are third-party photos under
 open licences. Only the manifest and this README are committed. The images
@@ -20,9 +23,12 @@ The 8 required cases come first, then the extras. Each case has:
 | Field | Meaning |
 | --- | --- |
 | `id`, `caseId` | Case name (one image per case, so both are the same) |
-| `category` | `body_style`, `lighting`, `quality_gate`, `angle` or `paint` |
+| `category` | `body_style`, `lighting`, `quality_gate`, `angle`, `paint` or `foreign_object` |
 | `shotKey` | Guided-camera shot the photo matches (`src/lib/shots/shot-template.ts`) |
-| `expected` | `accept`, or the gate code the job should fail with: `vehicle_too_small`, `perspective_mismatch`, `vehicle_cropped` |
+| `expected` | `accept`, or the gate code the job should fail with: `vehicle_too_small`, `perspective_mismatch`, `vehicle_cropped`, `mask_low_confidence` |
+| `foreignObjects` | (cases expecting `mask_low_confidence`) the object(s) merged into the outline, with source px boxes |
+| `missingParts` | (cases expecting `mask_low_confidence`) the vehicle part(s) the cut-out loses, with source px boxes |
+| `requiredParts` | `[{"part": …, "point": [x, y]}]`: a point inside each part (e.g. both side mirrors) that an accepted result must contain – the runner fails an accepted case without one of them (checked in `debug/mask.png`) |
 | `file` | File name in the cache directory |
 | `url` | Exact URL the cached file was downloaded from |
 | `landingUrl`, `title`, `author`, `authorUrl`, `license`, `licenseUrl` | Source and attribution |
@@ -48,20 +54,38 @@ always right. For example, the Passat B8 "front view" is a front-left 3/4 shot.
 | # | id | shotKey | expected | Photo |
 | --- | --- | --- | --- | --- |
 | 1 | `sedan_fl45` | front_left_45 | accept | Peugeot 407 saloon, silver, street, hard sun, car ~72 % of frame width |
-| 2 | `coupe_fr45` | front_right_45 | accept | Nissan 350Z, orange, industrial yard, partly in hard shadow, ~84 % |
-| 3 | `suv_fr45` | front_right_45 | accept | Nissan X-Trail T31, black, snowy dealer lot, overcast, ~70 % |
+| 2 | `coupe_fr45` | front_right_45 | mask_low_confidence | Nissan 350Z, orange, industrial yard, partly in hard shadow, ~84 %; a yellow/black bollard right behind the far mirror merges into the outline |
+| 3 | `suv_fr45` | front_right_45 | mask_low_confidence | Nissan X-Trail T31, black, snowy dealer lot, overcast, ~70 %; the wheel of the white car parked behind is fused to the front corner |
 | 4 | `hatch_fl` | front_left_45 | accept | Renault Clio V, red, inside a dealership (glossy floor), ~70 % |
-| 5 | `estate_rr45` | rear_right_45 | accept | Audi A4 Avant allroad, black, snowy dealer lot, ~69 % |
+| 5 | `estate_rr45` | rear_right_45 | mask_low_confidence | Audi A4 Avant allroad, black, snowy dealer lot, ~69 %; a strip of the white car's wheel behind is glued to the rear-left corner |
 | 6 | `old_hardlight` | right_side | accept | Mercedes W123, golden hour, very low sun, long shadow, strong colour grade, ~53 % |
 | 7 | `too_far` | right_side | vehicle_too_small | MG ZS EV at a viewpoint, car only ~24 % of frame width |
 | 8 | `too_high` | rear_left_45 | perspective_mismatch | Lada Samara photographed from an upper floor, roof clearly visible |
 | 9 | `side_left` | left_side | accept | Mitsubishi Lancer, left profile, snowy lot, ~90 % (the side overlay uses ~89 %) |
-| 10 | `side_right` | right_side | accept | Nissan X-Trail (same car as 3), right profile, ~90 % |
-| 11 | `front` | front | accept | Toyota Yaris GR Sport, straight front, slushy lot, ~53 % |
+| 10 | `side_right` | right_side | mask_low_confidence | Nissan X-Trail (same car as 3), right profile, ~90 %; the hubcap of the blue car behind is glued to the rear |
+| 11 | `front` | front | mask_low_confidence | Toyota Yaris GR Sport, straight front, slushy lot, ~53 %; BiRefNet drops the black left side mirror (right in the photo) in front of the dark car parked behind – `requiredParts`: both mirrors |
 | 12 | `rear` | rear | accept | Toyota Yaris GR Sport (same car), straight rear, ~60 % |
 | 13 | `dark_paint_rl45` | rear_left_45 | accept | Audi A4 Avant allroad (same car as 5), black, ~65 % |
-| 14 | `white_car` | front_left_45 | accept | VW Passat B8 Variant, white car on snow, ~70 % |
+| 14 | `white_car` | front_left_45 | mask_low_confidence | VW Passat B8 Variant, white car on snow, ~70 %; the rear of a second white car is glued to the Passat's rear |
 | 15 | `cropped` | front_left_45 | vehicle_cropped | BMW E46, damaged bumper, too close: the right frame edge cuts the car at the front door |
+| 16 | `showroom_sign_fr45` | front_right_45 | mask_low_confidence | MG5 SW EV, white, MG showroom; the chrome/red MG wall sign stands on the roof in the outline, a side table touches the front fender |
+| 17 | `lot_car_behind_fl45` | front_left_45 | mask_low_confidence | Mitsubishi Lancer (same car as 9), front-left 3/4, snowy lot; the snowy rear of a car parked behind sticks out above the trunk |
+
+Cases 2, 3, 5, 10, 14, 16 and 17 contain an object of the background that the
+segmentation model (BiRefNet) merges into the car's outline. Before the
+semantic check (`app/pipeline/detection.py`) they were accepted with the object
+in the listing image (audit finding VQ-1; case 5 was found by the semantic
+check itself). They are not cleanly cuttable (the object is glued to the
+outline), so the expected outcome is the rejection with the "freier
+Hintergrund" message. Run them with `--no-detector` to see the composite.
+
+Case 11 is the other direction: BiRefNet's alpha at the black mirror on the
+right of the photo is ≈ 0.01 (the mirror stands in front of the dark car
+parked behind; 13 of 14 other framings tried lose it as well), so the result
+showed the car with one mirror. The detector's vehicle instance claims the
+mirror; the photo is rejected with "Ein Teil des Fahrzeugs (z. B. ein
+Außenspiegel) … würde im Ergebnis fehlen" (check `parts`). Its `requiredParts`
+make sure that a future version accepting it keeps both mirrors.
 
 All files are the 3840 px wide renditions that Wikimedia serves of larger
 originals (long edge 3840 px, so all of them are at least 2160 px high). Several
@@ -117,6 +141,20 @@ cd processor
   process under the shared lock `/opt/ae-regression/birefnet.lock`, so the
   machine runs only one at a time. Use `--refresh-masks` after changing
   `segment()` itself, or `--no-cache` to skip the cache.
+- **Vehicle detector**: the semantic check runs in the runner process (each
+  call under the same lock, 4–12 calls of ≈ 0.5 s per photo, a few hundred MB). `--no-detector`
+  runs without it (shape-based clean-up only); the caption shows the detector
+  calls and seconds, `result.json` the semantic findings
+  (`metadata.mask.semantic`, for rejected cases `error.details.mask.semantic`).
+- **Window pass**: portrait/square photos are segmented in a window around the
+  vehicle; the window's mask is cached like any other (key = its pixels). When
+  the window pass lost a vehicle part the detector sees, the whole-frame pass
+  runs as well (cached the same way) and the part is taken from it
+  (`metadata.segmentation.partsFromWholeFrame`). `--whole-frame` forces the old
+  single whole-frame pass (comparison runs).
+- **Required parts**: `requiredParts` points are checked in the final mask of
+  accepted cases (`result.json` `requiredParts`, `missingParts`); an accepted
+  case without one of them fails.
 - **Old test photos**: `--legacy-dir <dir> --label <name>` runs
   `car1.jpg` … `car8.jpg` with fixed shot keys. They are only 1024 px wide, so
   the current gate rejects them (`source_resolution_too_low`). To see the
@@ -127,6 +165,44 @@ cd processor
 The collages show third-party photos. Keep them out of the repository, and
 credit the authors when you share one (the collage footer and the table below
 have the credits).
+
+## Portrait (upright) photos
+
+There are no real portrait car photos in the set. `scripts/make_portrait_cases.py`
+derives them from the cached landscape photos (never committed – same licences
+as their sources, see the table below) and writes a manifest for the runner:
+
+```bash
+cd processor
+.venv/bin/python scripts/make_portrait_cases.py --out /opt/ae-regression/portrait
+.venv/bin/python scripts/visual_regression.py --manifest /opt/ae-regression/portrait/portrait_set.json \
+    --cache-dir /opt/ae-regression/portrait --label portrait
+.venv/bin/python scripts/visual_regression.py --manifest /opt/ae-regression/portrait/portrait_set.json \
+    --cache-dir /opt/ae-regression/portrait --label portrait-whole --whole-frame   # the old single pass
+```
+
+| Derived case | How | Expected |
+| --- | --- | --- |
+| `<case>_9x16`, `<case>_3x4` (`side_left`, `sedan_fl45`, `old_hardlight`, `side_right`) | the photo scaled to 2160 px wide, centred in a 2160 × 3840 / 2160 × 2880 frame; above it the photo's top 12 % (sky) and below it its bottom 12 % (ground), mirrored back and forth – real scene texture, no second car | `side_left`, `sedan_fl45`, `side_right`: accept. `old_hardlight` (car ~53 % of the width, at 2160 px it would need more than 1.5× enlargement): `source_resolution_too_low` with "Für Außenaufnahmen das Smartphone bitte quer halten." |
+| `<case>_9x16_1080` | the 9:16 frame at 1080 × 1920 (an upright 1080p camera stream) | `source_resolution_too_low` with "Für Außenaufnahmen das Smartphone bitte quer halten." |
+| `front_crop3x4` | a real 3:4 crop (2160 × 2880) of `front` centred on the car | accept – with both side mirrors (`requiredParts`, carried over from `front`): the window pass loses both, the whole-frame pass has them and they are taken from it |
+
+`--cases`/`--crop-cases` choose other source cases (expected outcome: accept
+unless listed in `DEFAULT_CASES`). `side_right`: the window pass leaves out the
+hubcap of the blue car that is glued to the rear of the landscape photo, and
+the X-Trail's own bonnet edge in front of the snowy car behind – which that
+car's instance claims in the coarse tiles – is kept (it lies within 1.5 mask
+cells of the vehicle outline). Its bright chrome side-step tube against the
+snow is mostly missing in both frames (its lower half already in the landscape
+photo); neither BiRefNet nor the detector assigns it to the vehicle – a known
+limitation (see `processor/README.md`, Known limitations). The script is deterministic: the
+same cached photos give byte-identical frames (checked by `sha256` in
+`portrait_set.json`).
+
+The audit (finding PROC-API-1) built similar frames with sky and snow from
+other regression photos; with the old single whole-frame pass a snow-covered
+car parked behind, a traffic cone and snow were pasted into the side view and
+the running board of the side-right view was cut away.
 
 ## Rules for new cases
 
@@ -168,3 +244,5 @@ outputs that are shared must use the same licence.
 | `dark_paint_rl45` | [2023 Audi A4 B9 Avant Allroad - left back view](https://commons.wikimedia.org/wiki/File:2023_Audi_A4_B9_Avant_Allroad_-_left_back_view.jpg) | [Acgskup](https://commons.wikimedia.org/wiki/User:Acgskup) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
 | `white_car` | [Volkswagen Passat (B8) – front view (2017)](https://commons.wikimedia.org/wiki/File:Volkswagen_Passat_%28B8%29_%E2%80%93_front_view_%282017%29.jpg) | [Acgskup](https://commons.wikimedia.org/wiki/User:Acgskup) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |
 | `cropped` | [Broken car front bumper](https://commons.wikimedia.org/wiki/File:Broken_car_front_bumper.jpg) | [Santeri Viinamäki](https://commons.wikimedia.org/wiki/User:Zunter) | [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) |
+| `showroom_sign_fr45` | [2023 MG 5 SW Trophy Long Range in Arctic White (Front)](https://commons.wikimedia.org/wiki/File:2023_MG_5_SW_Trophy_Long_Range_in_Arctic_White_%28Front%29.jpg) | [MoCars](https://commons.wikimedia.org/wiki/User:MoCars) | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/deed.en/) |
+| `lot_car_behind_fl45` | [Mitsubishi Lancer (2008) – left front view](https://commons.wikimedia.org/wiki/File:Mitsubishi_Lancer_%282008%29_%E2%80%93_left_front_view.jpg) | [Acgskup](https://commons.wikimedia.org/wiki/User:Acgskup) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) |

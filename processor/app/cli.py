@@ -4,9 +4,12 @@
     .venv/bin/python -m app.cli path/to/car.jpg -o result.jpg --debug-dir debug/
 
 Options: --preset (default autoexperten_standard), --shot (default
-front_left_45), --debug-dir (writes mask/geometry/cut-out/plate/... images).
-A photo rejected by the quality gate prints the German message and the gate
-details and exits with code 2.
+front_left_45), --debug-dir (writes mask/geometry/cut-out/plate/... images),
+--no-detector (skip the vehicle detector: no semantic check of the mask – neither
+foreign objects nor missing vehicle parts – and the window of portrait photos
+comes from a whole-frame pass; for comparisons only, the service always uses
+the detector). A photo rejected by the quality
+gate prints the German message and the gate details and exits with code 2.
 """
 
 from __future__ import annotations
@@ -32,11 +35,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--preset", default="autoexperten_standard")
     parser.add_argument("--shot", default="front_left_45")
     parser.add_argument("--debug-dir", type=Path, default=None)
+    parser.add_argument("--no-detector", action="store_true", help="comparison only: without the vehicle detector")
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
     preset = load_preset(settings, args.preset)
     segmenter = create_segmenter(settings)
+    if args.no_detector:
+        segmenter.detector = None
     backgrounds = BackgroundProvider(settings)
     debug = DebugSink(args.debug_dir) if args.debug_dir else NULL_DEBUG
 
@@ -53,7 +59,12 @@ def main(argv: list[str] | None = None) -> int:
         )
     except QualityGateError as error:
         print(
-            json.dumps({"rejected": error.code, "message": error.user_message, "details": error.details}, indent=2, ensure_ascii=False)
+            json.dumps(
+                {"rejected": error.code, "message": error.user_message, "details": error.details},
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
         )
         return 2
     args.output.write_bytes(result.jpeg)

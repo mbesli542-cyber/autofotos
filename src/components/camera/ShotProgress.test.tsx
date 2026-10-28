@@ -15,6 +15,7 @@ function photo(shotKey: string, shotOrder: number): VehiclePhotoWithUrls {
     originalStoragePath: `v1/${shotKey}/x.jpg`,
     processedStoragePath: null,
     processedPreset: null,
+    processingWarnings: [],
     thumbnailStoragePath: null,
     width: null,
     height: null,

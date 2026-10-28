@@ -8,7 +8,7 @@
  *           | { kind: "file", resultUrl, width, height, bytes }         (POST /jobs/upload)
  *     metadata.errorCode (failed jobs): e.g. a quality-gate code
  *           ("vehicle_too_small", …, see quality-gate.ts) – passed on as `errorCode`
- *   GET /health (with Bearer) → { status, version, modelLoaded, modelError,
+ *   GET /health (with Bearer) → { status, version, modelLoaded, modelError, supabase,
  *                 showroomSource ("plates" | "missing"), showroomMasterError, presetError, … }
  *
  * The app-facing ProcessingJob never contains the processor's `resultUrl`,
@@ -16,16 +16,17 @@
  * placeholder, missing plates) is never reported as complete.
  */
 import { isProcessingPresetId } from "@/lib/domain/types";
-import { QUALITY_GATE_MESSAGES, isQualityGateErrorCode } from "./quality-gate";
+import { parseProcessingWarnings } from "./processing-warnings";
+import { retakeFallbackMessage } from "./quality-gate";
 import {
   PROCESSING_JOB_STATUSES,
+  PROCESSOR_STORAGE_MISSING_MESSAGE,
   SHOWROOM_MASTER_MISSING_MESSAGE,
   SHOWROOM_SOURCES,
   isValidProcessingJobId,
   type ProcessingJob,
   type ProcessingJobResult,
   type ProcessingJobStatus,
-  type ProcessingWarning,
   type ProcessorHealthReport,
   type ShowroomSource,
 } from "./types";
@@ -58,6 +59,16 @@ export function asMessage(value: unknown): string | null {
   return text.length > 0 && text.length <= MAX_MESSAGE_LENGTH ? text : null;
 }
 
+/** Error answers whose processor text names its internals (backend names): the staff message instead. */
+const STAFF_ERROR_MESSAGES: ReadonlyMap<string, string> = new Map([
+  ["storage_not_configured", PROCESSOR_STORAGE_MISSING_MESSAGE],
+]);
+
+/** The user-presentable message of a processor error answer `{ error: { code, message } }`, or null. */
+export function processorErrorMessage(code: string | null, message: unknown): string | null {
+  return (code === null ? undefined : STAFF_ERROR_MESSAGES.get(code)) ?? asMessage(message);
+}
+
 function parseShowroomSource(value: unknown): ShowroomSource | null {
   return SHOWROOM_SOURCES.find((source) => source === value) ?? null;
 }
@@ -83,16 +94,6 @@ function parseResult(value: unknown): ProcessingJobResult | null {
     };
   }
   return null;
-}
-
-function parseWarnings(value: unknown): ProcessingWarning[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    const warning = asRecord(item);
-    const message = asMessage(warning?.message);
-    if (!warning || !message) return [];
-    return [{ code: asString(warning.code, "warning").slice(0, 40), message }];
-  });
 }
 
 /**
@@ -135,9 +136,8 @@ export function parseProcessorJob(value: unknown): ProcessingJob | null {
   }
   if (status === "failed") {
     result = null;
-    // Quality-gate rejections always carry their German instruction.
-    if (!error && isQualityGateErrorCode(errorCode)) error = QUALITY_GATE_MESSAGES[errorCode];
-    error ??= GENERIC_JOB_ERROR_MESSAGE;
+    // Rejected photos (quality gate, resolution too high) always carry their German instruction.
+    error ??= retakeFallbackMessage(errorCode) ?? GENERIC_JOB_ERROR_MESSAGE;
   } else if (status !== "complete") {
     error = null;
   }
@@ -154,7 +154,7 @@ export function parseProcessorJob(value: unknown): ProcessingJob | null {
     result,
     error,
     errorCode,
-    warnings: parseWarnings(job.warnings),
+    warnings: parseProcessingWarnings(job.warnings),
   };
 }
 
@@ -177,5 +177,6 @@ export function parseProcessorHealth(httpStatus: number, value: unknown): Proces
       health.showroomPlaceholder === true ? "fallback" : parseShowroomSource(health.showroomSource),
     showroomMasterError: typeof health.showroomMasterError === "string" && health.showroomMasterError.length > 0,
     presetError: typeof health.presetError === "string" && health.presetError.length > 0,
+    storageConnected: health.supabase === true,
   };
 }

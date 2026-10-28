@@ -6,8 +6,8 @@
 #   docker build -f processor/Dockerfile -t autoexperten-processor .
 #   docker run --rm -p 8000:8000 --env-file processor/.env autoexperten-processor
 #
-# The segmentation model is downloaded and SHA-256 verified at build time,
-# so the container needs no internet access at runtime.
+# The segmentation model and the vehicle detector are downloaded and SHA-256
+# verified at build time, so the container needs no internet access at runtime.
 
 FROM python:3.13-slim
 
@@ -25,12 +25,15 @@ COPY processor/app ./app
 COPY processor/scripts ./scripts
 
 ARG SEGMENTATION_MODEL=birefnet-general-lite
-ENV PROCESSOR_SEGMENTATION_MODEL=${SEGMENTATION_MODEL}
-# BuildKit cache keeps the ~220 MB model between builds when only code changes.
+ARG DETECTOR_MODEL=rf-detr-seg-medium
+ENV PROCESSOR_SEGMENTATION_MODEL=${SEGMENTATION_MODEL} \
+    PROCESSOR_DETECTOR_MODEL=${DETECTOR_MODEL}
+# Segmentation model (~220 MB) + vehicle detector (~130 MB), both SHA-256 verified;
+# the BuildKit cache keeps them between builds when only code changes.
 RUN --mount=type=cache,target=/root/.cache/ae-models \
     PROCESSOR_MODELS_DIR=/root/.cache/ae-models python scripts/download_models.py \
     && mkdir -p /app/models \
-    && cp "/root/.cache/ae-models/${SEGMENTATION_MODEL}.onnx" /app/models/ \
+    && cp "/root/.cache/ae-models/${SEGMENTATION_MODEL}.onnx" "/root/.cache/ae-models/${DETECTOR_MODEL}.onnx" /app/models/ \
     && chmod 0644 /app/models/*.onnx
 
 # Showroom preset + 3D showroom plates (presets/autoexperten-standard/) and the

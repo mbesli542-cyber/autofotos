@@ -25,6 +25,22 @@ function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
+/**
+ * Settles when a write transaction is durable: request success is not a
+ * commit – the transaction can still abort afterwards (e.g. QuotaExceededError
+ * for large photo blobs), which rolls the write back.
+ */
+function transactionToPromise(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    // A failed request aborts the transaction; tx.error then holds the cause.
+    tx.onabort = () => reject(tx.error ?? new DOMException("IndexedDB transaction aborted", "AbortError"));
+    tx.onerror = () => {
+      if (tx.error) reject(tx.error);
+    };
+  });
+}
+
 export class IdbDatabase {
   private dbPromise: Promise<IDBDatabase | null> | null = null;
   private memory: MemoryStores | null = null;
@@ -119,7 +135,8 @@ export class IdbDatabase {
       return;
     }
     const tx = db.transaction(storeName, "readwrite");
-    await requestToPromise(tx.objectStore(storeName).put(value));
+    tx.objectStore(storeName).put(value);
+    await transactionToPromise(tx);
   }
 
   async putMany<T>(storeName: string, values: readonly T[]): Promise<void> {
@@ -133,11 +150,7 @@ export class IdbDatabase {
     const tx = db.transaction(storeName, "readwrite");
     const store = tx.objectStore(storeName);
     for (const value of values) store.put(value);
-    await new Promise<void>((resolve, reject) => {
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error);
-    });
+    await transactionToPromise(tx);
   }
 
   async delete(storeName: string, key: IDBValidKey): Promise<void> {
@@ -147,7 +160,8 @@ export class IdbDatabase {
       return;
     }
     const tx = db.transaction(storeName, "readwrite");
-    await requestToPromise(tx.objectStore(storeName).delete(key));
+    tx.objectStore(storeName).delete(key);
+    await transactionToPromise(tx);
   }
 
   async clear(storeNames: readonly string[]): Promise<void> {
@@ -158,9 +172,6 @@ export class IdbDatabase {
     }
     const tx = db.transaction([...storeNames], "readwrite");
     for (const name of storeNames) tx.objectStore(name).clear();
-    await new Promise<void>((resolve, reject) => {
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
+    await transactionToPromise(tx);
   }
 }

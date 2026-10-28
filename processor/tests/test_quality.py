@@ -117,6 +117,41 @@ def test_upscale_gate(scale, width_ratio, code):
     assert report.failed_code == code
 
 
+def test_an_upright_exterior_photo_with_too_few_pixels_asks_to_hold_the_phone_sideways():
+    """Same code (the app asks for a retake), but the cure for a portrait frame is the
+    landscape orientation – a retake held upright fails again."""
+    from app.pipeline.quality import PORTRAIT_RESOLUTION_MESSAGE
+
+    assert PORTRAIT_RESOLUTION_MESSAGE == "Für Außenaufnahmen das Smartphone bitte quer halten."
+    report = GateReport()  # 1080 × 1920 stream frame held upright, the car fills the width
+    check_upscale(report, _placement(1.8), BBox(40, 900, 1040, 1300), 1080, CFG, source_height=1920)
+    with pytest.raises(QualityGateError) as raised:
+        report.raise_if_failed()
+    assert raised.value.code == "source_resolution_too_low"
+    assert raised.value.user_message == PORTRAIT_RESOLUTION_MESSAGE
+    report = GateReport()  # the same frame held sideways keeps the resolution message
+    check_upscale(report, _placement(1.8), BBox(100, 300, 1600, 900), 1920, CFG, source_height=1080)
+    with pytest.raises(QualityGateError) as raised:
+        report.raise_if_failed()
+    assert raised.value.user_message == EXPECTED["source_resolution_too_low"]
+    report = GateReport()  # a small car in a portrait frame is still "too small"
+    check_upscale(report, _placement(1.8), BBox(300, 900, 600, 1000), 1080, CFG, source_height=1920)
+    with pytest.raises(QualityGateError) as raised:
+        report.raise_if_failed()
+    assert raised.value.code == "vehicle_too_small" and raised.value.user_message == EXPECTED["vehicle_too_small"]
+
+
+def test_the_long_edge_check_never_asks_to_turn_the_phone():
+    """Turning the phone keeps the long edge: a 720 × 1280 photo held sideways is 1280 × 720 and
+    fails the same rule – "quer halten" would be wrong advice (two retakes, contradictory texts)."""
+    for width, height in ((720, 1280), (900, 1500), (1500, 1500), (1280, 720), (1500, 900)):
+        with pytest.raises(QualityGateError) as raised:
+            check_source_resolution(width, height, CFG)
+        assert raised.value.code == "source_resolution_too_low"
+        assert raised.value.user_message == EXPECTED["source_resolution_too_low"]
+        assert raised.value.details["checks"]["resolution"]["portrait"] == (height >= width)
+
+
 def test_mask_confidence_gate():
     alpha, bbox = _alpha((300, 400, 1700, 1100))
     good = MaskInfo(coverage=0.3, uncertain_fraction=0.04, split_parts=0)
@@ -143,15 +178,83 @@ def test_an_uncut_foreign_object_rejects_the_job():
     """A background object detected in the outline whose cut line was not certain
     (``foreign_suspected``) must not end in an accepted result; one that was cut
     (``foreign_removed``, warning only) passes."""
+    from app.pipeline.quality import FOREIGN_OBJECT_MESSAGE, check_foreign
+
     alpha, bbox = _alpha((300, 400, 1700, 1100))
     report = GateReport()
-    check_mask(report, alpha, bbox, MaskInfo(coverage=0.3, foreign_suspected=[[1500, 250, 1560, 420]]), CFG)
+    info = MaskInfo(coverage=0.3, foreign_suspected=[[1500, 250, 1560, 420]])
+    check_mask(report, alpha, bbox, info, CFG)
+    check_foreign(report, info)
+    assert report.checks["mask"]["passed"]
     assert report.failed_code == "mask_low_confidence"
-    assert report.checks["mask"]["reasons"] == ["foreign_object"]
-    assert report.checks["mask"]["foreignSuspected"] == 1
+    assert report.checks["foreign"]["reasons"] == ["foreign_object"]
+    assert report.checks["foreign"]["foreignSuspected"] == 1
+    with pytest.raises(QualityGateError) as raised:
+        report.raise_if_failed()
+    assert raised.value.code == "mask_low_confidence"
+    assert raised.value.user_message == FOREIGN_OBJECT_MESSAGE == (
+        "Ein anderes Objekt (z. B. ein Fahrzeug, Schild oder Pfosten im Hintergrund) berührt die Fahrzeugkontur. "
+        "Bitte so fotografieren, dass hinter dem Fahrzeug freier Hintergrund ist."
+    )
     report = GateReport()
-    check_mask(report, alpha, bbox, MaskInfo(coverage=0.3, foreign_removed=[[1500, 250, 1560, 420]]), CFG)
-    assert report.failed_code is None and report.checks["mask"]["foreignSuspected"] == 0
+    info = MaskInfo(coverage=0.3, foreign_removed=[[1500, 250, 1560, 420]])
+    check_mask(report, alpha, bbox, info, CFG)
+    check_foreign(report, info)
+    assert report.failed_code is None and report.checks["foreign"]["foreignSuspected"] == 0
+
+
+def test_a_foreign_object_is_reported_after_perspective_and_contacts():
+    """Photos from above show the car's own shadow in the outline: the perspective hint
+    comes first; the mask check's own reasons keep their priority."""
+    from app.pipeline.quality import MESSAGES, check_foreign
+
+    alpha, bbox = _alpha((300, 400, 1700, 1100))
+    report = GateReport()
+    check_foreign(report, MaskInfo(coverage=0.3, foreign_suspected=[[1500, 250, 1560, 420]]))
+    report.add("perspective", "perspective_mismatch", reasons=["high_view"])
+    assert report.failed_code == "perspective_mismatch"
+    with pytest.raises(QualityGateError) as raised:
+        report.raise_if_failed()
+    assert raised.value.user_message == MESSAGES["perspective_mismatch"]
+    report = GateReport()
+    check_foreign(report, MaskInfo(coverage=0.3, foreign_suspected=[[1500, 250, 1560, 420]]))
+    check_mask(report, alpha, bbox, MaskInfo(coverage=0.3, uncertain_fraction=0.9), CFG)
+    with pytest.raises(QualityGateError) as raised:
+        report.raise_if_failed()
+    assert raised.value.code == "mask_low_confidence" and raised.value.user_message == MESSAGES["mask_low_confidence"]
+
+
+def test_a_missing_vehicle_part_rejects_the_job_with_its_own_message_last():
+    """A side mirror the cut-out lost: the same retake code, its own text; checked last."""
+    from app.pipeline.quality import (
+        CHECK_ORDER,
+        FOREIGN_OBJECT_MESSAGE,
+        VEHICLE_PART_MESSAGE,
+        check_foreign,
+        check_parts,
+    )
+
+    assert VEHICLE_PART_MESSAGE == (
+        "Ein Teil des Fahrzeugs (z. B. ein Außenspiegel) hebt sich nicht vom Hintergrund ab und würde im Ergebnis "
+        "fehlen. Bitte vor ruhigerem Hintergrund neu fotografieren."
+    )
+    assert CHECK_ORDER[-2:] == ("foreign", "parts")
+    report = GateReport()
+    check_parts(report, MaskInfo(coverage=0.3))
+    assert report.failed_code is None and report.checks["parts"]["passed"]
+    missing = MaskInfo(coverage=0.3, parts_missing=[[2526, 1083, 2634, 1209]])
+    report = GateReport()
+    check_parts(report, missing)
+    with pytest.raises(QualityGateError) as raised:
+        report.raise_if_failed()
+    assert raised.value.code == "mask_low_confidence" and raised.value.user_message == VEHICLE_PART_MESSAGE
+    assert raised.value.details["checks"]["parts"] == {
+        "passed": False, "code": "mask_low_confidence", "reasons": ["vehicle_part_missing"], "partsMissing": 1
+    }  # fmt: skip
+    report = GateReport()  # both: the glued object is named first
+    check_foreign(report, MaskInfo(coverage=0.3, foreign_suspected=[[1500, 250, 1560, 420]]))
+    check_parts(report, missing)
+    assert report.failed_message == FOREIGN_OBJECT_MESSAGE
 
 
 def _geometry(bbox: BBox, contacts: list[tuple[float, float]], outer_rise: float | None = None) -> VehicleGeometry:

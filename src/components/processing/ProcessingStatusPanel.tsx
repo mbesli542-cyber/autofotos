@@ -19,15 +19,18 @@ const CHIP_LABELS: Record<ProcessorConnectionState, string> = {
 
 /**
  * Status of the real image processor at the top of "Fotos bearbeiten":
- * green chip when connected, amber chip + message when not, and the
- * showroom problem (e.g. plate set missing) when processing cannot run.
+ * green chip when connected, amber chip + message when not (`connectionError`:
+ * why an answering processor cannot be used), and the showroom problem
+ * (e.g. plate set missing) when processing cannot run.
  */
 export function ProcessingStatusPanel({
   state,
   showroomError,
+  connectionError = null,
 }: {
   state: ProcessorConnectionState;
   showroomError: string | null;
+  connectionError?: string | null;
 }) {
   return (
     <div className="flex flex-col gap-3" role="status" aria-live="polite">
@@ -47,7 +50,7 @@ export function ProcessingStatusPanel({
         <div className="flex gap-3 rounded-xl border border-ae-warning/30 bg-ae-warning/8 p-4 text-sm">
           <TriangleAlert className="size-5 shrink-0 text-ae-warning" aria-hidden />
           <div className="text-ae-muted">
-            <p className="font-semibold text-ae-text">{PROCESSING_NOT_CONNECTED_MESSAGE}</p>
+            <p className="font-semibold text-ae-text">{connectionError ?? PROCESSING_NOT_CONNECTED_MESSAGE}</p>
             <p className="mt-1">
               Es werden keine Fotos bearbeitet oder gespeichert, bis der AutoExperten Showroom-Prozessor
               angebunden ist. Die Originalfotos bleiben unverändert.

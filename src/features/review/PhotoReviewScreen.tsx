@@ -17,6 +17,8 @@ import { usePendingUploads } from "@/hooks/use-upload-queue";
 import { useVehicleDetail } from "@/hooks/use-vehicle-data";
 import { getAppServices, getShotTemplate } from "@/lib/app-services";
 import { cameraHref } from "@/lib/camera/camera-links";
+import { pickedFileTakenAt } from "@/lib/camera/capture-time";
+import { checkPhotoFile, PHOTO_FILE_ACCEPT } from "@/lib/camera/photo-file";
 import { toUserMessage } from "@/lib/errors";
 import { vehicleDisplayName } from "@/lib/format";
 import { buildPhotoSlots, type PhotoSlot } from "@/lib/photos/photo-slots";
@@ -25,6 +27,7 @@ import { getNextExtraShot } from "@/lib/shots/shot-template";
 import { canProcessVehicle } from "@/lib/vehicles/status";
 import { completeCapture, deletePhotoAndSyncStatus } from "@/lib/workflow/vehicle-workflow";
 import { VehicleNotFound } from "@/features/vehicles/VehicleNotFound";
+import { useExtraPhotoRetake } from "./use-extra-photo-retake";
 
 /** "Fotos überprüfen": all shots in template order, retake/delete, complete. */
 export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
@@ -34,6 +37,7 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
   const { state, reload } = useVehicleDetail(vehicleId);
   const pending = usePendingUploads(vehicleId);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const extraRetake = useExtraPhotoRetake(vehicleId);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [completing, setCompleting] = useState(false);
 
@@ -49,22 +53,19 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
   function handleRetake(slot: PhotoSlot) {
     setSelectedKey(null);
     if (!slot.required) {
-      fileInputRef.current?.click();
+      // Not part of the guided camera: ONE picked file replaces exactly this photo.
+      extraRetake.retake(slot);
       return;
     }
     router.push(cameraHref(vehicleId, { shot: slot.key, returnTo: "fotos" }));
   }
 
+  /** From the large view – it shows why a delete failed (a toast would be hidden behind it). */
   async function handleDelete(slot: PhotoSlot) {
     if (!slot.photo) return;
-    try {
-      await deletePhotoAndSyncStatus(getAppServices().backend.data, template, slot.photo);
-      toast.success("Foto gelöscht.");
-      reload();
-    } catch (error) {
-      toast.error(toUserMessage(error));
-      throw error;
-    }
+    await deletePhotoAndSyncStatus(getAppServices().backend.data, template, slot.photo);
+    toast.success("Foto gelöscht.");
+    reload();
   }
 
   async function handleComplete() {
@@ -81,25 +82,39 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
   }
 
   async function handleAddFiles(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []).filter((file) => file.type.startsWith("image/"));
+    const picked = Array.from(event.target.files ?? []);
     event.target.value = "";
+    // Only formats and sizes the storage accepts are queued.
+    const files: File[] = [];
+    const rejections = new Set<string>();
+    for (const file of picked) {
+      const checked = checkPhotoFile(file);
+      if (checked.ok) files.push(checked.file);
+      else rejections.add(checked.message);
+    }
+    for (const message of rejections) toast.error(message);
     if (files.length === 0) return;
     const { uploads } = getAppServices();
     const usedKeys = new Set<string>([
       ...photos.map((photo) => photo.shotKey),
       ...pending.map((item) => item.shotKey),
     ]);
-    for (const file of files) {
-      const extra = getNextExtraShot(usedKeys);
-      usedKeys.add(extra.key);
-      await uploads.enqueue({
-        vehicleId,
-        shotKey: extra.key,
-        shotOrder: extra.order,
-        title: extra.title,
-        file,
-        takenAt: new Date(file.lastModified || Date.now()).toISOString(),
-      });
+    try {
+      for (const file of files) {
+        const extra = getNextExtraShot(usedKeys);
+        usedKeys.add(extra.key);
+        await uploads.enqueue({
+          vehicleId,
+          shotKey: extra.key,
+          shotOrder: extra.order,
+          title: extra.title,
+          file,
+          takenAt: pickedFileTakenAt(file),
+        });
+      }
+    } catch {
+      toast.error("Foto konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.");
+      return;
     }
     toast.success(files.length === 1 ? "Zusatzfoto wird gespeichert…" : `${files.length} Zusatzfotos werden gespeichert…`);
   }
@@ -218,13 +233,14 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept={PHOTO_FILE_ACCEPT}
         multiple
         className="hidden"
         onChange={handleAddFiles}
         aria-hidden
         tabIndex={-1}
       />
+      {extraRetake.input}
 
       <PhotoViewer
         slots={allSlots}

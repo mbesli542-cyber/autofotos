@@ -7,6 +7,7 @@
  */
 import type {
   ProcessingPresetId,
+  ProcessingWarning,
   Vehicle,
   VehicleInput,
   VehiclePhoto,
@@ -58,13 +59,34 @@ export interface SaveProcessedPhotoInput {
   photo: VehiclePhoto;
   preset: ProcessingPresetId;
   file: Blob;
+  /** The processor's hints on this result – they replace the stored ones. */
+  warnings: readonly ProcessingWarning[];
+}
+
+/** A result the processing service already stored (Supabase contract). */
+export interface RecordProcessedPhotoInput {
+  photoId: string;
+  preset: ProcessingPresetId;
+  processedStoragePath: string;
+  /** The processor's hints on this result – they replace the stored ones. */
+  warnings: readonly ProcessingWarning[];
+}
+
+export interface UpdateVehicleOptions {
+  /** `updatedAt` of the vehicle the input is based on (optimistic check). */
+  expectedUpdatedAt?: string;
 }
 
 export interface DataProvider {
   listVehicles(): Promise<VehicleWithPhotos[]>;
   getVehicle(vehicleId: string): Promise<Vehicle | null>;
   createVehicle(input: VehicleInput): Promise<Vehicle>;
-  updateVehicle(vehicleId: string, input: VehicleInput): Promise<Vehicle>;
+  /**
+   * Saves the vehicle data. With `expectedUpdatedAt` (the `updatedAt` of the
+   * vehicle the input is based on) nothing is saved when the vehicle was
+   * changed since: VehicleChangedError (src/lib/errors.ts).
+   */
+  updateVehicle(vehicleId: string, input: VehicleInput, options?: UpdateVehicleOptions): Promise<Vehicle>;
   setVehicleStatus(vehicleId: string, status: VehicleStatus): Promise<void>;
 
   /** Active photos of a vehicle (unsorted – sort with the shot template). */
@@ -73,19 +95,18 @@ export interface DataProvider {
   resolvePhotoUrls(photos: readonly VehiclePhoto[]): Promise<VehiclePhotoWithUrls[]>;
   /**
    * Stores a NEW original. An existing photo for the same shot is archived,
-   * never overwritten.
+   * never overwritten – unless the new capture is OLDER than the active photo
+   * (a late upload; the active photo counts as taken at most 5 minutes after
+   * it was saved, src/lib/photos/capture-order.ts): then the new photo is
+   * stored as archived and the newer one stays active.
    */
   savePhoto(input: SavePhotoInput): Promise<VehiclePhoto>;
   /** Removes a photo from the active set (the original file is kept). */
   archivePhoto(photoId: string): Promise<void>;
-  /** Stores a processed version as a separate file. */
+  /** Stores a processed version as a separate file (with the processor's hints). */
   saveProcessedPhoto(input: SaveProcessedPhotoInput): Promise<VehiclePhoto>;
-  /** Links a result that the processing service already stored. */
-  recordProcessedPhoto(input: {
-    photoId: string;
-    preset: ProcessingPresetId;
-    processedStoragePath: string;
-  }): Promise<void>;
+  /** Links a result that the processing service already stored (with the processor's hints). */
+  recordProcessedPhoto(input: RecordProcessedPhotoInput): Promise<void>;
 }
 
 export interface Backend {

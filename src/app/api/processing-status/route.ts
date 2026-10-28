@@ -1,6 +1,6 @@
 /**
  * GET /api/processing-status
- * → 200 { connected, processor, showroomSource, showroomError, accessCodeRequired, dataBackend }
+ * → 200 { connected, processor, showroomSource, showroomError, connectionError, accessCodeRequired, dataBackend }
  *
  * Pings the processor's authenticated GET /health (short timeout) so the
  * processing page only offers "Fotos verarbeiten" when real showroom
@@ -26,6 +26,8 @@ export async function GET() {
     console.warn("[processing] Processor health check failed or the processor is not ready.");
   } else if (health && !health.authorized) {
     console.warn("[processing] The processor did not accept IMAGE_PROCESSING_API_KEY (/health without details).");
+  } else if (health && auth.mode === "supabase" && !health.storageConnected) {
+    console.warn("[processing] The processor has no Supabase storage (set SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY there).");
   }
 
   const status = buildProcessingStatus({

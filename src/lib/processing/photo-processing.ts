@@ -8,16 +8,19 @@
  *             → poll → result { kind: "file" } → GET /api/process-job/:id/result
  *             → data.saveProcessedPhoto (stored as a separate file in IndexedDB)
  *
- * Only a real, completed processor result is ever saved. Any failure throws
- * (with the processor's German message where available) and saves nothing;
- * a failed job throws ProcessingJobFailedError carrying the processor's
- * errorCode (e.g. a quality-gate rejection → "Foto neu aufnehmen").
+ * Only a real, completed processor result is ever saved – together with the
+ * processor's hints on it (`warnings`, e.g. "photo shows the other side"),
+ * which processPhoto also returns. Any failure throws (with the processor's
+ * German message where available) and saves nothing; a failed job throws
+ * ProcessingJobFailedError carrying the processor's errorCode (e.g. a
+ * quality-gate rejection → "Foto neu aufnehmen").
  */
 import type { BackendMode, DataProvider } from "@/lib/data/types";
-import type { ProcessingPresetId, VehiclePhotoWithUrls } from "@/lib/domain/types";
+import type { ProcessingPresetId, ProcessingWarning, VehiclePhotoWithUrls } from "@/lib/domain/types";
 import { AppError } from "@/lib/errors";
 import * as client from "./processing-client";
 import { loadOriginalPhoto, prepareProcessingUpload } from "./prepare-upload";
+import { parseProcessingWarnings } from "./processing-warnings";
 import type { ProcessingJob, ProcessingJobStatus } from "./types";
 
 export type PhotoStep = "preparing" | ProcessingJobStatus | "saving";
@@ -38,6 +41,12 @@ export interface PhotoProcessingDeps {
 }
 
 export const NO_RESULT_MESSAGE = "Die Bildbearbeitung hat kein Ergebnis geliefert.";
+
+/** A saved result. */
+export interface PhotoProcessingResult {
+  /** The processor's hints on the result (German messages), saved with it. */
+  warnings: ProcessingWarning[];
+}
 
 /** The processor job ended as failed. `errorCode`: its reason (e.g. "vehicle_too_small"), if known. */
 export class ProcessingJobFailedError extends AppError {
@@ -60,7 +69,7 @@ export async function processPhoto(
   photo: VehiclePhotoWithUrls,
   preset: ProcessingPresetId,
   deps: PhotoProcessingDeps,
-): Promise<void> {
+): Promise<PhotoProcessingResult> {
   const api = deps.api ?? client;
   const options = { accessCode: deps.accessCode ?? null, signal: deps.signal };
   const onUpdate = (job: ProcessingJob) => deps.onStep?.(job.status, job.progress);
@@ -74,13 +83,15 @@ export async function processPhoto(
     const job = await api.waitForProcessingJob(jobId, { ...options, onUpdate });
     ensureCompleted(job);
     if (job.result?.kind !== "stored") throw new AppError("unknown", { userMessage: NO_RESULT_MESSAGE });
+    const warnings = parseProcessingWarnings(job.warnings);
     deps.onStep?.("saving");
     await deps.data.recordProcessedPhoto({
       photoId: photo.id,
       preset,
       processedStoragePath: job.result.processedStoragePath,
+      warnings,
     });
-    return;
+    return { warnings };
   }
 
   deps.onStep?.("preparing");
@@ -91,7 +102,9 @@ export async function processPhoto(
   const job = await api.waitForProcessingJob(jobId, { ...options, onUpdate });
   ensureCompleted(job);
   if (job.result?.kind !== "file") throw new AppError("unknown", { userMessage: NO_RESULT_MESSAGE });
+  const warnings = parseProcessingWarnings(job.warnings);
   deps.onStep?.("saving");
   const result = await api.downloadProcessingResult(jobId, options);
-  await deps.data.saveProcessedPhoto({ photo, preset, file: result });
+  await deps.data.saveProcessedPhoto({ photo, preset, file: result, warnings });
+  return { warnings };
 }

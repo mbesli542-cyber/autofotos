@@ -84,6 +84,26 @@ def test_the_plate_reflection_is_removed_under_the_car_and_in_its_mirror_image(s
     assert np.array_equal(out[:, : max(0, left - 200)], background[:, : max(0, left - 200)])
 
 
+def test_beside_the_car_ends_the_plate_reflection_is_not_cut_with_a_hard_edge(scene):
+    """Beyond the car's ends the reflected rays hit the wall, not the car: the band where the
+    plate's own floor reflection is removed only fades out there – no strip with a hard
+    horizontal top cut out of the floor reflection beside the bumpers (it used to start
+    abruptly at the end column's outline)."""
+    preset, showroom, placement, background = scene
+    out, _, _, alpha, contacts = _run(scene, (0.0, 0.0, 0.0))  # black car: only the removal
+    model = build_ground_model(alpha, placement, contacts, showroom)
+    own = np.asarray(showroom.reflection, np.float32).mean(axis=-1)
+    removed = np.where(own > 0.01, (background - out).mean(axis=-1) / np.maximum(own, 1e-6), 0.0)
+    first, last = model.car_columns
+    for end, side in ((first, -1), (last, 1)):
+        x_end, e, f = model.window.x0 + end, int(model.edge[end]), int(model.line[end])
+        assert removed[e + 3, x_end] > 0.8  # under the car's end the plate's reflection is gone
+        for d in (10, 20):
+            column = removed[e - 30 : f, x_end + side * d]
+            assert np.abs(np.diff(column)).max() < 0.1  # no hard-topped strip beside the end
+        assert removed[e - 30 : f, x_end + side * 40].max() < 0.02  # and none further out
+
+
 def test_the_car_reflection_is_additive_and_colour_neutral(scene):
     grey, info, _, _, contacts = _run(scene, (0.6, 0.6, 0.6))
     black, *_ = _run(scene, (0.0, 0.0, 0.0))

@@ -6,6 +6,7 @@ import {
   type VehicleInput,
   type VehiclePhoto,
 } from "@/lib/domain/types";
+import { parseProcessingWarnings } from "@/lib/processing/processing-warnings";
 
 export interface VehicleRow {
   id: string;
@@ -33,6 +34,8 @@ export interface VehiclePhotoRow {
   original_storage_path: string;
   processed_storage_path: string | null;
   processed_preset: string | null;
+  /** jsonb `[{ code, message }]` – the processor's hints on the processed version (null: none). */
+  processing_warnings?: unknown;
   thumbnail_storage_path: string | null;
   width: number | null;
   height: number | null;
@@ -46,7 +49,7 @@ export const VEHICLE_COLUMNS =
   "id, user_id, manufacturer, model, color, license_plate, vin, mileage, first_registration, internal_reference, notes, status, created_at, updated_at";
 
 export const PHOTO_COLUMNS =
-  "id, vehicle_id, shot_key, shot_order, title, original_storage_path, processed_storage_path, processed_preset, thumbnail_storage_path, width, height, taken_at, archived_at, created_at, updated_at";
+  "id, vehicle_id, shot_key, shot_order, title, original_storage_path, processed_storage_path, processed_preset, processing_warnings, thumbnail_storage_path, width, height, taken_at, archived_at, created_at, updated_at";
 
 export function rowToVehicle(row: VehicleRow): Vehicle {
   return {
@@ -91,6 +94,8 @@ export function rowToPhoto(row: VehiclePhotoRow): VehiclePhoto {
     originalStoragePath: row.original_storage_path,
     processedStoragePath: row.processed_storage_path,
     processedPreset: isProcessingPresetId(row.processed_preset) ? row.processed_preset : null,
+    // Hints belong to a processed version (a row without one has none).
+    processingWarnings: row.processed_storage_path ? parseProcessingWarnings(row.processing_warnings) : [],
     thumbnailStoragePath: row.thumbnail_storage_path,
     width: row.width,
     height: row.height,

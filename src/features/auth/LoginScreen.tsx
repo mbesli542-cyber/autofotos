@@ -2,7 +2,7 @@
 
 import { FlaskConical, LockKeyhole } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useState, type FormEvent } from "react";
 import { BrandLogo } from "@/components/brand/BrandLogo";
 import { TextField } from "@/components/ui/FormField";
 import { LoadingButton } from "@/components/ui/LoadingButton";
@@ -15,8 +15,11 @@ export function LoginScreen() {
   const router = useRouter();
   const auth = useAuthState();
   const isDemo = getBackendMode() === "demo";
-  const [email, setEmail] = useState<string>(isDemo ? DEMO_CREDENTIALS.email : "");
-  const [password, setPassword] = useState<string>(isDemo ? DEMO_CREDENTIALS.password : "");
+  // Demo mode prefills its demo credentials; real accounts always start empty.
+  const initialEmail = isDemo ? DEMO_CREDENTIALS.email : "";
+  const initialPassword = isDemo ? DEMO_CREDENTIALS.password : "";
+  const [email, setEmail] = useState<string>(initialEmail);
+  const [password, setPassword] = useState<string>(initialPassword);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -24,8 +27,22 @@ export function LoginScreen() {
     if (auth.status === "authenticated") router.replace("/fahrzeuge");
   }, [auth.status, router]);
 
+  // The route stays mounted after signing in (Activity) – when it is hidden, the
+  // form is reset so the next person on a shared device never finds the
+  // previous user's credentials after "Abmelden".
+  useLayoutEffect(
+    () => () => {
+      setEmail(initialEmail);
+      setPassword(initialPassword);
+      setError(null);
+      setSubmitting(false);
+    },
+    [initialEmail, initialPassword],
+  );
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submitting) return;
     setError(null);
     if (!email.trim() || !password) {
       setError("Bitte geben Sie E-Mail und Passwort ein.");
@@ -33,9 +50,16 @@ export function LoginScreen() {
     }
     setSubmitting(true);
     const result = await getAppServices().authStore.signIn(email, password);
-    setSubmitting(false);
-    if (result.ok) router.replace("/fahrzeuge");
-    else setError(result.message);
+    if (result.ok) {
+      // Never keep the password (or a real account's e-mail) in memory. The button
+      // stays busy until the app is shown (hiding the route resets the form).
+      setEmail(initialEmail);
+      setPassword(initialPassword);
+      router.replace("/fahrzeuge");
+    } else {
+      setSubmitting(false);
+      setError(result.message);
+    }
   }
 
   return (
@@ -67,8 +91,8 @@ export function LoginScreen() {
             <div className="mb-5 flex gap-2.5 rounded-xl border border-ae-warning/30 bg-ae-warning/8 p-3 text-sm">
               <FlaskConical className="mt-0.5 size-4 shrink-0 text-ae-warning" aria-hidden />
               <p className="text-ae-muted">
-                <span className="font-semibold text-ae-warning">Demo-Modus:</span> Supabase ist nicht
-                konfiguriert. Beliebige Zugangsdaten funktionieren, Daten bleiben nur auf diesem Gerät.
+                <span className="font-semibold text-ae-warning">Demo-Modus:</span> Beliebige Zugangsdaten
+                funktionieren, Daten bleiben nur auf diesem Gerät.
               </p>
             </div>
           )}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { getAppServices } from "@/lib/app-services";
 import type { DataProvider } from "@/lib/data/types";
 import type { Vehicle, VehiclePhotoWithUrls, VehicleSummary } from "@/lib/domain/types";
@@ -42,7 +42,16 @@ export type VehicleDetailState =
   | { status: "loading" }
   | { status: "not_found" }
   | { status: "error"; message: string }
-  | { status: "ready"; vehicle: Vehicle; photos: VehiclePhotoWithUrls[] };
+  | {
+      status: "ready";
+      vehicle: Vehicle;
+      photos: VehiclePhotoWithUrls[];
+      /**
+       * Loaded before the page was hidden: shown again at once, while the
+       * page's new load is still on its way (true until it returned).
+       */
+      stale?: boolean;
+    };
 
 async function loadVehicleDetail(
   data: DataProvider,
@@ -98,16 +107,21 @@ export function useVehicleDetail(vehicleId: string) {
 
   useEffect(() => {
     let active = true;
-    const { backend, template } = getAppServices();
+    const { backend, template, uploads } = getAppServices();
     loadVehicleDetail(backend.data, template, vehicleId).then(
       (next) => {
         if (active) setState(next);
+        // A refused file older than the saved photo of its shot (e.g. a
+        // retake saved on another device) stays hidden behind it: drop it.
+        if (next.status === "ready") void uploads.dropRefusedOlderThan(next.photos);
       },
       (error: unknown) => {
         if (!active) return;
-        // Keep showing loaded data if only a refresh failed.
+        // Keep showing loaded data if only a refresh failed (it is the newest there is).
         setState((previous) =>
-          previous.status === "ready" ? previous : { status: "error", message: toUserMessage(error) },
+          previous.status === "ready"
+            ? { ...previous, stale: false }
+            : { status: "error", message: toUserMessage(error) },
         );
       },
     );
@@ -115,6 +129,14 @@ export function useVehicleDetail(vehicleId: string) {
       active = false;
     };
   }, [vehicleId, version]);
+
+  // Routes stay mounted (React Activity): data shown when the page is shown
+  // again is from before – the load effect above starts the new load then.
+  useLayoutEffect(
+    () => () =>
+      setState((previous) => (previous.status === "ready" && !previous.stale ? { ...previous, stale: true } : previous)),
+    [],
+  );
 
   useEffect(
     () =>

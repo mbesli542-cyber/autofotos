@@ -2,11 +2,13 @@
 
 Kept in memory (prototype – one process, not optimised for scale). Results and
 optional debug files are written below `<data_dir>/jobs/<jobId>/` and removed
-after PROCESSOR_JOB_TTL_HOURS.
+after PROCESSOR_JOB_TTL_HOURS. A queued upload job keeps its photo there too
+(`upload.bin`, deleted when the job starts), not in memory.
 """
 
 from __future__ import annotations
 
+import errno
 import logging
 import shutil
 import threading
@@ -22,6 +24,7 @@ from ..pipeline.debug import DEBUG_FILE_NAMES, NULL_DEBUG, DebugSink
 from ..pipeline.decode import DecodeError
 from ..pipeline.pipeline import process_photo
 from ..pipeline.placement import PlacementError
+from ..pipeline.quality import MESSAGES as QUALITY_MESSAGES
 from ..pipeline.quality import QualityGateError
 from ..pipeline.segmentation import (
     ModelUnavailableError,
@@ -43,6 +46,12 @@ STATUSES = ("queued", "processing", "complete", "failed")
 
 ERROR_MESSAGES = {
     "decode": "Das Foto konnte nicht gelesen werden. Bitte ein JPEG-, PNG- oder HEIC-Foto verwenden.",
+    # app/pipeline/decode.py: above MAX_PIXELS (80 MP) and not decodable reduced (JPEGs are) – a retake fixes it
+    "image_too_large": (
+        "Das Foto hat eine zu hohe Auflösung (über 80 Megapixel). Bitte in normaler Kamera-Auflösung neu aufnehmen."
+    ),
+    # ... and a side below 64 px: reported like the quality gate's resolution check
+    "source_resolution_too_low": QUALITY_MESSAGES["source_resolution_too_low"],
     "segmentation": "Das Fahrzeug konnte im Foto nicht erkannt werden.",
     "preset": "Dieser Bearbeitungsstil ist noch nicht verfügbar.",
     "not_found": "Das Originalfoto wurde nicht gefunden.",
@@ -62,8 +71,21 @@ class QueueFullError(Exception):
     """Too many jobs are waiting."""
 
 
-#: Upload jobs hold their photo in memory while they wait – keep that queue short.
-MAX_PENDING_UPLOADS_PER_WORKER = 4
+class JobStorageError(Exception):
+    """A job's folder or a queued upload's photo could not be written (nothing was queued)."""
+
+    def __init__(self, error: OSError):
+        super().__init__(str(error))
+        #: The disk (or the quota) is full – any other OSError is an I/O or permission problem.
+        self.full = error.errno in (errno.ENOSPC, errno.EDQUOT)
+
+
+#: Upload jobs (demo mode: several employees, each app run sends 3 photos at a time) wait
+#: with their photo on disk – worst case per worker 12 × PROCESSOR_MAX_UPLOAD_MB (40 MB)
+#: = 480 MB in `<data_dir>/jobs`; in memory only the running job's photo.
+MAX_PENDING_UPLOADS_PER_WORKER = 12
+#: File of a queued upload job's photo inside its job folder.
+UPLOAD_FILE_NAME = "upload.bin"
 #: Contract jobs fetch the original only when they start; this only bounds abuse.
 MAX_PENDING_JOBS = 200
 
@@ -132,13 +154,23 @@ class JobManager:
         self.jobs_dir = settings.data_dir / "jobs"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self.max_pending_uploads = MAX_PENDING_UPLOADS_PER_WORKER * settings.concurrency
+        self._drop_stale_uploads()
         self._sweep_orphans()
 
     # ------------------------------------------------------------------ api
 
-    def submit_upload(self, data: bytes, *, preset: str, shot_key: str | None) -> Job:
+    def submit_upload(self, data: bytes | bytearray, *, preset: str, shot_key: str | None) -> Job:
+        """Queue an upload job; its photo waits on disk. Blocking file I/O – async callers
+        run it in a worker thread. Raises QueueFullError and JobStorageError."""
         job = self._create("upload", vehicle_id="upload", photo_id="upload", preset=preset, shot_key=shot_key, user_id=None)
-        self._executor.submit(self._run, job, lambda: (data, shot_key))
+        upload = job.directory / UPLOAD_FILE_NAME
+        try:
+            upload.write_bytes(data)  # waits on disk, not in memory (deleted when the job starts)
+        except OSError as error:
+            self._discard(job)  # a partly written photo and the job folder go too
+            log.error("Upload job %s not queued: its photo could not be stored: %s", job.id, error)
+            raise JobStorageError(error) from error
+        self._executor.submit(self._run, job, lambda: (upload.read_bytes(), shot_key))
         return job
 
     def submit_contract(
@@ -198,13 +230,22 @@ class JobManager:
             shutil.rmtree(job.directory, ignore_errors=True)
         return len(removed) + self._sweep_orphans()
 
+    def _drop_stale_uploads(self) -> None:
+        """At start-up: photos of upload jobs an earlier process never ran (jobs live in memory)."""
+        for path in self.jobs_dir.glob(f"*/{UPLOAD_FILE_NAME}"):
+            path.unlink(missing_ok=True)
+
     def _sweep_orphans(self) -> int:
         """Delete job folders of earlier processes (unknown ids) once they exceed the TTL."""
         cutoff = (_now() - timedelta(hours=self.settings.job_ttl_hours)).timestamp()
         with self._lock:
             known = set(self._jobs)
+        try:
+            directories = list(self.jobs_dir.iterdir())
+        except OSError:  # e.g. the data folder was cleared: the next job creates it again
+            return 0
         removed = 0
-        for directory in self.jobs_dir.iterdir():
+        for directory in directories:
             if not directory.is_dir() or directory.name in known:
                 continue
             try:
@@ -231,8 +272,18 @@ class JobManager:
             if len(pending) >= MAX_PENDING_JOBS or (kind == "upload" and uploads >= self.max_pending_uploads):
                 raise QueueFullError(f"{len(pending)} jobs pending")
             self._jobs[job_id] = job
-        job.directory.mkdir(parents=True, exist_ok=True)
+        try:
+            job.directory.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            self._discard(job)  # never left behind as a queued job that cannot run
+            log.error("%s job %s not queued: its folder could not be created: %s", kind, job_id, error)
+            raise JobStorageError(error) from error
         return job
+
+    def _discard(self, job: Job) -> None:
+        with self._lock:
+            self._jobs.pop(job.id, None)
+        shutil.rmtree(job.directory, ignore_errors=True)
 
     def _update(self, job: Job, **changes) -> None:
         with self._lock:
@@ -244,8 +295,12 @@ class JobManager:
         self._update(job, status="processing", progress=0.01)
         debug = DebugSink(job.directory / "debug") if self.settings.debug else NULL_DEBUG
         try:
-            preset = load_preset(self.settings, job.preset)
-            data, shot_key = load()
+            try:
+                preset = load_preset(self.settings, job.preset)
+                data, shot_key = load()
+            finally:
+                # a queued upload's photo is only kept until its job starts
+                (job.directory / UPLOAD_FILE_NAME).unlink(missing_ok=True)
             outcome = process_photo(
                 data,
                 preset=preset,
@@ -274,10 +329,7 @@ class JobManager:
                     "height": outcome.height,
                     "bytes": len(outcome.jpeg),
                 }
-            metadata = {
-                **outcome.metadata,
-                "debugFiles": list(debug.files) if debug.enabled else [],
-            }
+            metadata = {**outcome.metadata, "debugFiles": _served_debug_files(debug)}
             self._update(
                 job,
                 status="complete",
@@ -289,12 +341,15 @@ class JobManager:
         except QualityGateError as error:
             # the photo would give a bad listing image: nothing is stored, the app asks for a retake
             log.info("Job %s rejected by the quality gate: %s", job.id, error.code)
-            debug_files = [name for name in debug.files if name in DEBUG_FILE_NAMES] if debug.enabled else []
             self._update(
                 job,
                 status="failed",
                 error=error.user_message,
-                metadata={"errorCode": error.code, "qualityGate": error.details, "debugFiles": debug_files},
+                metadata={
+                    "errorCode": error.code,
+                    "qualityGate": error.details,
+                    "debugFiles": _served_debug_files(debug),
+                },
             )
         except Exception as error:  # noqa: BLE001 - mapped to user-facing messages
             code = _error_code(error)
@@ -303,13 +358,17 @@ class JobManager:
             else:
                 log.warning("Job %s failed: %s (%s)", job.id, code, error)
             # debug images written before the failure help to find the cause
-            debug_files = [name for name in debug.files if name in DEBUG_FILE_NAMES] if debug.enabled else []
             self._update(
                 job,
                 status="failed",
                 error=ERROR_MESSAGES[code],
-                metadata={"errorCode": code, "debugFiles": debug_files},
+                metadata={"errorCode": code, "debugFiles": _served_debug_files(debug)},
             )
+
+
+def _served_debug_files(debug: DebugSink) -> list[str]:
+    """Debug files of a job as GET /jobs/{id}/debug/{name} serves them (allow-list), in writing order."""
+    return [name for name in debug.files if name in DEBUG_FILE_NAMES] if debug.enabled else []
 
 
 def _error_code(error: Exception) -> str:
@@ -320,7 +379,7 @@ def _error_code(error: Exception) -> str:
     if isinstance(error, (PresetConfigError, PlacementError)):
         return "configuration"
     if isinstance(error, DecodeError):
-        return "decode"
+        return error.code  # decode | image_too_large | source_resolution_too_low
     if isinstance(error, SegmentationError):
         return "segmentation"
     if isinstance(error, PresetError):

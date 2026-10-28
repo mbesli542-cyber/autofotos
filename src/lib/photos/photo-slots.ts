@@ -6,6 +6,7 @@
 import type { VehiclePhotoWithUrls } from "@/lib/domain/types";
 import type { UploadItem } from "@/lib/offline/upload-queue";
 import { sortPhotosByShotOrder } from "@/lib/shots/shot-progress";
+import { isOlderCapture, isOlderThanSavedPhoto } from "./capture-order";
 import {
   getOrderedShots,
   type ShotCategory,
@@ -19,7 +20,10 @@ export interface PhotoSlot {
   required: boolean;
   category: ShotCategory | null;
   photo: VehiclePhotoWithUrls | null;
-  /** Newest local capture for this shot that is not uploaded yet. */
+  /**
+   * Newest local capture for this shot that is not uploaded yet – unless the
+   * saved photo is newer (an older capture never shadows it).
+   */
   pending: UploadItem | null;
 }
 
@@ -33,8 +37,17 @@ export function buildPhotoSlots(
   pendingItems: readonly UploadItem[] = [],
 ): { required: PhotoSlot[]; extras: PhotoSlot[] } {
   const photoByKey = new Map(photos.map((photo) => [photo.shotKey, photo]));
+  // Per shot, the newest capture wins: a pending upload only if it is not
+  // older than the saved photo (e.g. a failed upload taken before a retake) –
+  // decided like the database does (src/lib/photos/capture-order.ts).
   const pendingByKey = new Map<string, UploadItem>();
-  for (const item of pendingItems) pendingByKey.set(item.shotKey, item);
+  for (const item of pendingItems) {
+    const saved = photoByKey.get(item.shotKey);
+    if (saved && isOlderThanSavedPhoto(item.takenAt, saved)) continue;
+    const current = pendingByKey.get(item.shotKey);
+    if (current && isOlderCapture(item.takenAt, current.takenAt)) continue;
+    pendingByKey.set(item.shotKey, item);
+  }
 
   const templateKeys = new Set(template.shots.map((shot) => shot.key));
   const required = getOrderedShots(template).map<PhotoSlot>((shot) => ({

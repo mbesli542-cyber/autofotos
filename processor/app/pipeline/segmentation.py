@@ -1,12 +1,24 @@
 """STEP 2 – vehicle segmentation behind a replaceable interface.
 
-`VehicleSegmenter.segment(rgb) -> alpha` is the only thing the pipeline knows.
-The default implementation runs an open-source salient-object model through
-ONNX Runtime on the CPU. Models are registered in MODEL_REGISTRY and selected
-with PROCESSOR_SEGMENTATION_MODEL; weights are downloaded on first use and
-verified by SHA-256. Adding another backend (e.g. a car-specific instance
-model or a hosted API) = implement `segment` and register it in
-`create_segmenter`.
+`VehicleSegmenter.segment(rgb) -> alpha` is the matting model the pipeline
+knows. The default implementation runs an open-source salient-object model
+(BiRefNet) through ONNX Runtime on the CPU. Models are registered in
+MODEL_REGISTRY and selected with PROCESSOR_SEGMENTATION_MODEL; weights are
+downloaded on first use and verified by SHA-256. Adding another backend (e.g. a
+hosted API) = implement `segment` and register it in `create_segmenter`.
+
+The segmenter created by `create_segmenter` also carries the semantic vehicle
+detector (`segmenter.detector`, an instance-segmentation model, see
+`detection.py`): BiRefNet cuts the outline, the detector says which part of it
+is the vehicle. Both are loaded by `warm_up` and reported by `loaded`; a
+missing or broken file of either is a `ModelUnavailableError`.
+
+`segment_vehicle` decides what BiRefNet sees: the whole frame, or – for tall
+(portrait or square) frames, where the car is only a thin band of the
+1024 x 1024 model input and BiRefNet merged a car behind it, a cone or snow into
+the outline – the ORIGINAL pixels of a window around the vehicle. When the
+window pass lost a vehicle part that the detector sees (a dark side mirror),
+`merge_parts` takes that part – and only that part – from the whole-frame pass.
 """
 
 from __future__ import annotations
@@ -16,15 +28,19 @@ import logging
 import os
 import tempfile
 import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import cv2
 import numpy as np
 
 from ..config import Settings
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .detection import VehicleDetector
 
 log = logging.getLogger(__name__)
 
@@ -110,17 +126,35 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def ensure_model(spec: OnnxModelSpec, models_dir: Path, auto_download: bool) -> Path:
-    """Return the verified local model path, downloading it if allowed."""
+class ModelFile(Protocol):
+    """A registered model file (segmentation or detector spec)."""
+
+    name: str
+    filename: str
+    url: str
+    sha256: str
+
+
+def ensure_model(spec: ModelFile, models_dir: Path, auto_download: bool) -> Path:
+    """Return the verified local model path, downloading it if allowed. An existing file is
+    verified too (once per load, ≈ 0.5 s for BiRefNet): another export under the registered
+    name, or a damaged file, is a ``ModelUnavailableError`` at warm-up – /health reports it –
+    instead of wrong results or an error at the first job."""
     path = models_dir / spec.filename
     if path.is_file():
+        actual = _sha256(path)
+        if actual != spec.sha256:
+            raise ModelUnavailableError(
+                f"Checksum mismatch for {spec.name}: {path} is not the registered file ({actual}) – "
+                "delete it and run scripts/download_models.py"
+            )
         return path
     if not auto_download:
         raise ModelUnavailableError(
             f"Model file {path} missing and PROCESSOR_AUTO_DOWNLOAD_MODELS is disabled"
         )
     models_dir.mkdir(parents=True, exist_ok=True)
-    log.info("Downloading segmentation model %s …", spec.name)
+    log.info("Downloading model %s …", spec.name)
     fd, tmp_name = tempfile.mkstemp(dir=models_dir, suffix=".part")
     os.close(fd)
     tmp = Path(tmp_name)
@@ -139,9 +173,19 @@ def ensure_model(spec: OnnxModelSpec, models_dir: Path, auto_download: bool) -> 
 class OnnxSegmenter:
     """Salient-object segmentation with an ONNX model (CPU)."""
 
-    def __init__(self, spec: OnnxModelSpec, models_dir: Path, *, auto_download: bool, threads: int = 0):
+    def __init__(
+        self,
+        spec: OnnxModelSpec,
+        models_dir: Path,
+        *,
+        auto_download: bool,
+        threads: int = 0,
+        detector: VehicleDetector | None = None,
+    ):
         self.spec = spec
         self.name = f"onnx:{spec.name}"
+        #: Semantic vehicle detector used next to this model (see detection.py).
+        self.detector = detector
         self._models_dir = models_dir
         self._auto_download = auto_download
         self._threads = threads
@@ -150,7 +194,8 @@ class OnnxSegmenter:
 
     @property
     def loaded(self) -> bool:
-        return self._session is not None
+        """The segmentation model and (if any) the detector are loaded."""
+        return self._session is not None and bool(getattr(self.detector, "loaded", True))
 
     def _get_session(self):
         with self._lock:
@@ -181,6 +226,8 @@ class OnnxSegmenter:
 
     def warm_up(self) -> None:
         self._get_session()
+        if self.detector is not None and hasattr(self.detector, "warm_up"):
+            self.detector.warm_up()
 
     def segment(self, rgb: np.ndarray) -> np.ndarray:
         if rgb.ndim != 3 or rgb.shape[2] != 3:
@@ -214,9 +261,199 @@ def create_segmenter(settings: Settings) -> VehicleSegmenter:
             f"Unknown segmentation model '{settings.segmentation_model}'. "
             f"Available: {', '.join(sorted(MODEL_REGISTRY))}"
         )
+    from .detection import create_detector
+
     return OnnxSegmenter(
         spec,
         settings.models_dir,
         auto_download=settings.auto_download_models,
         threads=settings.threads,
+        detector=create_detector(settings),
     )
+
+
+# --------------------------------------------------------------------------- window pass
+
+# Frames that are not landscape (portrait and square) are segmented inside a window
+# around the vehicle: in one whole-frame pass the car is a thin band of the model
+# input and BiRefNet merged a car parked behind it, a traffic cone and snow into the
+# outline (portrait 9:16 and 3:4 composites of the regression photos) – a window
+# around the car was clean. Landscape frames (4:3, 16:9) keep the whole-frame pass,
+# which the regression set validates.
+
+#: The window: the vehicle box grown by this share of its size on every side …
+WINDOW_MARGIN = 0.2
+#: … then widened to at least square and heightened to at most 4:3 – the framing of
+#: a landscape phone photo, which the regression set validates (a 2160 × 1620 cut of
+#: a portrait frame around a side view was clean; a 16:9 window merged a car behind
+#: the bonnet) – clamped to the photo.
+WINDOW_MAX_ASPECT = 4 / 3
+#: The window pass is only used when its vehicle does not run into an edge of the
+#: window inside the photo (solid pixels over this share of that edge).
+WINDOW_EDGE_TOUCH = 0.02
+
+
+def vehicle_window(box: tuple[float, float, float, float], width: int, height: int) -> tuple[int, int, int, int]:
+    """Window (x0, y0, x1, y1) of the second pass around ``box`` (photo px)."""
+    x0, y0, x1, y1 = box
+    bw, bh = max(x1 - x0, 1.0), max(y1 - y0, 1.0)
+    x0, x1 = x0 - WINDOW_MARGIN * bw, x1 + WINDOW_MARGIN * bw
+    y0, y1 = y0 - WINDOW_MARGIN * bh, y1 + WINDOW_MARGIN * bh
+    w, h = min(x1 - x0, float(width)), min(y1 - y0, float(height))
+    w = min(max(w, h), float(width))  # at least square (as far as the photo allows) …
+    h = min(max(h, w / WINDOW_MAX_ASPECT), float(height))  # … at most 4:3
+    cx, cy = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+    wx0 = int(round(np.clip(cx - 0.5 * w, 0, width - w)))
+    wy0 = int(round(np.clip(cy - 0.5 * h, 0, height - h)))
+    return wx0, wy0, min(wx0 + int(round(w)), width), min(wy0 + int(round(h)), height)
+
+
+def _solid_bbox(alpha: np.ndarray) -> tuple[int, int, int, int] | None:
+    ys, xs = np.nonzero(alpha >= 0.5)
+    if len(xs) == 0:
+        return None
+    return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+
+
+def window_edges_touched(alpha: np.ndarray, window: tuple[int, int, int, int], width: int, height: int) -> list[str]:
+    """Edges of the window INSIDE the photo that the solid window alpha runs into."""
+    solid = alpha >= 0.5
+    x0, y0, x1, y1 = window
+    h, w = solid.shape
+    edges = []
+    if x0 > 0 and solid[:, :2].any(axis=1).sum() > WINDOW_EDGE_TOUCH * h:
+        edges.append("left")
+    if x1 < width and solid[:, -2:].any(axis=1).sum() > WINDOW_EDGE_TOUCH * h:
+        edges.append("right")
+    if y0 > 0 and solid[:2, :].any(axis=0).sum() > WINDOW_EDGE_TOUCH * w:
+        edges.append("top")
+    if y1 < height and solid[-2:, :].any(axis=0).sum() > WINDOW_EDGE_TOUCH * w:
+        edges.append("bottom")
+    return edges
+
+
+def segment_vehicle(
+    rgb: np.ndarray, segmenter: VehicleSegmenter, vehicle_box: tuple[float, float, float, float] | None = None
+) -> tuple[np.ndarray, dict]:
+    """Coarse vehicle alpha for the whole photo and how it was made.
+
+    Landscape frames: one pass on the whole frame. Portrait/square frames: one pass
+    on the ORIGINAL pixels of ``vehicle_window`` around ``vehicle_box`` (the
+    detector's vehicle) – or, without it, around the bbox of a whole-frame pass –
+    with the alpha zero outside the window. When the vehicle of the window pass
+    runs into a window edge inside the photo (the window did not contain the whole
+    vehicle), the whole-frame alpha is used.
+    """
+    height, width = rgb.shape[:2]
+    info: dict = {"passes": []}
+
+    def run(window: tuple[int, int, int, int] | None) -> np.ndarray:
+        image = rgb if window is None else np.ascontiguousarray(rgb[window[1] : window[3], window[0] : window[2]])
+        started = time.perf_counter()
+        alpha = segmenter.segment(image)
+        expected = image.shape[:2]
+        if alpha.shape != expected:
+            raise ValueError("segmenter returned a mask of the wrong size")
+        info["passes"].append(
+            {"window": list(window) if window else None, "ms": int(round((time.perf_counter() - started) * 1000))}
+        )
+        return alpha
+
+    if width > height:  # landscape
+        return run(None), info
+    full = None
+    box = vehicle_box
+    info["boxSource"] = "detector" if box is not None else "firstPass"
+    if box is None:
+        full = run(None)
+        box = _solid_bbox(full)
+        if box is None:
+            return full, info
+    window = vehicle_window(box, width, height)
+    info["window"] = list(window)
+    if window == (0, 0, width, height):
+        info["windowUsed"] = False
+        return (full if full is not None else run(None)), info
+    part = run(window)
+    touched = window_edges_touched(part, window, width, height)
+    if touched:
+        info["windowUsed"] = False
+        info["windowEdgesTouched"] = touched
+        return (full if full is not None else run(None)), info
+    alpha = np.zeros((height, width), np.float32)
+    alpha[window[1] : window[3], window[0] : window[2]] = part
+    info["windowUsed"] = True
+    return alpha, info
+
+
+# --------------------------------------------------------------------------- missing parts
+
+#: A part missing from the window pass is taken from the whole-frame pass only where that pass
+#: has it: solid and attached to the vehicle over at least this share of the part's core (its
+#: claim without the instance mask's coarse band).
+PART_MIN_SHARE = 0.5
+#: The other pass's soft edge around a taken part (photo px).
+PART_FRINGE_PX = 4
+
+
+def _to_photo(region: np.ndarray, box: tuple[int, int, int, int], scale: float, shape: tuple[int, int]) -> np.ndarray:
+    """``region`` (bool, working resolution) inside the photo-px ``box`` of the given crop
+    shape – interpolated, so its outline has no working-resolution stair-steps."""
+    cx0, cy0, cx1, cy1 = box
+    if not region.any():
+        return np.zeros(shape, bool)
+    # the working px covering the crop (+1 for the interpolation), resampled to the crop
+    wx0, wy0 = max(int(np.floor(cx0 * scale)) - 1, 0), max(int(np.floor(cy0 * scale)) - 1, 0)
+    wx1 = min(int(np.ceil(cx1 * scale)) + 2, region.shape[1])
+    wy1 = min(int(np.ceil(cy1 * scale)) + 2, region.shape[0])
+    patch = region[wy0:wy1, wx0:wx1].astype(np.float32)
+    # photo px centre (x + 0.5) lies at working px (x + 0.5) * scale - 0.5 of the full map
+    map_x = ((np.arange(cx0, cx1, dtype=np.float32) + 0.5) * scale - 0.5 - wx0)[None, :].repeat(shape[0], axis=0)
+    map_y = ((np.arange(cy0, cy1, dtype=np.float32) + 0.5) * scale - 0.5 - wy0)[:, None].repeat(shape[1], axis=1)
+    values = cv2.remap(patch, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+    return values >= 0.5
+
+
+def merge_parts(
+    coarse: np.ndarray, other: np.ndarray, parts: list[tuple[np.ndarray, np.ndarray]], scale: float
+) -> tuple[np.ndarray, list[list[int]]]:
+    """``coarse`` with the alpha of ``other`` (another BiRefNet pass of the same photo) inside
+    the claimed region of each missing part (``parts``: (core, claim), bool at ``scale`` working
+    px per photo px, see ``mask.MaskInfo.part_regions``) – only the solid components of
+    ``other`` there that are attached to the vehicle of ``coarse``, plus their soft edge, and
+    only when they cover the part's core; nothing outside the claimed regions changes.
+    Returns the merged alpha and the photo-px boxes of the parts taken."""
+    height, width = coarse.shape
+    merged = coarse.copy()
+    taken: list[list[int]] = []
+    margin = PART_FRINGE_PX + 2
+    for core, claim in parts:
+        ys, xs = np.nonzero(claim)
+        if len(xs) == 0:
+            continue
+        x0, y0 = int(xs.min() / scale), int(ys.min() / scale)
+        x1, y1 = min(int(np.ceil((xs.max() + 1) / scale)), width), min(int(np.ceil((ys.max() + 1) / scale)), height)
+        # a crop with a margin for the soft edge
+        box = (max(x0 - margin, 0), max(y0 - margin, 0), min(x1 + margin, width), min(y1 + margin, height))
+        cx0, cy0, cx1, cy1 = box
+        shape = (cy1 - cy0, cx1 - cx0)
+        claimed = _to_photo(claim, box, scale, shape)
+        centre = _to_photo(core, box, scale, shape) & claimed
+        current = merged[cy0:cy1, cx0:cx1] >= 0.5
+        solid = (other[cy0:cy1, cx0:cx1] >= 0.5) & claimed & ~current
+        vehicle = cv2.dilate(current.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+        count, labels = cv2.connectedComponents(solid.astype(np.uint8), connectivity=8)
+        attached = [k for k in range(1, count) if (vehicle & (labels == k)).any()]
+        keep = np.isin(labels, attached) if attached else np.zeros_like(solid)
+        if not centre.any() or int((keep & centre).sum()) < PART_MIN_SHARE * int(centre.sum()):
+            continue  # the other pass does not have the part either
+        # the part with its own soft edge; where the other pass continues beyond the claim
+        # (background it merged into the part) it fades out over PART_FRINGE_PX – no hard cut
+        beyond = cv2.distanceTransform((~keep).astype(np.uint8), cv2.DIST_L2, 3)
+        weight = np.clip(1.0 - beyond / PART_FRINGE_PX, 0.0, 1.0)
+        local = merged[cy0:cy1, cx0:cx1]
+        np.maximum(local, other[cy0:cy1, cx0:cx1] * weight, out=local)
+        kys, kxs = np.nonzero(keep)
+        taken.append([cx0 + int(kxs.min()), cy0 + int(kys.min()), cx0 + int(kxs.max()) + 1, cy0 + int(kys.max()) + 1])
+    return merged, taken
+

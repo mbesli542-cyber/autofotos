@@ -10,6 +10,10 @@
  *      ORIGINAL photo plus a branding bar). Those are not AutoExperten
  *      results: their files and links are deleted and vehicles in status
  *      "processed" go back to "complete".
+ *
+ * Fields added later need no migration when the reader fills them in:
+ * photo records without `processingWarnings` (processor hints, added with
+ * the warnings display) are read as "no hints" (MockDataProvider).
  */
 import type { Vehicle } from "@/lib/domain/types";
 import type { IdbDatabase } from "@/lib/offline/idb";
@@ -42,6 +46,7 @@ async function removeSimulatedProcessedVersions(db: IdbDatabase): Promise<void> 
       ...photo,
       processedStoragePath: null,
       processedPreset: null,
+      processingWarnings: [],
       updatedAt: now,
     });
   }

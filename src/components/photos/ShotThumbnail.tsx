@@ -1,7 +1,8 @@
-import { Camera, Check, CloudOff, ImageOff } from "lucide-react";
+import { Camera, Check, CloudOff, ImageOff, TriangleAlert } from "lucide-react";
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/lib/cn";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
+import { needsResultCheck } from "@/lib/processing/processing-warnings";
 
 export type PhotoVariant = "original" | "processed";
 
@@ -16,7 +17,13 @@ export function getSlotImageUrl(slot: PhotoSlot, variant: PhotoVariant): string 
   return slot.photo.urls.thumbnail;
 }
 
-/** 4:3 tile with shot number, capture state and checkmark. */
+/** The processed version shown for the slot carries a hint of the processor that asks for a check. */
+export function processedNeedsCheck(slot: PhotoSlot, variant: PhotoVariant): boolean {
+  if (variant !== "processed" || getSlotImageUrl(slot, variant) === null) return false;
+  return needsResultCheck(slot.photo?.processingWarnings ?? []);
+}
+
+/** 4:3 tile with shot number, capture state and checkmark (processed version to check: warning sign). */
 export function ShotThumbnail({
   slot,
   variant = "original",
@@ -71,6 +78,13 @@ export function ShotThumbnail({
           title="Wird gespeichert"
         >
           <Spinner className="size-3.5" />
+        </span>
+      ) : processedNeedsCheck(slot, variant) ? (
+        <span
+          className="absolute right-1.5 bottom-1.5 flex size-6 items-center justify-center rounded-full bg-ae-warning text-black shadow"
+          title="Bitte prüfen"
+        >
+          <TriangleAlert className="size-3.5" aria-hidden />
         </span>
       ) : slot.photo && (variant === "original" || url) ? (
         <span className="absolute right-1.5 bottom-1.5 flex size-6 items-center justify-center rounded-full bg-ae-blue text-white shadow">

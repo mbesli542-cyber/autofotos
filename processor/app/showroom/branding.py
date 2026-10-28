@@ -181,6 +181,11 @@ def _official_logo(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return _load_logo(str(path), stamp)
 
 
+#: Public name of the official-logo loader: the configuration check of /health
+#: (app/presets.py) loads the logo exactly as the branding of the plates does.
+load_official_logo = _official_logo
+
+
 @lru_cache(maxsize=4)
 def _load_logo(path: str, _stamp: int) -> tuple[np.ndarray, np.ndarray]:
     try:

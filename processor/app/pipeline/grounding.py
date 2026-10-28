@@ -33,7 +33,9 @@ floor only, never below ``shadow.minFloorLight``:
    within the tyre's x-extent (+3 cm), plus a soft halo and a thin crease;
 2. underbody – the floor seen between the lower outline and the floor line
    (deep under the car → floor line), then a soft falloff in front of it;
-   rounded off beyond the silhouette's ends;
+   beyond the silhouette's ends (no car above the floor) only a penumbra that
+   fades in below the end column's outline row and out sideways – no
+   hard-topped dark band beside the bumpers;
 3. ambient – the plate's physically rendered proxy shadow (``<shot>-shadow.png``)
    resampled through the car pose, scaled by ``shadow.ambientOpacity`` and kept
    within ``shadow.ambientReach`` of the footprint and AMBIENT_FRONT_REACH of the
@@ -109,6 +111,11 @@ SIDE_VIEW_SLOPE = 0.12
 #: the underbody shadow sideways over this one.
 OUTLINE_SMOOTH = 0.012
 UNDERBODY_SMOOTH = 0.0015
+#: Beyond the silhouette's ends no car stands above the floor: the end column's under-car
+#: profile only continues as a penumbra that fades in below the end column's outline row over
+#: this many px per px of distance from the end (no hard horizontal top edge on the open floor
+#: beside the bumpers; continuous with the end column).
+END_FADE_SLOPE = 2.0
 
 # ---- tyres (physical sizes in metres, × the pose scale)
 TREAD_HALF = 0.12
@@ -549,6 +556,23 @@ def _fill_nearest(values: np.ndarray) -> np.ndarray:
     return np.interp(idx, finite, values[finite])
 
 
+def end_fade(rows: np.ndarray, top: np.ndarray, beyond: np.ndarray) -> np.ndarray:
+    """Vertical fade-in (rows × columns, 0..1) of an under-car term beyond the silhouette's ends.
+
+    `rows`: pixel-centre rows (column vector); `top`: per column the row where the end
+    column's profile becomes visible – its outline row (the outline filled outwards), or the
+    wall/floor junction when that lies lower (a far end whose outline is above the floor);
+    `beyond`: px beyond the silhouette's end per column (0 within it → factor 1). No car is
+    above the floor there, so the copied end-column profile must not start with a hard
+    horizontal edge or at full depth: a smoothstep from `top` over END_FADE_SLOPE × `beyond`
+    px – a penumbra that widens away from the car and meets the end column's profile at the
+    silhouette's end (no vertical seam either)."""
+    beyond = np.asarray(beyond, np.float64)
+    ramp = np.maximum(END_FADE_SLOPE * beyond, 1.0)
+    t = np.clip((np.asarray(rows, np.float64) - np.asarray(top, np.float64)[None, :]) / ramp[None, :], 0.0, 1.0)
+    return np.where(beyond[None, :] > 0.0, t * t * (3.0 - 2.0 * t), 1.0).astype(np.float32)
+
+
 def _steepness(values: np.ndarray, sigma: float) -> np.ndarray:
     """sqrt(1 + slope²) of a per-column line (smoothed): vertical falloffs × this are
     perpendicular falloffs – a steep line (3/4 views) keeps a soft edge."""
@@ -848,6 +872,10 @@ FRINGE_TYRE_FACTOR = (1.8, 0.03)
 #: the body just above by these factors.
 FRINGE_BODY_HEIGHT = 0.015
 FRINGE_BODY_FACTOR = (1.3, 0.025)
+#: A tyre's cut height changes by at most this many px per column (px/px), also where it meets
+#: its neighbours: a full-height tyre cut tapers out over 3 cm at the ends of its range or
+#: blends into the outline cut – no rectangular notch in the bottom edge of the tyre.
+FRINGE_MAX_SLOPE = FRINGE_TYRE_HEIGHT / 0.03
 
 
 def _luma(rgb: np.ndarray) -> np.ndarray:
@@ -890,6 +918,22 @@ def _smooth_cut(cuts: np.ndarray, bottom: np.ndarray, width: int) -> np.ndarray:
     return bottom + 1.0 - depth
 
 
+def _limit_slope(depth: np.ndarray, slope: float, free: np.ndarray | None = None) -> np.ndarray:
+    """Lower envelope of cones of `slope` (per column) on the values of `depth`: no value rises
+    more than `slope` above a neighbour's – a cut only ever gets shallower. Only `free` columns
+    (default: all) are lowered; the others keep their value but still constrain their
+    neighbours. Infinite values (no vehicle) do not constrain anything."""
+    out = np.asarray(depth, np.float64).copy()
+    free = np.ones(len(out), bool) if free is None else np.asarray(free, bool)
+    for k in range(1, len(out)):
+        if free[k]:
+            out[k] = min(out[k], out[k - 1] + slope)
+    for k in range(len(out) - 2, -1, -1):
+        if free[k]:
+            out[k] = min(out[k], out[k + 1] + slope)
+    return out
+
+
 def _apply_cut(alpha: np.ndarray, x0: int, cuts: np.ndarray, bottom: np.ndarray) -> int:
     """Fade the alpha out below the cut rows (1.5 px feather); returns the removed alpha mass."""
     removed = 0.0
@@ -917,8 +961,9 @@ def clean_ground_fringe(
     clearly lighter than the tyre's rubber (snow/ground at the tread – the contact shadow
     shows instead). Along the rest of the lower outline: a thin light bottom fringe
     (≤ FRINGE_BODY_HEIGHT) clearly lighter than the body right above it. The cut is a
-    smoothed per-column height with a feathered edge (no comb of single columns); the
-    vehicle's own pixels above it stay untouched.
+    smoothed per-column height with a feathered edge (no comb of single columns); a tyre's cut
+    changes by at most FRINGE_MAX_SLOPE per column and tapers out at the ends of its range or
+    blends into the outline cut (no notch). The vehicle's own pixels above it stay untouched.
     """
     alpha = np.array(vehicle_alpha, dtype=np.float32, copy=True)
     height, width = alpha.shape
@@ -932,7 +977,7 @@ def clean_ground_fringe(
     has = np.isfinite(edge)
     bottom_all = np.where(has, edge - 1.0, -1.0)  # last solid row per window column
     scale, _ = model.frame.scales(model.cols, np.clip(_fill_nearest(edge), 0, height - 1))
-    removed_tyre = removed_body = 0
+    depth = np.zeros(len(edge))  # cut depth (px above the bottom edge) per window column
     tyre_cols = np.zeros(len(edge), bool)
     for t in model.tyres:
         c = t.contact
@@ -955,7 +1000,7 @@ def clean_ground_fringe(
         top = np.maximum(bottom - max(3.0, FRINGE_TYRE_HEIGHT * pxm), 0)
         cuts = _cut_rows(luma, alpha, x0, x1, bottom, top, np.full(x1 - x0, thr))
         cuts = _smooth_cut(cuts, bottom, int(round(0.03 * pxm)))
-        removed_tyre += _apply_cut(alpha, x0, cuts, bottom)
+        depth[sl] = np.maximum(depth[sl], bottom + 1.0 - cuts)
     # thin light fringe along the rest of the lower outline (runs between the tyres)
     body = has & ~tyre_cols
     idx = np.flatnonzero(body)
@@ -980,7 +1025,16 @@ def clean_ground_fringe(
                 thr[k] = max(body_l * FRINGE_BODY_FACTOR[0], body_l + FRINGE_BODY_FACTOR[1])
             cuts = _cut_rows(luma, alpha, int(xs[0]), int(xs[-1]) + 1, bottom, top, thr)
             cuts = _smooth_cut(cuts, bottom, int(round(0.02 * float(np.median(scale[run])))))
-            removed_body += _apply_cut(alpha, int(xs[0]), cuts, bottom)
+            depth[run] = np.maximum(depth[run], bottom + 1.0 - cuts)
+    # the cut height never jumps between neighbouring columns: a tyre's cut tapers out at the
+    # ends of its range or blends into the outline cut beside it (no rectangular notch in the
+    # tyre); the outline cut is only lowered where a tyre's taper meets it
+    depth = _limit_slope(np.where(has, depth, np.inf), FRINGE_MAX_SLOPE, free=tyre_cols)
+    taper = _limit_slope(np.where(tyre_cols & has, depth, np.inf), FRINGE_MAX_SLOPE)
+    depth = np.where(tyre_cols, depth, np.minimum(depth, taper))
+    cuts = np.where(has, bottom_all + 1.0 - depth, np.inf)
+    removed_tyre = _apply_cut(alpha, w.x0, np.where(tyre_cols, cuts, np.inf), bottom_all)
+    removed_body = _apply_cut(alpha, w.x0, np.where(tyre_cols, np.inf, cuts), bottom_all)
     if info is not None:
         info.update({"tyreAlphaRemoved": removed_tyre, "outlineAlphaRemoved": removed_body})
     return alpha
@@ -1039,11 +1093,15 @@ def apply_grounding(
         window, edge_f, line_f, cfg.underbody_opacity, cfg.edge_opacity, falloff, behind, cover,
         smooth_outline(edge_f, vw),
     )  # fmt: skip
-    # beyond the silhouette's ends: the end column's profile, rounded off sideways; smoothed
-    # sideways (the rounded tips of bumpers make single columns jump – no vertical seams)
+    # beyond the silhouette's ends: the end column's profile, rounded off sideways and faded in
+    # below the end column's outline row (no car above → no hard-topped dark band on the open
+    # floor beside the bumpers); smoothed sideways (the rounded tips of bumpers make single
+    # columns jump – no vertical seams)
     beyond = np.maximum(np.maximum(cols[first] - cols, cols - cols[last]), 0.0)
     sideways = np.exp(-((beyond / np.maximum(cfg.underbody_falloff * across_px, 1.0)) ** 2))
-    under = (under * sideways[None, :]).astype(np.float32)
+    rows_c = np.arange(window.y0, window.y1, dtype=np.float64)[:, None] + 0.5
+    top = np.maximum(edge_f, np.asarray(plate.floor_top, np.float64)[window.x0 : window.x1])
+    under = (under * sideways[None, :] * end_fade(rows_c, top, beyond)).astype(np.float32)
     under = cv2.GaussianBlur(under, (0, 0), sigmaX=max(0.8, UNDERBODY_SMOOTH * vw), sigmaY=0.1)
     keep = 1.0 - under
 

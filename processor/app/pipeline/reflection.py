@@ -13,7 +13,9 @@ before the car is composited) does exactly that, in linear light:
   continuation that detaches the reflection from the bumpers;
 - occlusion = the mirrored car silhouette plus the floor under the car and its
   mirror (the reflected underside): there the plate's own reflection is removed
-  (as shadowed by the grounding) – no LED streak runs under the car;
+  (as shadowed by the grounding) – no LED streak runs under the car; beyond the
+  car's ends (rays hit the wall there) that band only fades out, like the
+  underbody shadow – no hard-topped strip cut out of the plate's reflection;
 - the mirrored ORIGINAL vehicle pixels (nothing regenerated) are added as a
   colour-neutral specular term with the floor's reflectance measured on the
   plate (reflection / mirrored wall radiance, plates.json ``reflectance``) ×
@@ -35,7 +37,7 @@ import cv2
 import numpy as np
 
 from ..presets import ReflectionConfig, ShowroomPlate
-from .grounding import GroundModel, _fill_nearest, build_ground_model
+from .grounding import GroundModel, _fill_nearest, build_ground_model, end_fade
 from .placement import PlacementResult
 from .shadow import floor_weight
 
@@ -154,9 +156,13 @@ def apply_reflection(
     mirrored = cv2.remap(source, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
     below = distance > 0.0
     mirrored *= below[..., None]
-    # the floor under the car and its mirror image reflect the dark underside
+    # the floor under the car and its mirror image reflect the dark underside; beyond the car's
+    # ends the reflected rays hit the wall, not the car – the band only fades out there, sideways
+    # and in below the end column's outline row like the underbody shadow (no hard-topped strip
+    # cut out of the plate's own floor reflection beside the bumpers)
     gap = (centre >= edge[None, :] - behind) & (centre <= 2.0 * axis[None, :] - edge[None, :])
-    mirrored[..., 3] = np.maximum(mirrored[..., 3], gap.astype(np.float32) * sideways[None, :])
+    ends = end_fade(centre, np.maximum(edge, np.asarray(plate.floor_top, np.float64)[x0:x1]), beyond)
+    mirrored[..., 3] = np.maximum(mirrored[..., 3], gap.astype(np.float32) * sideways[None, :] * ends)
 
     # gloss: blur grows with the distance from the floor line
     weights = _levels_weights(np.maximum(distance, 0.0), levels)

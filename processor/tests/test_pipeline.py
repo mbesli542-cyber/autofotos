@@ -100,7 +100,7 @@ def test_exterior_metadata_describes_plate_contacts_gate_and_placement(run):
     assert meta["plate"]["camera"]["hfovDeg"] == pytest.approx(66.0)
     assert {"heightM", "distanceToAnchorM", "orbitDeg", "pitchDownDeg"} <= set(meta["plate"]["camera"])
     assert meta["qualityGate"]["passed"] is True
-    assert set(meta["qualityGate"]["checks"]) == {"cropped", "upscale", "mask", "perspective", "contacts"}
+    assert set(meta["qualityGate"]["checks"]) == {"cropped", "upscale", "mask", "perspective", "contacts", "foreign", "parts"}
     assert {"targetWidthRatio", "achievedWidthRatio", "scale", "limitedBy", "groundY"} <= set(meta["placement"])
     assert meta["contacts"]["source"] and meta["geometry"]["contactSpan"] > 0.5
     assert meta["showroomPlaceholder"] is False
@@ -245,3 +245,162 @@ def test_feathered_edge_pixels_get_the_vehicle_colour_not_black():
     assert grown.any()
     assert layer.rgb[grown].min() > 0.8
     assert np.array_equal(layer.rgb[:, :14], rgb[:, :14])  # opaque interior untouched
+
+
+# --------------------------------------------------------------- detector, window pass
+
+
+def _portrait(vehicle_rgb: np.ndarray, vehicle_mask: np.ndarray, height: int):
+    """The landscape vehicle photo centred in an upright frame of the same width."""
+    from tests.conftest import _outdoor
+
+    h, w = vehicle_mask.shape
+    top = (height - h) // 2
+    rgb = _outdoor(w, height, 11)
+    rgb[top : top + h] = vehicle_rgb
+    mask = np.zeros((height, w), np.float32)
+    mask[top : top + h] = vehicle_mask
+    return rgb, mask, top
+
+
+def test_an_upright_exterior_photo_is_segmented_in_a_window_around_the_detected_car(settings, vehicle):
+    from tests.semantic_fixtures import ColourSegmenter, FakeDetector
+
+    rgb, mask, _ = _portrait(vehicle[0], vehicle[1], 3000)
+    detector = FakeDetector().add("car", mask > 0.5, 0.95)
+    segmenter = ColourSegmenter(NAVY, (60, 70, 80), (22, 22, 24), tolerance=40, detector=detector)
+    preset = load_preset(settings, "autoexperten_standard")
+    result = process_photo(
+        encode_jpeg(rgb, 97),
+        preset=preset,
+        segmenter=segmenter,
+        backgrounds=BackgroundProvider(settings),
+        shot_key="left_side",
+    )
+    meta = result.metadata
+    assert meta["segmentation"]["windowUsed"] is True and meta["segmentation"]["boxSource"] == "detector"
+    x0, y0, x1, y1 = meta["segmentation"]["window"]
+    assert segmenter.calls == [(y1 - y0, x1 - x0)]  # one BiRefNet-like pass, on the window only
+    assert y0 > 0 and y1 < 3000 and y1 - y0 < 2000
+    assert meta["mask"]["vehicleDetected"] is True and meta["mask"]["foreignSuspected"] == []
+    assert meta["detector"] == "fake-detector" and meta["qualityGate"]["passed"] is True
+
+
+def test_an_object_glued_to_the_car_that_the_detector_assigns_elsewhere_rejects_the_photo(settings, vehicle):
+    from app.pipeline.quality import FOREIGN_OBJECT_MESSAGE
+    from tests.semantic_fixtures import ColourSegmenter, FakeDetector
+
+    rgb, gt = vehicle[0].copy(), vehicle[1] > 0.5
+    ys, xs = np.nonzero(gt)
+    # a navy "neighbour car" rear glued to the back of the car (BiRefNet would merge it)
+    other = np.zeros_like(gt)
+    other[ys.min() + 60 : ys.min() + 260, xs.max() - 10 : xs.max() + 110] = True
+    other &= ~gt
+    rgb[other] = NAVY
+    detector = FakeDetector().add("car", gt, 0.95).add("car", other, 0.85)
+    segmenter = ColourSegmenter(NAVY, (60, 70, 80), (22, 22, 24), tolerance=40, detector=detector)
+    with pytest.raises(QualityGateError) as raised:
+        process_photo(
+            encode_jpeg(rgb, 97),
+            preset=load_preset(settings, "autoexperten_standard"),
+            segmenter=segmenter,
+            backgrounds=BackgroundProvider(settings),
+            shot_key="left_side",
+        )
+    assert raised.value.code == "mask_low_confidence"
+    assert raised.value.user_message == FOREIGN_OBJECT_MESSAGE
+    details = raised.value.details
+    assert details["checks"]["foreign"]["reasons"] == ["foreign_object"]
+    assert details["mask"]["foreignSuspected"] and details["mask"]["semantic"]["findings"][0]["labels"] == ["car"]
+
+
+# --------------------------------------------------------------- missing vehicle parts
+
+MIRROR = (44, 44, 50)  # charcoal mirror housing
+
+
+class _MirrorSegmenter:
+    """BiRefNet on a dark mirror in front of a dark car: the whole frame keeps it (or not),
+    every other pass (the window of an upright photo) loses it."""
+
+    name = "colour"
+
+    def __init__(self, detector, full_shape, *, whole_keeps_mirror: bool):
+        from tests.semantic_fixtures import ColourSegmenter
+
+        self.detector = detector
+        self.calls: list[tuple[int, int]] = []
+        self._full_shape = full_shape
+        self._keeps = whole_keeps_mirror
+        self._with = ColourSegmenter(NAVY, (60, 70, 80), (22, 22, 24), MIRROR, tolerance=40)
+        self._without = ColourSegmenter(NAVY, (60, 70, 80), (22, 22, 24), tolerance=40)
+
+    def segment(self, rgb):
+        self.calls.append(rgb.shape[:2])
+        whole = rgb.shape[:2] == self._full_shape
+        return (self._with if whole and self._keeps else self._without).segment(rgb)
+
+
+def _with_mirror(vehicle):
+    """The side-view fixture with a large mirror at the A-pillar (90 × 60 px, ≈ 4 % of the car)."""
+    rgb, mask = vehicle[0].copy(), vehicle[1] > 0.5
+    mirror = np.zeros_like(mask)
+    mirror[878:938, 1440:1530] = True
+    rgb[mirror & ~mask] = MIRROR
+    return rgb, mask | mirror, mirror & ~mask
+
+
+def test_a_mirror_the_window_pass_lost_is_taken_from_the_whole_frame_pass(settings, vehicle, tmp_path):
+    from tests.semantic_fixtures import FakeDetector
+
+    rgb, gt, _ = _with_mirror(vehicle)
+    rgb, gt_portrait, top = _portrait(rgb, gt.astype(np.float32), 3000)
+    detector = FakeDetector().add("car", gt_portrait > 0.5, 0.95)
+    segmenter = _MirrorSegmenter(detector, rgb.shape[:2], whole_keeps_mirror=True)
+    result = process_photo(
+        encode_jpeg(rgb, 97),
+        preset=load_preset(settings, "autoexperten_standard"),
+        segmenter=segmenter,
+        backgrounds=BackgroundProvider(settings),
+        shot_key="left_side",
+        debug=DebugSink(tmp_path / "debug"),
+    )
+    meta = result.metadata
+    window = meta["segmentation"]["window"]
+    assert segmenter.calls == [(window[3] - window[1], window[2] - window[0]), rgb.shape[:2]]
+    parts = meta["segmentation"]["partsFromWholeFrame"]
+    assert len(parts["missing"]) == 1 and len(parts["taken"]) == 1
+    x0, y0, x1, y1 = parts["taken"][0]
+    assert 1420 <= x0 and x1 <= 1550 and top + 860 <= y0 and y1 <= top + 960
+    assert meta["mask"]["partsMissing"] == [] and meta["qualityGate"]["passed"] is True
+    mask = cv2.imread(str(tmp_path / "debug" / "mask.png"), cv2.IMREAD_GRAYSCALE)
+    assert mask[top + 908, 1485] > 128  # the mirror is in the cut-out
+    assert mask[top + 700, 1485] < 128  # nothing else came with it
+
+
+def test_a_mirror_no_pass_has_rejects_the_photo(settings, vehicle):
+    from app.pipeline.quality import VEHICLE_PART_MESSAGE
+    from tests.semantic_fixtures import FakeDetector
+
+    rgb, gt, _ = _with_mirror(vehicle)
+    portrait, gt_portrait, _ = _portrait(rgb, gt.astype(np.float32), 3000)
+    for photo, truth in ((portrait, gt_portrait > 0.5), (rgb, gt)):  # upright (two passes), landscape (one)
+        detector = FakeDetector().add("car", truth, 0.95)
+        segmenter = _MirrorSegmenter(detector, (-1, -1), whole_keeps_mirror=False)
+        with pytest.raises(QualityGateError) as raised:
+            process_photo(
+                encode_jpeg(photo, 97),
+                preset=load_preset(settings, "autoexperten_standard"),
+                segmenter=segmenter,
+                backgrounds=BackgroundProvider(settings),
+                shot_key="left_side",
+            )
+        assert raised.value.code == "mask_low_confidence" and raised.value.user_message == VEHICLE_PART_MESSAGE
+        details = raised.value.details
+        assert details["checks"]["parts"]["reasons"] == ["vehicle_part_missing"] and len(details["mask"]["partsMissing"]) == 1
+        upright = photo.shape[0] > photo.shape[1]
+        assert len(segmenter.calls) == (2 if upright else 1)
+        if upright:
+            assert details["segmentation"]["partsFromWholeFrame"]["taken"] == []
+        else:
+            assert "partsFromWholeFrame" not in details["segmentation"]

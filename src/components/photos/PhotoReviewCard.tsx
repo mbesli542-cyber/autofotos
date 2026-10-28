@@ -1,10 +1,11 @@
 import { cn } from "@/lib/cn";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
-import { ShotThumbnail, type PhotoVariant } from "./ShotThumbnail";
+import { processedNeedsCheck, ShotThumbnail, type PhotoVariant } from "./ShotThumbnail";
 
-function describeState(slot: PhotoSlot): string {
+function describeState(slot: PhotoSlot, variant: PhotoVariant): string {
   if (slot.pending?.status === "failed") return "nicht gespeichert";
   if (slot.pending) return "wird gespeichert";
+  if (processedNeedsCheck(slot, variant)) return "bearbeitet, bitte prüfen";
   return slot.photo ? "aufgenommen" : "fehlt";
 }
 
@@ -24,7 +25,7 @@ export function PhotoReviewCard({
       type="button"
       onClick={() => onSelect(slot)}
       className="group flex w-full flex-col gap-1.5 rounded-xl text-left"
-      aria-label={`${formatSlotNumber(slot)} ${slot.title} – ${describeState(slot)}`}
+      aria-label={`${formatSlotNumber(slot)} ${slot.title} – ${describeState(slot, variant ?? "original")}`}
     >
       <ShotThumbnail
         slot={slot}

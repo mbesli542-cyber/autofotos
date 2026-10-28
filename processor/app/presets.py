@@ -17,20 +17,27 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import threading
+import unicodedata
 from dataclasses import dataclass, field, fields, replace
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 import cv2
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageFont, ImageOps
 
 from .config import Settings
 from .showroom.branding import (
+    FONT_DIR,
+    FONT_FILES,
     BrandingAssetError,
     BrandingConfig,
     BrandingLayout,
+    TextConfig,
+    load_official_logo,
     logo_stamp,
 )
 from .showroom.plates import Plate, PlateSet, PlateSetError, load_plate_set
@@ -227,7 +234,7 @@ def _camel_to_snake(name: str) -> str:
 #: Fields that are fractions of the frame (or opacities) and must lie in 0..1.
 _FRACTIONS = {
     "max_height_ratio", "min_margin", "min_target_fraction",
-    "top", "max_width", "max_height", "cap_height", "opacity", "clearance", "light_match",
+    "top", "center_x", "max_width", "max_height", "cap_height", "opacity", "clearance", "light_match",
     "shadow_opacity", "shadow_offset", "shadow_blur",
     "contact_opacity", "crease_opacity", "underbody_opacity", "edge_opacity", "ambient_opacity",
     "min_floor_light",
@@ -256,6 +263,8 @@ def _check_value(owner: str, key: str, name: str, value, default):
             raise PresetConfigError(f"{where} must be a number")
         if isinstance(default, int) and not isinstance(value, int):
             raise PresetConfigError(f"{where} must be a whole number")
+        if not math.isfinite(value):
+            raise PresetConfigError(f"{where} must be a finite number")
         value = type(default)(value)
         if name in _FRACTIONS and not 0.0 <= value <= 1.0:
             raise PresetConfigError(f"{where} must be between 0 and 1 (fraction of the frame), got {value}")
@@ -271,8 +280,10 @@ def _check_value(owner: str, key: str, name: str, value, default):
     elif isinstance(default, tuple):
         if not isinstance(value, (list, tuple)) or len(value) != len(default):
             raise PresetConfigError(f"{where} must be a list of {len(default)} numbers")
-        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0 for v in value):
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 for v in value):
             raise PresetConfigError(f"{where} must contain non-negative numbers")
+        if any(isinstance(d, int) and not isinstance(v, int) for d, v in zip(default, value)):
+            raise PresetConfigError(f"{where} must contain whole numbers")
         value = tuple(type(d)(v) for d, v in zip(default, value))
     return value
 
@@ -313,6 +324,113 @@ def parse_branding(data: dict | None) -> BrandingConfig:
     )
 
 
+#: Output long edge (px): from a small preview size to what listing portals can use at all.
+OUTPUT_LONG_EDGE_RANGE = (320, 8000)
+#: width:height of the output between 1:2 and 3:1.
+OUTPUT_ASPECT_RANGE = (0.5, 3.0)
+#: Free margin per side (fraction of the frame) – more leaves no sensible room for the vehicle.
+MAX_MIN_MARGIN = 0.2
+#: Branding sizes (fractions of the brand wall): larger values only blow up the
+#: rendering canvases (a mount shadow blurred over the whole wall needs gigabytes).
+MAX_MOUNT_SHADOW = 0.02
+MAX_CAP_HEIGHT = 0.1
+MAX_TRACKING_EM = 2.0
+#: Branding texts (city, website, phone) are one line of at most this many characters …
+MAX_TEXT_CHARS = 60
+#: … and at most this wide, in brand-wall heights, measured with the bundled branding font –
+#: the text render canvas grows with the width, so this bounds its memory/CPU (a 195-character
+#: city text at the maximum size needed a 2.6 GB canvas). The width counts each glyph's TRUE
+#: advance, so very wide glyphs (e.g. the arrows U+1F850/U+1F852 at 2.68 em, or U+2031 at 1.74 em)
+#: cannot slip under the bound; the wall of the shipped plates is about 1.6 heights wide.
+MAX_TEXT_WIDTH = 2.5
+#: Cap height of the bundled Inter font in em (used to turn capHeight into an em scale).
+_CAP_HEIGHT_EM = 0.73
+#: The official logo must stay clearly visible (size: fraction of the brand wall).
+MIN_LOGO_SIZE = 0.02
+MIN_LOGO_OPACITY = 0.5
+#: quality.borderPx: a wider band would reject every photo as "cropped" (endless retakes).
+MAX_BORDER_PX = 50
+
+
+def _parse_output(data) -> OutputConfig:
+    output = _build(OutputConfig, data, "output")
+    aw, ah = output.aspect
+    low, high = OUTPUT_ASPECT_RANGE
+    if aw < 1 or ah < 1 or not low <= aw / ah <= high:
+        raise PresetConfigError(
+            "output.aspect must be two whole numbers >= 1 between 1:2 and 3:1 (width:height), "
+            f"got {list(output.aspect)}"
+        )
+    low, high = OUTPUT_LONG_EDGE_RANGE
+    if not low <= output.long_edge_min <= output.long_edge_max <= high:
+        raise PresetConfigError(
+            f"output: {low} <= longEdgeMin <= longEdgeMax <= {high} (pixels) required, "
+            f"got {output.long_edge_min} / {output.long_edge_max}"
+        )
+    if not 1 <= output.jpeg_quality <= 100:
+        raise PresetConfigError(f"output.jpegQuality must be 1..100, got {output.jpeg_quality}")
+    return output
+
+
+def _check_branding(branding: BrandingConfig) -> None:
+    if not branding.enabled:
+        return
+    logo = PurePosixPath(branding.logo.file)
+    if logo.is_absolute() or ".." in logo.parts or logo.parts[:1] != ("official",) or logo.suffix.lower() != ".png":
+        raise PresetConfigError("branding.logo.file must be the official PNG logo inside brand/official/")
+    logo_size = min(branding.logo.max_width, branding.logo.max_height)
+    if logo_size < MIN_LOGO_SIZE or branding.logo.opacity < MIN_LOGO_OPACITY:
+        raise PresetConfigError(
+            f"branding.logo: maxWidth/maxHeight must be at least {MIN_LOGO_SIZE} and opacity at least "
+            f"{MIN_LOGO_OPACITY} – the official logo must stay clearly visible"
+        )
+    mount = branding.mount
+    if max(mount.shadow_offset, mount.shadow_blur) > MAX_MOUNT_SHADOW:
+        raise PresetConfigError(f"branding.mount shadowOffset and shadowBlur must be 0..{MAX_MOUNT_SHADOW}")
+    for name in ("city", "website", "phone"):
+        text = getattr(branding, name)
+        if text.cap_height > MAX_CAP_HEIGHT or text.tracking > MAX_TRACKING_EM:
+            raise PresetConfigError(
+                f"branding.{name}: capHeight must be 0..{MAX_CAP_HEIGHT} and tracking 0..{MAX_TRACKING_EM} em"
+            )
+        line = text.text.strip()
+        # control characters and line/paragraph separators; other spaces (e.g. no-break) are fine
+        if len(line) > MAX_TEXT_CHARS or any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in line):
+            raise PresetConfigError(f"branding.{name}.text must be one line of at most {MAX_TEXT_CHARS} characters")
+        width = _nominal_text_width(text)
+        if width > MAX_TEXT_WIDTH:
+            raise PresetConfigError(
+                f"branding.{name} is too wide for the brand wall ({width:.2f} wall heights, "
+                f"at most {MAX_TEXT_WIDTH}): shorten the text or reduce capHeight/tracking"
+            )
+
+
+@lru_cache(maxsize=4)
+def _branding_font(weight: str) -> ImageFont.FreeTypeFont | None:
+    """The bundled branding font at a reference size (BASIC layout, as the renderer uses it).
+    None if the font asset is missing – the width bound then falls back to one em per character."""
+    name = FONT_FILES.get(weight, FONT_FILES["medium"])
+    try:
+        return ImageFont.truetype(str(FONT_DIR / name), 1000, layout_engine=ImageFont.Layout.BASIC)
+    except OSError:
+        return None
+
+
+def _nominal_text_width(text: TextConfig) -> float:
+    """Width of a branding text in brand-wall heights, measured with the bundled branding font.
+
+    Each glyph counts its real advance, so wide glyphs cannot slip under MAX_TEXT_WIDTH; the
+    render canvas scales with this width, so bounding it bounds the branding cost for every text.
+    """
+    line = text.text.strip()
+    chars = len(line)
+    if chars == 0:
+        return 0.0
+    font = _branding_font(text.weight)
+    advance_em = font.getlength(line) / 1000 if font is not None else float(chars)
+    return text.cap_height / _CAP_HEIGHT_EM * (advance_em + max(chars - 1, 0) * text.tracking)
+
+
 def _parse_quality(data) -> QualityConfig:
     quality = _build(QualityConfig, data, "quality")
     if quality.max_upscale < 1.0:
@@ -329,6 +447,8 @@ def _parse_quality(data) -> QualityConfig:
         raise PresetConfigError("quality.highViewRiseFactor >= 1 and 0 < quality.highViewAspectFactor <= 1 required")
     if quality.min_contacts > 4:
         raise PresetConfigError("quality.minContacts must be 0..4")
+    if quality.border_px > MAX_BORDER_PX:
+        raise PresetConfigError(f"quality.borderPx must be 0..{MAX_BORDER_PX} (pixels along the photo border)")
     return quality
 
 
@@ -396,7 +516,13 @@ def parse_preset(data: dict) -> Preset:
     for name, placement in [("placement", base_placement), *((f"shotPlacement.{k}", v) for k, v in shots.items())]:
         if placement.max_height_ratio < 0.2:
             raise PresetConfigError(f"{name}.maxHeightRatio ({placement.max_height_ratio}) leaves no room for the vehicle")
+        if placement.min_margin > MAX_MIN_MARGIN:
+            raise PresetConfigError(
+                f"{name}.minMargin ({placement.min_margin}) must be 0..{MAX_MIN_MARGIN} (fraction per side) "
+                "– more leaves no room for the vehicle"
+            )
     branding = parse_branding(data.get("branding"))
+    _check_branding(branding)
     if branding.enabled:
         # fractions of the brand wall (top 0 = ceiling side, 1 = floor): keep the
         # signage on the upper wall so that the vehicle roof stays below it
@@ -411,7 +537,7 @@ def parse_preset(data: dict) -> Preset:
         name=data["name"],
         plates=str(plates),
         branding=branding,
-        output=_build(OutputConfig, data.get("output"), "output"),
+        output=_parse_output(data.get("output")),
         placement=base_placement,
         shot_placement=shots,
         shadow=_parse_shadow(data.get("shadow")),
@@ -521,11 +647,19 @@ class BackgroundProvider:
         return plate_set, error
 
     def plate_set(self, preset: Preset) -> PlateSet:
-        """The validated plate set (raises ShowroomUnavailableError)."""
+        """The validated plate set of the preset.
+
+        Raises ShowroomUnavailableError while the set is missing or unusable, and
+        PresetConfigError when the preset's output aspect ratio does not fit the plates
+        (as /health reports it: presetError, jobs fail as 'configuration' – before the
+        expensive segmentation, the pipeline asks for the set first)."""
         with self._lock:
             plate_set, error = self._load(preset)
         if plate_set is None:
             raise ShowroomUnavailableError(error or "showroom plate set missing")
+        mismatch = _aspect_mismatch(preset, plate_set)
+        if mismatch is not None:
+            raise PresetConfigError(mismatch)
         return plate_set
 
     def master_error(self, preset: Preset) -> str | None:
@@ -535,6 +669,20 @@ class BackgroundProvider:
 
     def source(self, preset: Preset) -> str:
         return SHOWROOM_PLATES if self.master_error(preset) is None else SHOWROOM_MISSING
+
+    def config_error(self, preset: Preset) -> str | None:
+        """Why exterior jobs would fail with a configuration error although the plate set
+        is usable (None when they would not): the official logo is missing, unreadable or
+        empty, or the output aspect ratio does not match the plates. /health reports it as
+        presetError, so that the app blocks processing up front."""
+        if preset.branding.enabled:
+            try:
+                load_official_logo(self._settings.brand_dir / preset.branding.logo.file)
+            except BrandingAssetError as error:
+                return str(error)
+        with self._lock:
+            plate_set, _ = self._load(preset)
+        return None if plate_set is None else _aspect_mismatch(preset, plate_set)
 
     def is_placeholder(self, preset: Preset) -> bool:
         """Kept for API compatibility: plates are never a placeholder."""
@@ -550,13 +698,19 @@ class BackgroundProvider:
             self._stamp(plate.shadow) if plate.shadow else 0,
             self._stamp(plate.reflection) if plate.reflection else 0,
         )
-        key = (preset.id, preset.plates, shot_key, width, height, stamps, logo_stamp(logo), preset.branding)
+        key = (
+            preset.id, preset.plates, shot_key, width, height,
+            self._stamp(plate_set.path), stamps, logo_stamp(logo), preset.branding,
+        )  # fmt: skip
         with self._lock:
             cached = self._cache.get(key)
-            if cached is not None:
+            # plate geometry, ground line and brand area come from plates.json: an entry branded
+            # for an earlier load of the set (edited plates.json) is never mixed with the new one
+            if cached is not None and cached.plate is plate:
                 return cached
         if abs(plate.aspect / (width / height) - 1.0) > 0.01:
-            raise ShowroomUnavailableError(
+            # the plates are usable – the requested output size is what does not fit them
+            raise PresetConfigError(
                 f"plate {shot_key} is {plate.size[0]}x{plate.size[1]}, the output {width}x{height} has another aspect ratio"
             )
         try:
@@ -624,6 +778,15 @@ class BackgroundProvider:
         if mult.shape != (height, width):
             mult = cv2.resize(mult, (width, height), interpolation=cv2.INTER_LINEAR)
         return np.clip(mult, 0.0, 1.0).astype(np.float32)
+
+
+def _aspect_mismatch(preset: Preset, plate_set: PlateSet) -> str | None:
+    """Why the preset's output aspect ratio does not fit the plates (None when it does)."""
+    aw, ah = preset.output.aspect
+    for plate in plate_set.plates.values():
+        if abs(plate.aspect / (aw / ah) - 1.0) > 0.01:
+            return f"output.aspect {aw}:{ah} does not match the showroom plates ({plate.size[0]}x{plate.size[1]})"
+    return None
 
 
 def _load_reflection_map(plate: Plate, width: int, height: int) -> np.ndarray | None:

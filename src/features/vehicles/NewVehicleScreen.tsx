@@ -18,7 +18,8 @@ export function NewVehicleScreen() {
   async function handleCreate(input: VehicleInput) {
     try {
       const vehicle = await getAppServices().backend.data.createVehicle(input);
-      router.push(`/fahrzeuge/${vehicle.id}/kamera`);
+      // The camera replaces the form in the history: "Zurück" must not show an empty form.
+      router.replace(`/fahrzeuge/${vehicle.id}/kamera`);
       setFormKey((key) => key + 1);
     } catch (error) {
       throw new Error(toUserMessage(error, "Fahrzeug konnte nicht erstellt werden. Bitte versuchen Sie es erneut."));

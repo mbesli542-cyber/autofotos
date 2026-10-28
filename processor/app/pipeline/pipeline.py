@@ -2,8 +2,12 @@
 
 Exterior shots:
 
-    decode (orientation, sRGB) → resolution gate → segmentation → model alpha
-    snapped onto colour edges → clean-up (foreign spikes cut) → bbox
+    decode (orientation, sRGB) → resolution gate → vehicle detector (full frame)
+    → segmentation (portrait/square frames: on a window around the vehicle)
+    → model alpha snapped onto colour edges → clean-up (foreign spikes cut;
+    semantic check: objects the detector does not see as part of THE vehicle
+    dropped or the photo rejected; vehicle parts the mask lost – taken from the
+    whole-frame pass after a window pass, otherwise the photo is rejected) → bbox
     → vehicle geometry (tyre contacts, near end, perspective)
     → plate selection (the shot's 3D-showroom plate; mirrored 3/4 plate if the
       photo shows the other side) → placement v2 on the plate → quality gate
@@ -31,6 +35,7 @@ from .color import linear_to_u8, srgb_to_linear
 from .composite import extract_vehicle, feather_layer, over, place_layer, resample_layer
 from .debug import NULL_DEBUG, DebugSink
 from .decode import decode_image
+from .detection import vehicle_box
 from .export import encode_jpeg
 from .grounding import (
     apply_grounding,
@@ -45,17 +50,19 @@ from .light import effective_limits, estimate_correction, guarded_correction
 from .mask import QualityWarning, assess_mask, clean_mask, mask_bbox
 from .matting import model_alpha, refine_edges
 from .placement import compute_placement, output_size
-from .reflection import apply_reflection
 from .quality import (
     GateReport,
     check_contacts,
     check_cropped,
+    check_foreign,
     check_mask,
+    check_parts,
     check_perspective,
     check_source_resolution,
     check_upscale,
 )
-from .segmentation import VehicleSegmenter
+from .reflection import apply_reflection
+from .segmentation import VehicleSegmenter, merge_parts, segment_vehicle
 from .vehicle_geometry import VehicleGeometry, analyse_vehicle
 
 ProgressFn = Callable[[float, str], None]
@@ -92,8 +99,9 @@ class _Timer:
         self._start = time.perf_counter()
 
     def mark(self, step: str) -> None:
+        """Time since the previous mark, added to ``step`` (a step may be marked in parts)."""
         now = time.perf_counter()
-        self.times[step] = int(round((now - self._start) * 1000))
+        self.times[step] = self.times.get(step, 0) + int(round((now - self._start) * 1000))
         self._start = now
 
 
@@ -164,21 +172,51 @@ def process_photo(
     plates = backgrounds.plate_set(preset)
     check_source_resolution(decoded.width, decoded.height, preset.quality)
 
-    # segmentation
+    # the vehicle detector (instance segmentation, detection.py): its full-frame view
+    # places the window of portrait/square frames and starts the semantic check
+    detector = getattr(segmenter, "detector", None)
+    detections = None
+    if detector is not None:
+        progress(0.05, "detect")
+        detections = detector.detect(decoded.rgb)
+        timer.mark("detect")
+
+    # segmentation (BiRefNet; portrait/square frames on the ORIGINAL pixels of a window
+    # around the vehicle – as one thin band of a tall frame the car merged with its surroundings)
     progress(0.08, "segment")
-    coarse = segmenter.segment(decoded.rgb)
-    if coarse.shape != decoded.rgb.shape[:2]:
-        raise ValueError("segmenter returned a mask of the wrong size")
+    box = vehicle_box(detections, decoded.width, decoded.height) if detections else None
+    coarse, segmentation = segment_vehicle(decoded.rgb, segmenter, box)
     timer.mark("segment")
 
     # high-resolution alpha: the model alpha, snapped onto colour edges (never grown
     # beyond the model's own contour, thin parts never thinned), then the vehicle is kept
-    # (foreign spikes cut; an uncut one fails the mask check of the quality gate)
+    # (foreign spikes cut; objects the detector does not see as part of the vehicle
+    # dropped when separate; an uncut one fails the quality gate, as does a vehicle part
+    # the mask lost)
     progress(0.45, "mask")
-    alpha, edges = refine_edges(decoded.rgb, coarse)
-    model = model_alpha(coarse)
-    alpha, mask_info = clean_mask(alpha, rgb=decoded.rgb, model=model)
-    del model
+    alpha, edges, mask_info = _vehicle_alpha(decoded.rgb, coarse, detector, detections)
+    if mask_info.parts_missing and segmentation.get("windowUsed"):
+        # the window pass lost a part the detector sees (a dark mirror in front of a dark car);
+        # the whole-frame pass may have it – taken only inside that part's claimed region
+        timer.mark("mask")
+        progress(0.5, "segment-parts")
+        started = time.perf_counter()
+        whole = segmenter.segment(decoded.rgb)
+        if whole.shape != coarse.shape:
+            raise ValueError("segmenter returned a mask of the wrong size")
+        merged, taken = merge_parts(coarse, whole, mask_info.part_regions, mask_info.semantic_scale)
+        del whole
+        segmentation["partsFromWholeFrame"] = {
+            "missing": mask_info.parts_missing,
+            "taken": taken,
+            "ms": int(round((time.perf_counter() - started) * 1000)),
+        }
+        if taken:
+            coarse = merged
+            alpha, edges, mask_info = _vehicle_alpha(decoded.rgb, coarse, detector, detections)
+        del merged
+        timer.mark("partsFromWholeFrame")
+    del coarse
     bbox = mask_bbox(alpha)
     warnings = [w for w in assess_mask(alpha, bbox, mask_info) if w.code != "vehicle_cropped"]
     debug.gray("mask.png", alpha)
@@ -226,14 +264,29 @@ def process_photo(
     # quality gate (cheap checks, all before the pixel work)
     gate = GateReport()
     check_cropped(gate, alpha, bbox, preset.quality)
-    check_upscale(gate, placement, bbox, decoded.width, preset.quality)
+    check_upscale(gate, placement, bbox, decoded.width, preset.quality, decoded.height)
     check_mask(gate, alpha, bbox, mask_info, preset.quality)
     check_perspective(gate, geometry, plate, preset.quality)
     check_contacts(gate, geometry, shot, preset.quality)
+    check_foreign(gate, mask_info)
+    check_parts(gate, mask_info)
     if debug.enabled:
-        debug.rgb("geometry.jpg", _geometry_overlay(decoded.rgb, alpha, geometry))
+        debug.rgb("geometry.jpg", _geometry_overlay(decoded.rgb, alpha, geometry, mask_info, segmentation))
     gate.raise_if_failed(
-        plateUsed=plate_key, plateSelection=selection, geometry=geometry.as_dict(), placement=placement.as_dict()
+        plateUsed=plate_key,
+        plateSelection=selection,
+        geometry=geometry.as_dict(),
+        placement=placement.as_dict(),
+        # why a foreign object was reported (boxes in photo px, the detector's view)
+        mask={
+            "bbox": [bbox.x0, bbox.y0, bbox.x1, bbox.y1],
+            "foreignRemoved": mask_info.foreign_removed,
+            "foreignSuspected": mask_info.foreign_suspected,
+            "partsMissing": mask_info.parts_missing,
+            "vehicleDetected": mask_info.vehicle_detected,
+            "semantic": mask_info.semantic,
+        },
+        segmentation=segmentation,
     )
     if placement.target_fraction < placement_cfg.min_target_fraction:
         warnings.append(
@@ -308,7 +361,7 @@ def process_photo(
                 (bbox.y0 + (y - placement.top) / placement.scale) * small,
             )
 
-        overlay = _geometry_overlay(decoded.rgb, alpha, geometry)
+        overlay = _geometry_overlay(decoded.rgb, alpha, geometry, mask_info, segmentation)
         debug.rgb("geometry.jpg", draw_ground_model(overlay, ground, transform=to_source))
         debug.rgb("grounding.jpg", draw_ground_model(linear_to_u8(over(floor, vehicle_rgb, vehicle_alpha)), ground))
         light = background.mean(axis=-1)
@@ -336,6 +389,8 @@ def process_photo(
         **base_meta,
         "shotKind": "exterior_showroom",
         "segmenter": getattr(segmenter, "name", type(segmenter).__name__),
+        "detector": getattr(detector, "name", None) if detector is not None else None,
+        "segmentation": segmentation,
         "output": {"width": width, "height": height},
         "mask": {
             "bbox": [bbox.x0, bbox.y0, bbox.x1, bbox.y1],
@@ -349,6 +404,10 @@ def process_photo(
             "detachedDropped": mask_info.detached_dropped,
             "foreignRemoved": mask_info.foreign_removed,
             "foreignSuspected": mask_info.foreign_suspected,
+            "partsMissing": mask_info.parts_missing,
+            "vehicleDetected": mask_info.vehicle_detected,
+            # semantic check: the detector's vehicle, tiles, verified regions (metadata)
+            "semantic": mask_info.semantic,
             # colour-edge diagnostics (edgeConfidence, lowContrastFraction, …): metadata only, never a gate
             "edges": edges,
         },
@@ -375,15 +434,47 @@ def process_photo(
     return ProcessResult(jpeg=jpeg, width=width, height=height, warnings=warnings, metadata=metadata)
 
 
-def _geometry_overlay(rgb: np.ndarray, alpha: np.ndarray, geometry: VehicleGeometry) -> np.ndarray:
-    """Debug view: dimmed photo, vehicle mask outline, bbox and tyre contacts."""
+def _vehicle_alpha(rgb: np.ndarray, coarse: np.ndarray, detector, detections):
+    """(alpha, edge diagnostics, MaskInfo) of the coarse segmentation: snapped onto colour
+    edges, then cleaned up (and semantically checked with the detector)."""
+    alpha, edges = refine_edges(rgb, coarse)
+    model = model_alpha(coarse)
+    alpha, mask_info = clean_mask(alpha, rgb=rgb, model=model, detector=detector, detections=detections)
+    return alpha, edges, mask_info
+
+
+def _geometry_overlay(
+    rgb: np.ndarray,
+    alpha: np.ndarray,
+    geometry: VehicleGeometry,
+    mask_info=None,
+    segmentation: dict | None = None,
+) -> np.ndarray:
+    """Debug view: dimmed photo, vehicle mask outline, bbox and tyre contacts; the
+    segmentation window (white), semantic regions (red: foreign, cyan: a vehicle part
+    the mask lacks, orange: checked and kept as it is) and the detector's vehicle box
+    (magenta)."""
     scale = min(1.0, 1600.0 / max(rgb.shape[:2]))
     small = cv2.resize(rgb, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else rgb.copy()
     mask = cv2.resize(alpha, (small.shape[1], small.shape[0]), interpolation=cv2.INTER_AREA) >= 0.5
     out = (small.astype(np.float32) * 0.55).astype(np.uint8)
     out[mask] = (0.6 * small[mask] + 0.4 * np.array([40, 120, 255])).astype(np.uint8)
+
+    def box(values, colour, thickness=2):
+        x0, y0, x1, y1 = (int(round(v * scale)) for v in values)
+        cv2.rectangle(out, (x0, y0), (x1, y1), colour, thickness)
+
     b = geometry.bbox
-    cv2.rectangle(out, (int(b.x0 * scale), int(b.y0 * scale)), (int(b.x1 * scale), int(b.y1 * scale)), (255, 255, 0), 2)
+    box((b.x0, b.y0, b.x1, b.y1), (255, 255, 0))
+    if segmentation and segmentation.get("windowUsed"):
+        box(segmentation["window"], (255, 255, 255), 1)
+    semantic = getattr(mask_info, "semantic", None) or {}
+    vehicle = semantic.get("vehicle")
+    if vehicle:
+        box(vehicle["box"], (255, 0, 255), 1)
+    for finding in semantic.get("findings", []):
+        colour = (255, 40, 40) if finding.get("foreign") else (0, 200, 255) if finding.get("missing") else (255, 160, 0)
+        box(finding["box"], colour, 3)
     for c in geometry.candidates:
         colour = (0, 255, 0) if c.confidence >= 0.5 else (255, 60, 60)
         cv2.circle(out, (int(c.x * scale), int(c.y * scale)), 7, colour, 2)

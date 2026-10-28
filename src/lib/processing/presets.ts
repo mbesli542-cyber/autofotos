@@ -6,8 +6,9 @@
  * segmented, untouched vehicle into the AutoExperten showroom; the preset id is
  * sent with every job (POST /api/process-photo or /api/process-upload). See
  * README → "Image processing". Presets the processor does not implement yet
- * (currently autoexperten_dark, original_plus) fail per photo with its German
- * message – nothing is saved for them.
+ * (currently autoexperten_dark, original_plus) are `available: false`: the UI
+ * shows them as "Demnächst verfügbar" and never submits them (the processor
+ * would reject them with "Dieser Bearbeitungsstil ist noch nicht verfügbar.").
  *
  * Numeric placement / shadow / output values used by the processor live in
  * the preset JSON (`processingConfig`, e.g. public/presets/autoexperten-standard.json)
@@ -63,6 +64,8 @@ export interface ProcessingPreset {
   id: ProcessingPresetId;
   name: string;
   description: string;
+  /** Implemented by the processor – only available styles can be chosen. */
+  available: boolean;
   /** Replace the background with a showroom, or keep the original one. */
   background: "showroom" | "original";
   showroom: ShowroomSpec | null;
@@ -91,6 +94,7 @@ export const PROCESSING_PRESETS: Record<ProcessingPresetId, ProcessingPreset> = 
   autoexperten_standard: {
     id: "autoexperten_standard",
     name: "AutoExperten Standard",
+    available: true,
     description:
       "Heller Premium-Showroom, Holzfußboden, AutoExperten Wandlogo und blaue Lichtakzente.",
     background: "showroom",
@@ -134,6 +138,7 @@ export const PROCESSING_PRESETS: Record<ProcessingPresetId, ProcessingPreset> = 
   autoexperten_dark: {
     id: "autoexperten_dark",
     name: "AutoExperten Dark",
+    available: false,
     description: "Dunkler Premium-Showroom mit hochwertiger Lichtstimmung.",
     background: "showroom",
     showroom: {
@@ -169,6 +174,7 @@ export const PROCESSING_PRESETS: Record<ProcessingPresetId, ProcessingPreset> = 
   original_plus: {
     id: "original_plus",
     name: "Original+",
+    available: false,
     description:
       "Originaler Hintergrund bleibt erhalten. Nur Licht, Farbe und Kontrast werden optimiert.",
     background: "original",
@@ -185,6 +191,12 @@ export const PROCESSING_PRESETS: Record<ProcessingPresetId, ProcessingPreset> = 
 };
 
 export const DEFAULT_PROCESSING_PRESET: ProcessingPresetId = "autoexperten_standard";
+
+export const PRESET_UNAVAILABLE_MESSAGE = "Dieser Bearbeitungsstil ist noch nicht verfügbar.";
+
+export function isProcessingPresetAvailable(id: ProcessingPresetId): boolean {
+  return PROCESSING_PRESETS[id].available;
+}
 
 export const PROCESSING_PRESET_LIST: readonly ProcessingPreset[] = [
   PROCESSING_PRESETS.autoexperten_standard,

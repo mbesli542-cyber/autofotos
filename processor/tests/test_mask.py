@@ -213,7 +213,7 @@ def test_post_flush_with_the_car_side_is_cut_at_the_colour_edge():
 
 
 def test_post_is_left_and_the_job_rejected_when_the_cut_line_is_not_certain():
-    from app.pipeline.quality import GateReport, check_mask
+    from app.pipeline.quality import GateReport, check_foreign, check_mask
     from app.presets import QualityConfig
 
     alpha, _ = _flush_post(False)  # no photo: the right junction cannot be found
@@ -224,7 +224,8 @@ def test_post_is_left_and_the_job_rejected_when_the_cut_line_is_not_certain():
     assert "background_object_suspected" in codes
     report = GateReport()  # … and the result is never accepted with the post in it
     check_mask(report, result, mask_bbox(result), info, QualityConfig())
-    assert report.failed_code == "mask_low_confidence" and "foreign_object" in report.checks["mask"]["reasons"]
+    check_foreign(report, info)
+    assert report.failed_code == "mask_low_confidence" and "foreign_object" in report.checks["foreign"]["reasons"]
 
 
 def test_post_attached_by_a_thin_bridge_is_removed():

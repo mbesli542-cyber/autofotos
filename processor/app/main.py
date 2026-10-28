@@ -5,6 +5,9 @@ Endpoints (contract used by the Next.js app's RealImageProcessor):
     GET  /jobs/{jobId}            job status/result
 Single-photo testing:
     POST /jobs/upload             multipart (file, preset, shotKey) → 202 job
+    (both POSTs: a style that is not implemented yet → 400 preset_unavailable, nothing is queued;
+     queue full → 503 busy; the job folder cannot be written → 503 storage_full (disk full)
+     or storage_error, nothing is queued)
     GET  /jobs/{jobId}/result     processed JPEG
     GET  /jobs/{jobId}/debug      list of debug files (PROCESSOR_DEBUG=true only)
     GET  /jobs/{jobId}/debug/{n}  one debug file    (PROCESSOR_DEBUG=true only)
@@ -37,14 +40,23 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .config import Settings
 from .guard import RequestGuard, is_authorized
-from .jobs.manager import JobManager, QueueFullError, StoreUnavailableError
+from .jobs.manager import (
+    ERROR_MESSAGES,
+    JobManager,
+    JobStorageError,
+    QueueFullError,
+    StoreUnavailableError,
+)
 from .pipeline.export import encode_jpeg
 from .pipeline.pipeline import PIPELINE_VERSION
 from .pipeline.segmentation import VehicleSegmenter, create_segmenter
@@ -160,6 +172,19 @@ def create_app(
             },
         )
 
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_error(request: Request, exc: StarletteHTTPException):
+        # A full disk (or quota) that also holds the multipart spool directory makes Starlette's
+        # body parser fail with an OSError before the upload handler runs; FastAPI wraps that as
+        # HTTP 400 "error parsing the body". Answer it like a full store (503 storage_full /
+        # storage_error) so the app retries instead of blaming the file format. Every other
+        # HTTPException keeps its normal response.
+        cause = exc.__cause__ or exc.__context__
+        if exc.status_code == 400 and isinstance(cause, OSError):
+            log.error("Upload not accepted – the body could not be written to disk: %s", cause)
+            return _not_stored(JobStorageError(cause))
+        return await http_exception_handler(request, exc)
+
     def require_auth(authorization: Annotated[str | None, Header()] = None) -> None:
         # second line of defence – RequestGuard already rejected unauthenticated calls
         if not is_authorized(authorization, settings.api_key):
@@ -182,11 +207,13 @@ def create_app(
                 status_code=status, content={"status": "error" if failed else "ok", "version": PIPELINE_VERSION}
             )
         model = getattr(segmenter, "spec", None)
+        detector = getattr(segmenter, "detector", None)  # semantic vehicle check (detection.py)
         try:
             preset = load_preset(settings, "autoexperten_standard")
             source = backgrounds.source(preset)
             master_error = backgrounds.master_error(preset)
-            preset_error = None
+            # official logo missing/unreadable, output aspect ≠ plates: every exterior job would fail
+            preset_error = backgrounds.config_error(preset)
         except PresetError as error:
             source, master_error, preset_error = None, None, str(error)
         body = {
@@ -196,6 +223,8 @@ def create_app(
             "model": getattr(model, "name", None),
             "modelLoaded": loaded,
             "modelError": failed,
+            "detector": getattr(getattr(detector, "spec", None), "name", None) if detector is not None else None,
+            "detectorLoaded": bool(getattr(detector, "loaded", False)) if detector is not None else None,
             "debug": settings.debug,
             "auth": bool(settings.api_key),
             "supabase": store is not None,
@@ -209,6 +238,8 @@ def create_app(
 
     @app.post("/jobs", status_code=202, dependencies=[Auth])
     def create_contract_job(body: ContractJobRequest):
+        if body.preset not in PRESET_FILES:
+            return _preset_unavailable()
         try:
             job = manager.submit_contract(
                 vehicle_id=body.vehicleId,
@@ -225,6 +256,8 @@ def create_app(
             )
         except QueueFullError:
             return _busy()
+        except JobStorageError as error:
+            return _not_stored(error)
         return job.to_response()
 
     @app.post("/jobs/upload", status_code=202, dependencies=[Auth])
@@ -233,6 +266,9 @@ def create_app(
         preset: Annotated[PresetId, Form()] = "autoexperten_standard",
         shotKey: Annotated[str | None, Form(pattern=SHOT_PATTERN)] = "front_left_45",
     ):
+        if preset not in PRESET_FILES:
+            # refused before the photo is read or a job is queued – every such job would fail
+            return _preset_unavailable()
         if file.content_type and not (
             file.content_type.startswith("image/") or file.content_type == "application/octet-stream"
         ):
@@ -245,9 +281,13 @@ def create_app(
         if not data:
             return error_response(400, "empty_file", "Die Datei ist leer.")
         try:
-            job = manager.submit_upload(bytes(data), preset=preset, shot_key=shotKey)
+            # writes the photo to disk: in a worker thread, so that status polls and /health
+            # on this event loop are not held up by it
+            job = await run_in_threadpool(manager.submit_upload, data, preset=preset, shot_key=shotKey)
         except QueueFullError:
             return _busy()
+        except JobStorageError as error:
+            return _not_stored(error)
         return job.to_response()
 
     def _get_job(job_id: str):
@@ -323,9 +363,29 @@ class _AuthError(Exception):
     pass
 
 
+def _preset_unavailable() -> JSONResponse:
+    """A known style that the processor does not implement yet (PresetId, not in PRESET_FILES)."""
+    return error_response(400, "preset_unavailable", ERROR_MESSAGES["preset"])
+
+
 def _busy() -> JSONResponse:
     return error_response(
         503, "busy", "Der Bildverarbeitungs-Service ist ausgelastet. Bitte gleich erneut versuchen."
+    )
+
+
+def _not_stored(error: JobStorageError) -> JSONResponse:
+    """The job folder could not be written (logged by the manager); nothing was queued."""
+    if error.full:
+        return error_response(
+            503,
+            "storage_full",
+            "Der Bildverarbeitungs-Service hat gerade keinen Speicherplatz. Bitte später erneut versuchen.",
+        )
+    return error_response(
+        503,
+        "storage_error",
+        "Das Foto konnte gerade nicht zur Bearbeitung angenommen werden. Bitte später erneut versuchen.",
     )
 
 

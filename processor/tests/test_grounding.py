@@ -10,12 +10,14 @@ import pytest
 
 from app.pipeline.color import srgb_to_linear
 from app.pipeline.grounding import (
+    END_FADE_SLOPE,
     SHADOW_TINT,
     GroundContact,
     apply_grounding,
     build_ground_model,
     clean_ground_fringe,
     draw_ground_model,
+    end_fade,
     fit_pose,
     floor_line_model,
     ground_line_without_contacts,
@@ -196,6 +198,44 @@ def test_the_floor_under_the_body_is_dark_and_lightens_towards_the_floor_line(sc
     assert dark[edge + 2, x] > dark[edge + 30, x] > 0.3  # lighter towards the floor line, still dark
 
 
+def test_beside_the_car_ends_the_shadow_fades_without_a_hard_edge(scene):
+    """Beyond the silhouette's ends no car is above the floor: the under-car shadow only
+    continues as a soft penumbra – no dark band with a hard horizontal top on the open floor
+    beside the bumpers (it used to jump to the deep under-car darkness at the end column's
+    outline row, 60–110 px out) – and it meets the end column's profile without a seam."""
+    preset, showroom, placement, alpha, contacts, background = scene
+    model = build_ground_model(alpha, placement, contacts, showroom)
+    grounded = apply_grounding(background, alpha, placement, contacts, showroom, preset, model=model)
+    dark = _darkening(grounded, background)
+    first, last = model.car_columns
+    for end, side in ((first, -1), (last, 1)):
+        x_end, e, f = model.window.x0 + end, int(model.edge[end]), int(model.line[end])
+        assert dark[e + 3, x_end] > 0.7  # the floor seen under the car's end stays dark
+        assert abs(dark[e + 4, x_end + side] - dark[e + 4, x_end]) < 0.1  # no vertical seam
+        for d in (10, 20, 40):
+            column = dark[e - 20 : f + 60, x_end + side * d]
+            assert np.abs(np.diff(column)).max() < 0.08  # no hard horizontal edge
+        # no car above: right below the end column's outline row the shadow only fades in (the
+        # penumbra widens by END_FADE_SLOPE px per px of distance – no deep under-car darkness
+        # there) …
+        assert dark[e + 3, x_end + side * 20] < 0.15
+        # … and it fades out sideways (in this small frame the underbody falloff is ~30 px)
+        assert dark[e - 20 : f + 60, x_end + side * 40].max() < 0.25
+
+
+def test_the_end_fade_meets_the_end_column_and_softens_further_out():
+    rows = np.arange(300, dtype=np.float64)[:, None] + 0.5
+    beyond = np.array([0.0, 1.0, 5.0, 20.0, 60.0])
+    fade = end_fade(rows, np.full(5, 100.0), beyond)
+    assert np.all(fade[:, 0] == 1.0)  # within the silhouette: untouched
+    assert np.all(fade[:100, 1:] == 0.0)  # nothing above the end column's outline row
+    assert np.all(fade[102:, 1] == 1.0)  # right beside the end: the end column's profile
+    for k in (2, 3, 4):
+        step = np.diff(fade[:, k])
+        assert np.all(step >= 0.0) and step.max() <= 1.5 / (END_FADE_SLOPE * beyond[k]) + 1e-6
+        assert fade[int(100 + END_FADE_SLOPE * beyond[k]) + 1, k] == 1.0
+
+
 def test_plain_xy_contacts_are_still_accepted(scene):
     preset, showroom, placement, alpha, contacts, background = scene
     plain = [(c.x, c.y) for c in contacts]
@@ -324,6 +364,35 @@ def test_a_light_fringe_under_a_tyre_is_removed_but_the_rubber_stays(scene):
     assert cleaned[fringe].mean() < 0.35  # the light fringe is (mostly) gone
     rubber = tyre & (yy < c.y - 8)
     assert np.array_equal(cleaned[rubber], alpha[rubber])  # the tyre itself is untouched
+    assert np.array_equal(cleaned[: int(c.y) - 60], alpha[: int(c.y) - 60])
+
+
+def _lowest_solid(alpha: np.ndarray, x: int) -> int:
+    rows = np.flatnonzero(alpha[:, x] >= 0.5)
+    return int(rows[-1]) if len(rows) else -1
+
+
+def test_the_tyre_fringe_cut_tapers_out_instead_of_leaving_a_notch(scene):
+    """Snow on the tyre's lower flanks: the outline pass beside the tyre finds nothing to cut
+    (it is as light as the snow above it), the tyre's own cut removes the light fringe. The cut
+    height never jumps between neighbouring columns – it used to end abruptly 2 px beyond the
+    tyre's extent and left a rectangular notch in the tyre's bottom edge."""
+    preset, showroom, placement, alpha, contacts, background = scene
+    rgb = np.full((H, W, 3), 0.4, np.float32)
+    c = contacts[0]
+    yy, xx = np.ogrid[:H, :W]
+    tyre = (xx - c.x) ** 2 + (yy - (c.y - 40)) ** 2 <= 40 * 40
+    rgb[tyre] = 0.02  # dark rubber …
+    rgb[tyre & (yy >= c.y - 4)] = 0.8  # … a light fringe along its bottom …
+    rgb[tyre & (np.abs(xx - c.x) > 22) & (yy >= c.y - 40)] = 0.8  # … snow on its lower flanks
+    model = build_ground_model(alpha, placement, contacts, showroom)
+    info: dict = {}
+    cleaned = clean_ground_fringe(rgb, alpha, model, info=info)
+    assert info["tyreAlphaRemoved"] > 0 and info["outlineAlphaRemoved"] == 0
+    xs = range(int(c.x) - 45, int(c.x) + 46)
+    removed = np.array([_lowest_solid(alpha, x) - _lowest_solid(cleaned, x) for x in xs])
+    assert removed[45] >= 3  # the fringe under the tyre is (still) removed …
+    assert np.abs(np.diff(removed)).max() <= 1  # … with a cut that never jumps (no notch)
     assert np.array_equal(cleaned[: int(c.y) - 60], alpha[: int(c.y) - 60])
 
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { Camera, Pencil, Plus } from "lucide-react";
+import { Camera, CircleCheck, Pencil, Plus } from "lucide-react";
 import type { ReactNode } from "react";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { PageContainer } from "@/components/layout/PageContainer";
@@ -11,7 +11,17 @@ import { PageLoading } from "@/components/ui/Spinner";
 import { VehicleCard } from "@/components/vehicles/VehicleCard";
 import { useVehicleSummaries } from "@/hooks/use-vehicle-data";
 import type { VehicleSummary } from "@/lib/domain/types";
+import { vehicleDisplayName } from "@/lib/format";
 import { canProcessVehicle } from "@/lib/vehicles/status";
+
+/** Vehicles that need one more step before they belong to the hub. */
+interface HubPendingStep {
+  title: string;
+  description: string;
+  filter: (summary: VehicleSummary) => boolean;
+  href: (summary: VehicleSummary) => string;
+  actionLabel: string;
+}
 
 interface HubConfig {
   title: string;
@@ -23,6 +33,7 @@ interface HubConfig {
   emptyTitle: string;
   emptyDescription: string;
   showCreate: boolean;
+  pendingStep?: HubPendingStep;
 }
 
 const HUBS = {
@@ -47,6 +58,14 @@ const HUBS = {
     emptyTitle: "Noch keine Fahrzeuge bereit",
     emptyDescription: "Sobald die Aufnahmen eines Fahrzeugs abgeschlossen sind, erscheint es hier.",
     showCreate: false,
+    // All required photos are there, but "Aufnahmen abschließen" is still missing.
+    pendingStep: {
+      title: "Bereit zum Abschließen",
+      description: "Alle Pflichtfotos sind aufgenommen. Prüfen Sie die Fotos und schließen Sie die Aufnahmen ab, um sie zu bearbeiten.",
+      filter: (s) => s.capturedRequiredCount >= s.requiredCount && !canProcessVehicle(s.vehicle.status),
+      href: (s) => `/fahrzeuge/${s.vehicle.id}/fotos`,
+      actionLabel: "Aufnahmen abschließen",
+    },
   },
 } satisfies Record<string, HubConfig>;
 
@@ -55,6 +74,8 @@ export function VehicleHubScreen({ hub }: { hub: keyof typeof HUBS }) {
   const config: HubConfig = HUBS[hub];
   const { state, reload } = useVehicleSummaries();
   const items = state.status === "ready" ? state.summaries.filter(config.filter) : [];
+  const step = config.pendingStep;
+  const stepItems = state.status === "ready" && step ? state.summaries.filter(step.filter) : [];
 
   return (
     <>
@@ -73,6 +94,34 @@ export function VehicleHubScreen({ hub }: { hub: keyof typeof HUBS }) {
           >
             Neues Fahrzeug erfassen
           </ButtonLink>
+        )}
+
+        {step && stepItems.length > 0 && (
+          <section
+            className="mb-6 rounded-2xl border border-ae-border bg-ae-surface/60 p-4"
+            aria-labelledby={`${hub}-pending-step-title`}
+          >
+            <h3 id={`${hub}-pending-step-title`} className="font-semibold">
+              {step.title}
+            </h3>
+            <p className="mt-1 mb-4 text-sm text-ae-muted">{step.description}</p>
+            <ul className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {stepItems.map((summary) => (
+                <li key={summary.vehicle.id} className="flex flex-col gap-2">
+                  <VehicleCard summary={summary} href={step.href(summary)} />
+                  <ButtonLink
+                    href={step.href(summary)}
+                    variant="secondary"
+                    fullWidth
+                    icon={<CircleCheck className="size-5" aria-hidden />}
+                    aria-label={`${step.actionLabel}: ${vehicleDisplayName(summary.vehicle)}`}
+                  >
+                    {step.actionLabel}
+                  </ButtonLink>
+                </li>
+              ))}
+            </ul>
+          </section>
         )}
 
         {state.status === "loading" && <PageLoading message="Fahrzeuge werden geladen…" />}
