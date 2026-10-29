@@ -404,3 +404,82 @@ def test_a_mirror_no_pass_has_rejects_the_photo(settings, vehicle):
             assert details["segmentation"]["partsFromWholeFrame"]["taken"] == []
         else:
             assert "partsFromWholeFrame" not in details["segmentation"]
+
+
+BASE = (96, 70, 40)  # a mirror base in a colour neither pass confuses with the car or the ground
+
+
+class _BaseSegmenter:
+    """The window pass of an upright photo keeps a mirror's head but loses its base; the whole
+    frame keeps the base (or not)."""
+
+    name = "colour"
+
+    def __init__(self, detector, full_shape, *, whole_keeps_base: bool):
+        from tests.semantic_fixtures import ColourSegmenter
+
+        self.detector = detector
+        self.calls: list[tuple[int, int]] = []
+        self._full_shape = full_shape
+        self._keeps = whole_keeps_base
+        self._with = ColourSegmenter(NAVY, (60, 70, 80), (22, 22, 24), MIRROR, BASE, tolerance=40)
+        self._without = ColourSegmenter(NAVY, (60, 70, 80), (22, 22, 24), MIRROR, tolerance=40)
+
+    def segment(self, rgb):
+        self.calls.append(rgb.shape[:2])
+        whole = rgb.shape[:2] == self._full_shape
+        return (self._with if whole and self._keeps else self._without).segment(rgb)
+
+
+def _with_mirror_base(vehicle):
+    """The side-view fixture with a mirror at the A-pillar: a head (90 × 32 px) and below it a
+    base (60 × 28 px, 2 % of the car – thinner than a whole part) down to the body."""
+    rgb, mask = vehicle[0].copy(), vehicle[1] > 0.5
+    head = np.zeros_like(mask)
+    head[878:910, 1440:1530] = True
+    base = np.zeros_like(mask)
+    base[910:938, 1455:1515] = True
+    rgb[head & ~mask] = MIRROR
+    rgb[base & ~mask] = BASE
+    return rgb, mask | head | base, base & ~mask
+
+
+@pytest.mark.parametrize("whole_keeps_base", [True, False])
+def test_a_mirror_base_the_window_pass_lost_is_taken_from_the_whole_frame_or_flagged(
+    settings, vehicle, tmp_path, whole_keeps_base
+):
+    """A PARTLY lost mirror after the window pass: the whole-frame pass runs and its base is taken
+    when it has it; when no pass has it the photo is accepted with a hint to check the result."""
+    from tests.semantic_fixtures import FakeDetector
+
+    rgb, gt, base = _with_mirror_base(vehicle)
+    rgb, gt_portrait, top = _portrait(rgb, gt.astype(np.float32), 3000)
+    detector = FakeDetector().add("car", gt_portrait > 0.5, 0.95)
+    segmenter = _BaseSegmenter(detector, rgb.shape[:2], whole_keeps_base=whole_keeps_base)
+    result = process_photo(
+        encode_jpeg(rgb, 97),
+        preset=load_preset(settings, "autoexperten_standard"),
+        segmenter=segmenter,
+        backgrounds=BackgroundProvider(settings),
+        shot_key="left_side",
+        debug=DebugSink(tmp_path / "debug"),
+    )
+    meta = result.metadata
+    window = meta["segmentation"]["window"]
+    assert segmenter.calls == [(window[3] - window[1], window[2] - window[0]), rgb.shape[:2]]
+    parts = meta["segmentation"]["partsFromWholeFrame"]
+    assert parts["missing"] == [] and len(parts["partial"]) == 1
+    x0, y0, x1, y1 = parts["partial"][0]
+    assert 1440 <= x0 and x1 <= 1530 and top + 895 <= y0 and y1 <= top + 950
+    assert meta["qualityGate"]["passed"] is True and meta["mask"]["partsMissing"] == []
+    mask = cv2.imread(str(tmp_path / "debug" / "mask.png"), cv2.IMREAD_GRAYSCALE)
+    codes = [w.code for w in result.warnings]
+    if whole_keeps_base:
+        assert len(parts["taken"]) == 1 and meta["mask"]["partsPartial"] == []
+        assert mask[top + 924, 1485] > 128  # the base is in the cut-out
+        assert "vehicle_part_uncertain" not in codes
+    else:
+        assert parts["taken"] == [] and len(meta["mask"]["partsPartial"]) == 1
+        assert mask[top + 924, 1485] < 128  # nothing is drawn in …
+        assert "vehicle_part_uncertain" in codes  # … the employee is asked to check the result
+    assert mask[top + 894, 1485] > 128  # the head

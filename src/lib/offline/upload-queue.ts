@@ -15,7 +15,7 @@
  * Retries are idempotent because the queue id is used as the photo id.
  */
 import type { VehiclePhoto } from "@/lib/domain/types";
-import { isRejectedFileError, toUserMessage } from "@/lib/errors";
+import { AppError, isRejectedFileError, toUserMessage } from "@/lib/errors";
 import { prepareImage, type PreparedImage } from "@/lib/camera/image-utils";
 import { createId } from "@/lib/ids";
 import { isOlderCapture, isOlderThanSavedPhoto } from "@/lib/photos/capture-order";
@@ -73,6 +73,9 @@ export type UploadProcessor = (
 
 const STORE = "pendingUploads";
 const EMPTY_SNAPSHOT: UploadQueueSnapshot = { items: [] };
+
+/** "Verwerfen" while the capture is being uploaded: the upload is not interrupted. */
+export const DISCARD_WHILE_SAVING_MESSAGE = "Das Foto wird gerade gespeichert und kann deshalb nicht verworfen werden.";
 
 function shotSlotKey(record: Pick<PendingUploadRecord, "vehicleId" | "shotKey">): string {
   return `${record.vehicleId}/${record.shotKey}`;
@@ -218,12 +221,19 @@ export class UploadQueue {
    * it is neither uploaded nor retried ("online", "Erneut versuchen"). If the
    * record cannot be deleted, the error is passed on and the capture stays –
    * it would otherwise come back (and be uploaded) at the next start. An
-   * upload in progress is not interrupted.
+   * upload in progress is not interrupted: discarding it is refused with a
+   * German message (DISCARD_WHILE_SAVING_MESSAGE) – it is saved after all.
+   * Another tab of this device does not upload a capture discarded before its
+   * upload starts there: right before uploading, the queue checks that its
+   * stored record is still there. There is no lock across tabs: a capture
+   * that another tab is already uploading is discarded here but saved there.
    */
   discard(id: string): Promise<void> {
     const running = this.discarding.get(id);
     if (running) return running;
-    if (this.items.find((item) => item.id === id)?.status === "uploading") return Promise.resolve();
+    if (this.items.find((item) => item.id === id)?.status === "uploading") {
+      return Promise.reject(new AppError("conflict", { userMessage: DISCARD_WHILE_SAVING_MESSAGE }));
+    }
     const deleted = this.unpersisted.has(id) ? Promise.resolve() : this.db.delete(STORE, id);
     const discarding = deleted.then(
       () => {
@@ -354,6 +364,11 @@ export class UploadQueue {
         this.updateItem(record.id, { status: "uploading", error: null });
         try {
           const prepared = await this.ensurePrepared(record);
+          // Discarded in another tab meanwhile ("Verwerfen" there deletes the stored record).
+          if (!(await this.isStillStored(record.id))) {
+            this.forget(record.id);
+            continue;
+          }
           await this.processor(record, prepared);
           const done = this.items.find((item) => item.id === record.id);
           await this.remove(record.id);
@@ -381,6 +396,21 @@ export class UploadQueue {
       }
     } finally {
       this.running = false;
+    }
+  }
+
+  /**
+   * False when the capture's stored record is gone: "Verwerfen" in another
+   * tab of this device deleted it (or that tab saved the capture already).
+   * A capture kept in memory only has no record; an unreadable storage
+   * counts as stored – the capture is not lost.
+   */
+  private async isStillStored(id: string): Promise<boolean> {
+    if (this.unpersisted.has(id)) return true;
+    try {
+      return (await this.db.get<PendingUploadRecord>(STORE, id)) !== undefined;
+    } catch {
+      return true;
     }
   }
 

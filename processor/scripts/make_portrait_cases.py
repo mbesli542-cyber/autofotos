@@ -15,7 +15,11 @@ derived frames reproduce that situation from the cached regression photos:
   "hold the phone sideways" message (also the 2160 px frames of a car that fills
   only about half of the width, see ``DEFAULT_CASES``);
 - ``<case>_crop3x4`` (front/rear views, where the car is narrower than the frame):
-  a real 3:4 portrait crop of the photo centred on the car.
+  a real 3:4 portrait crop of the photo centred on the car;
+- ``<case>_crop3x4_flip`` (``FLIP_CASES``): that crop mirrored horizontally – the car's
+  sides swapped, which BiRefNet does not treat symmetrically (front_crop3x4 loses both
+  mirrors in its window pass and gets them from the whole frame; the mirrored crop keeps
+  both heads but loses their bases, and its whole frame loses both mirrors).
 
 ``requiredParts`` of a source case (points inside e.g. the side mirrors, which an
 accepted result must contain) are carried over into the derived frames' coordinates.
@@ -59,6 +63,13 @@ DEFAULT_CASES = {
     "side_right": "accept",
 }
 CROP_CASES = ("front",)
+#: Crop cases that also get the mirrored crop → its expectation, the warning codes the accepted
+#: result must carry and the required parts NOT carried over (substring of the part name):
+#: front_crop3x4_flip keeps both mirror heads, no BiRefNet pass of it keeps their bases (the
+#: whole frame loses both mirrors) – accepted with the hint to check the result.
+FLIP_CASES = {
+    "front": {"expected": "accept", "expectedWarnings": ["vehicle_part_uncertain"], "dropParts": "base"},
+}
 WIDTH = 2160
 #: Share of the photo height used as sky (top) and ground (bottom) texture.
 BAND = 0.12
@@ -212,6 +223,21 @@ def main(argv: list[str] | None = None) -> int:
         x0 = int(np.clip(round(rgb.shape[1] / 2 - crop.shape[1] / 2), 0, rgb.shape[1] - crop.shape[1]))  # as crop_portrait
         entry(source, f"{case_id}_crop3x4", file, save(np.ascontiguousarray(crop), args.out / file), size, "accept",
               "3:4 portrait crop of the full photo height, centred", parts(source, 1.0, -x0, 0, size))  # fmt: skip
+        flip = FLIP_CASES.get(case_id)
+        if flip is not None:
+            file = f"{case_id}_crop3x4_flip.jpg"
+            moved = parts(source, 1.0, -x0, 0, size).get("requiredParts", [])
+            kept = [
+                {"part": f"{p['part']} (mirrored crop)", "point": [size[0] - 1 - p["point"][0], p["point"][1]]}
+                for p in moved
+                if flip["dropParts"] not in p["part"]
+            ]
+            extra = {"requiredParts": kept} if kept else {}
+            if flip.get("expectedWarnings"):
+                extra["expectedWarnings"] = list(flip["expectedWarnings"])
+            mirrored = np.ascontiguousarray(crop[:, ::-1])
+            entry(source, f"{case_id}_crop3x4_flip", file, save(mirrored, args.out / file), size, flip["expected"],
+                  "the centred 3:4 portrait crop, mirrored horizontally (the car's sides swapped)", extra)  # fmt: skip
 
     out = {
         "version": 1,

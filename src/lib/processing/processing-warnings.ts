@@ -25,6 +25,7 @@ const WARNING_KINDS: ReadonlyMap<string, ProcessingWarningKind> = new Map([
   ["mask_uncertain", "check"],
   ["busy_background", "check"],
   ["vehicle_not_detected", "check"],
+  ["vehicle_part_uncertain", "check"],
   ["low_resolution", "info"],
   ["vehicle_reduced", "info"],
   ["vehicle_small", "info"],

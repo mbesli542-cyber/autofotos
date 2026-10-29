@@ -864,7 +864,7 @@ def test_unreadable_files_keep_the_decode_code(make_client):
 
 
 @pytest.mark.parametrize("logo", ["missing", "corrupt", "empty"])
-def test_health_reports_an_unusable_official_logo_as_preset_error(make_client, settings, photo, logo):
+def test_health_reports_an_unusable_official_logo_as_preset_error(make_client, settings, fake_segmenter, photo, logo):
     path = settings.brand_dir / "official" / "AutoExperten_Logo.png"
     if logo == "missing":
         path.unlink()
@@ -882,6 +882,7 @@ def test_health_reports_an_unusable_official_logo_as_preset_error(make_client, s
     assert health["presetError"] and "official logo" in health["presetError"]
     assert health["showroomSource"] == "plates" and health["showroomMasterError"] is None
     assert done["status"] == "failed" and done["metadata"]["errorCode"] == "configuration"
+    assert fake_segmenter.calls == 0  # refused before the expensive segmentation
 
 
 def test_health_has_no_preset_error_for_the_shipped_configuration(make_client):

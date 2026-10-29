@@ -4,7 +4,17 @@
 # the official logo live in the Next.js public/ folder:
 #
 #   docker build -f processor/Dockerfile -t autoexperten-processor .
-#   docker run --rm -p 8000:8000 --env-file processor/.env autoexperten-processor
+#   docker run --rm -p 127.0.0.1:8000:8000 --env-file processor/.env autoexperten-processor
+#
+# processor/.env holds PROCESSOR_API_KEY (template: processor/.env.example), so the
+# key never appears on the command line; `-e PROCESSOR_API_KEY` without a value
+# takes it from the calling shell's environment instead.
+#
+# The container refuses to start without PROCESSOR_API_KEY
+# (PROCESSOR_REQUIRE_API_KEY=true below); only for a local test without a key
+# add -e PROCESSOR_REQUIRE_API_KEY=false. Publish the port on 127.0.0.1 unless
+# other machines must reach it (Docker publishes on all interfaces otherwise,
+# past the host firewall).
 #
 # The segmentation model and the vehicle detector are downloaded and SHA-256
 # verified at build time, so the container needs no internet access at runtime.
@@ -42,10 +52,12 @@ RUN --mount=type=cache,target=/root/.cache/ae-models \
 COPY public/presets ./assets/presets
 COPY public/brand ./assets/brand
 
+# PROCESSOR_REQUIRE_API_KEY=true: no start without PROCESSOR_API_KEY (app/main.py create_app).
 ENV PROCESSOR_ASSETS_DIR=/app/assets \
     PROCESSOR_MODELS_DIR=/app/models \
     PROCESSOR_DATA_DIR=/data \
-    PROCESSOR_AUTO_DOWNLOAD_MODELS=false
+    PROCESSOR_AUTO_DOWNLOAD_MODELS=false \
+    PROCESSOR_REQUIRE_API_KEY=true
 
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin processor \
     && mkdir -p /data && chown processor /data

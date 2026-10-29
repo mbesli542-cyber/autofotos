@@ -30,7 +30,7 @@ Usage (from the repository root, Blender 4.2 LTS):
 
     options: --shots front_left_45,left_side  --width 3200  --samples 160
              --pass plate,shadow,reflection (reflection: gloss-free floor at --shadow-width)
-             --preview (800 px, 24 samples)   --no-shadow   --reference-view
+             --preview (800 px, 16 samples)   --no-shadow   --reference-view
 Assets: processor/showroom3d/fetch_assets.py downloads the CC0 files.
 """
 

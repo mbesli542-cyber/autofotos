@@ -58,6 +58,10 @@ def _env_int(name: str, default: int) -> int:
 class Settings:
     #: Shared secret expected as "Authorization: Bearer <key>". Empty = no auth (local dev only).
     api_key: str | None = None
+    #: Refuse to start without `api_key` (PROCESSOR_REQUIRE_API_KEY). The Docker image sets it to
+    #: true, so a published container never runs unauthenticated by accident; local `uvicorn`
+    #: development without Docker keeps working without a key (default false).
+    require_api_key: bool = False
     #: Directory with `presets/` and `brand/` (defaults to the Next.js `public/` folder).
     assets_dir: Path = REPO_ROOT / "public"
     #: Working directory for job inputs/results/debug files.
@@ -107,6 +111,7 @@ class Settings:
         cors = _env("PROCESSOR_CORS_ORIGINS", "") or ""
         return cls(
             api_key=_env("PROCESSOR_API_KEY") or _env("IMAGE_PROCESSING_API_KEY"),
+            require_api_key=_env_bool("PROCESSOR_REQUIRE_API_KEY", False),
             assets_dir=Path(_env("PROCESSOR_ASSETS_DIR", str(REPO_ROOT / "public")) or ""),
             data_dir=Path(_env("PROCESSOR_DATA_DIR", str(PROCESSOR_ROOT / "data")) or ""),
             models_dir=Path(_env("PROCESSOR_MODELS_DIR", str(PROCESSOR_ROOT / "models")) or ""),

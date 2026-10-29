@@ -46,24 +46,27 @@ correct perspective and under the plate's real lighting.
 
 ## Re-rendering
 
-```bash
-python3 processor/showroom3d/fetch_assets.py /opt/showroom-assets          # CC0 assets (once)
-B=blender   # Blender 4.2 LTS
-$B -b --factory-startup -P processor/showroom3d/render_plates.py -- \
-    --assets /opt/showroom-assets --out /tmp/plates --pass shadow --shadow-width 1200 --shadow-samples 48
-$B -b --factory-startup -P processor/showroom3d/render_plates.py -- \
-    --assets /opt/showroom-assets --out /tmp/plates --pass plate --width 2400 --samples 32
-cd processor && .venv/bin/python showroom3d/postprocess_plates.py /tmp/plates ../public/presets/autoexperten-standard
-# floor reflection pass only (gloss-free floor, ≈ 3.5 min per shot), added to the existing set:
-$B -b --factory-startup -P processor/showroom3d/render_plates.py -- \
-    --assets /opt/showroom-assets --out /tmp/plates --pass reflection --shadow-width 1200 --shadow-samples 48
-cd processor && .venv/bin/python showroom3d/postprocess_plates.py /tmp/plates ../public/presets/autoexperten-standard --reflection-only
-```
+The commands – all run from the repository root, Blender called with
+`--python-exit-code 1` before `-P` so that a missing script or a Python error
+fails the step – are in
+[`public/presets/README.md` → Rendering the plates](../../public/presets/README.md#rendering-the-plates):
+`fetch_assets.py` (CC0 assets, once), `render_plates.py` (plates + shadow
+passes, then `--pass reflection`), then
+`processor/.venv/bin/python processor/showroom3d/postprocess_plates.py <render dir> public/presets/autoexperten-standard`
+(`--reflection-only` to refresh only the reflection pass). Run the
+post-processing only after the renders succeeded (the recipe chains the steps
+with `&&`): without `<shot>-glossfree.png` it drops that shot's reflection
+pass from `plates.json` and still exits with 0 – the full post-processing
+silently, `--reflection-only` with one "no reflection pass" line per shot.
 
-Quick look: `--preview` (800 px, 16 samples), `--reference-view` (straight-on
-view comparable to the design reference), `--debug-proxy` (makes the car proxy
-visible to check the framing). A full 2400 px plate takes ≈ 15–25 min on 4 CPU
-cores, the shadow pass ≈ 3 min per shot.
+`render_plates.py` options: `--shots front_left_45,left_side`, `--width`
+(default 3200; the shipped plates are 2400), `--samples` (default 160),
+`--pass plate,shadow,reflection` (default `plate,shadow`), `--shadow-width` /
+`--shadow-samples` (1200 / 48), `--no-shadow`. Quick look: `--preview`
+(800 px, 16 samples), `--reference-view` (straight-on view comparable to the
+design reference), `--debug-proxy` (makes the car proxy visible to check the
+framing). A full 2400 px plate takes ≈ 15–25 min on 4 CPU cores, the shadow
+pass ≈ 3 min per shot, the reflection pass ≈ 3.5 min per shot.
 
 ## Assets (all CC0, Poly Haven)
 

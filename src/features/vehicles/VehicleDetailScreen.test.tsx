@@ -192,6 +192,18 @@ describe("<VehicleDetailScreen />", () => {
     expect(badge).not.toHaveClass("bg-ae-blue/15");
   });
 
+  it("shows a processed cover whole (4:3 listing image with the wall logo), the original cropped", async () => {
+    const vehicle = await processedVehicleWithExtra();
+    const view = render(page(vehicle.id, "processed"));
+    await screen.findByRole("heading", { level: 2, name: "Porsche Macan" });
+    const img = () => view.container.querySelector("section img");
+    expect(img()).toHaveClass("object-contain");
+    expect(img()?.parentElement).toHaveClass("aspect-[4/3]");
+    fireEvent.click(screen.getByRole("radio", { name: "Original" }));
+    expect(img()).toHaveClass("object-cover");
+    expect(img()?.parentElement).toHaveClass("aspect-[16/9]");
+  });
+
   it("points the employee to the processed photos the processor asks to check", async () => {
     const vehicle = await processedVehicleWithExtra({ front: [REMOVED] });
     const view = render(page(vehicle.id, "processed"));

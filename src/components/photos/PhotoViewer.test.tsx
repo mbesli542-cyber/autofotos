@@ -4,10 +4,10 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { installDialogPolyfill } from "@/components/ui/dialog-test-polyfill";
 import { ToastProvider } from "@/components/ui/Toast";
 import { getAppServices } from "@/lib/app-services";
-import type { VehiclePhotoWithUrls } from "@/lib/domain/types";
+import type { ProcessingWarning, VehiclePhotoWithUrls } from "@/lib/domain/types";
 import { AppError } from "@/lib/errors";
-import type { UploadItem } from "@/lib/offline/upload-queue";
-import { buildPhotoSlots } from "@/lib/photos/photo-slots";
+import { DISCARD_WHILE_SAVING_MESSAGE, type UploadItem } from "@/lib/offline/upload-queue";
+import { buildPhotoSlots, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { AUTOEXPERTEN_STANDARD_TEMPLATE as T } from "@/lib/shots/shot-template";
 import { PhotoViewer } from "./PhotoViewer";
 
@@ -18,6 +18,9 @@ beforeAll(() => {
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+/** `a` comes before `b` in the document – and so on screen: the viewer sets no CSS `order`. */
+const precedes = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
 const savedPhoto: VehiclePhotoWithUrls = {
   id: "photo-rear",
@@ -308,6 +311,19 @@ describe("<PhotoViewer /> – 'Verwerfen' fails", () => {
     expect(screen.getAllByRole("alert")).toHaveLength(1);
   });
 
+  it("says why when the capture is being saved right now (the queue's own words)", async () => {
+    vi.spyOn(getAppServices().uploads, "discard").mockRejectedValue(
+      new AppError("conflict", { userMessage: DISCARD_WHILE_SAVING_MESSAGE }),
+    );
+    const { dialog } = renderViewer({ uploads: [pending({ retryable: false })] });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Verwerfen" }));
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Verwerfen" }));
+    });
+    expect(within(dialog).getByText("Foto verwerfen?")).toBeInTheDocument();
+    expect(within(dialog).getByRole("alert")).toHaveTextContent(DISCARD_WHILE_SAVING_MESSAGE);
+  });
+
   it("says it only in the question it belongs to – and a new question starts without it", async () => {
     const discard = vi
       .spyOn(getAppServices().uploads, "discard")
@@ -335,6 +351,97 @@ describe("<PhotoViewer /> – 'Verwerfen' fails", () => {
   });
 });
 
+describe("<PhotoViewer /> – a delete on its way belongs to its photo", () => {
+  const photoOf = (id: string, shotKey: string, shotOrder: number, title: string): VehiclePhotoWithUrls => ({
+    ...savedPhoto,
+    id,
+    shotKey,
+    shotOrder,
+    title,
+    originalStoragePath: `v1/${shotKey}/${id}.jpg`,
+    urls: { original: `/${id}.jpg`, thumbnail: `/${id}.jpg`, processed: null },
+  });
+  const photos = [photoOf("p1", "front_left_45", 1, "Vorne links (45°)"), photoOf("p2", "front", 2, "Vorne")];
+
+  /** "Vorne links" is deleted slowly (until `finishP1`), any other photo at once. */
+  function setup() {
+    let finishP1: () => void = () => undefined;
+    const deleted: string[] = [];
+    const onDelete = vi.fn(
+      (slot: PhotoSlot) =>
+        new Promise<void>((resolve) => {
+          const id = slot.photo?.id ?? "?";
+          const done = () => {
+            deleted.push(id);
+            resolve();
+          };
+          if (id === "p1") finishP1 = done;
+          else done();
+        }),
+    );
+    function Route() {
+      const [selectedKey, setSelectedKey] = useState<string | null>("front_left_45");
+      return (
+        <ToastProvider>
+          <PhotoViewer
+            slots={buildPhotoSlots(T, photos, []).required}
+            selectedKey={selectedKey}
+            onNavigate={setSelectedKey}
+            onClose={() => setSelectedKey(null)}
+            onRetake={() => {}}
+            onDelete={onDelete}
+          />
+        </ToastProvider>
+      );
+    }
+    render(<Route />);
+    return { onDelete, deleted, finishP1: () => finishP1() };
+  }
+
+  const dialog = () => screen.getByRole("dialog");
+  const button = (name: string) => within(dialog()).getByRole("button", { name });
+
+  it("another photo's question is neither shown busy nor ended by it", async () => {
+    const { deleted, finishP1 } = setup();
+    fireEvent.click(button("Foto löschen"));
+    await act(async () => {
+      fireEvent.click(button("Löschen"));
+    });
+    expect(button("Wird gelöscht…")).toBeDisabled();
+
+    // The employee moves on to the next photo and asks there.
+    fireEvent.click(button("Nächstes Foto: Vorne"));
+    fireEvent.click(button("Foto löschen"));
+    expect(within(dialog()).getByText("Foto wirklich löschen?")).toBeInTheDocument();
+    expect(button("Löschen")).toBeEnabled();
+    expect(button("Abbrechen")).toBeEnabled();
+
+    await act(async () => finishP1());
+    // The first answer arrived: this question stays until it is answered.
+    expect(within(dialog()).getByText("Foto wirklich löschen?")).toBeInTheDocument();
+    expect(button("Löschen")).toBeEnabled();
+    expect(deleted).toEqual(["p1"]);
+  });
+
+  it("asked again for the same photo, the question shows its delete on its way – and ends with it", async () => {
+    const { onDelete, finishP1 } = setup();
+    fireEvent.click(button("Foto löschen"));
+    await act(async () => {
+      fireEvent.click(button("Löschen"));
+    });
+    fireEvent.click(button("Nächstes Foto: Vorne"));
+    fireEvent.click(button("Vorheriges Foto: Vorne links (45°)"));
+
+    // Still shown (its delete is on its way): asking again never deletes it twice.
+    fireEvent.click(button("Foto löschen"));
+    expect(button("Wird gelöscht…")).toBeDisabled();
+    expect(button("Abbrechen")).toBeDisabled();
+    await act(async () => finishP1());
+    expect(within(dialog()).queryByText("Foto wirklich löschen?")).not.toBeInTheDocument();
+    expect(onDelete).toHaveBeenCalledOnce();
+  });
+});
+
 describe("<PhotoViewer /> – layout (measured in Chromium; jsdom has no layout)", () => {
   it("keeps the photo at least 40 % high and lets details and actions scroll – next to the photo on short viewports", () => {
     const { dialog } = renderViewer();
@@ -352,20 +459,30 @@ describe("<PhotoViewer /> – layout (measured in Chromium; jsdom has no layout)
     const details = dialog.querySelector("footer") as HTMLElement;
     expect(details.parentElement).toBe(body);
     expect(details).toHaveClass("min-h-0", "overflow-y-auto", "short:w-72", "short:shrink-0", "short:flex", "short:flex-col");
-    // The actions stack in the narrow side panel – right below the version switch,
-    // the capture details (and hints) after them, so the actions never need scrolling.
+    // The actions stack in the narrow side panel. In every layout they come right below
+    // the version switch, the capture details (and hints) after them – in the DOM, so the
+    // order is the same on every screen and the actions never need scrolling.
     const actions = within(dialog).getByRole("button", { name: "Foto löschen" }).parentElement as HTMLElement;
     expect(actions).toHaveClass("grid-cols-2", "short:grid-cols-1");
-    expect(actions.className).not.toMatch(/short:order-/);
-    expect(within(dialog).getByText(/^Aufgenommen am/)).toHaveClass("short:order-1");
+    expect(precedes(actions, within(dialog).getByText(/^Aufgenommen am/))).toBe(true);
+    expect(details.innerHTML).not.toMatch(/\border-/);
   });
 
-  it("puts the hints after the actions in the short side panel", () => {
+  it("shows the actions before the hints in every layout – 'Foto wiederholen' without scrolling on a small phone", () => {
+    // As many hints as a mirrored 3/4 photo gets: on a 360 × 640 phone they fill the panel.
+    const hints: ProcessingWarning[] = [
+      { code: "plate_mirrored", message: "Das Foto zeigt das Fahrzeug von der anderen Seite. Bitte die Aufnahmeposition prüfen." },
+      { code: "background_object_suspected", message: "Ein anderes Objekt berührt die Fahrzeugkontur." },
+      { code: "background_object_removed", message: "Ein Gegenstand hinter dem Fahrzeug wurde entfernt – bitte das Ergebnis prüfen." },
+      { code: "mask_uncertain", message: "Die Freistellung ist unsicher – bitte das Ergebnis prüfen." },
+      { code: "low_resolution", message: "Das Fahrzeug musste vergrößert werden." },
+      { code: "vehicle_small", message: "Das Fahrzeug ist kleiner als üblich." },
+    ];
     const processed: VehiclePhotoWithUrls = {
       ...savedPhoto,
       processedStoragePath: "v1/autoexperten_standard/rear/photo-rear.jpg",
       processedPreset: "autoexperten_standard",
-      processingWarnings: [{ code: "mask_uncertain", message: "Die Freistellung ist unsicher – bitte das Ergebnis prüfen." }],
+      processingWarnings: hints,
       urls: { original: "/rear.jpg", thumbnail: "/rear.jpg", processed: "/rear-processed.jpg" },
     };
     render(
@@ -377,11 +494,24 @@ describe("<PhotoViewer /> – layout (measured in Chromium; jsdom has no layout)
           onNavigate={() => {}}
           onClose={() => {}}
           onRetake={() => {}}
+          onDelete={async () => {}}
         />
       </ToastProvider>,
     );
-    const hint = within(screen.getByRole("dialog")).getByText(/Die Freistellung ist unsicher/);
-    expect(hint.closest("p")?.parentElement).toHaveClass("short:order-1");
+    const dialog = screen.getByRole("dialog");
+    const retake = within(dialog).getByRole("button", { name: "Foto wiederholen" });
+    const remove = within(dialog).getByRole("button", { name: "Foto löschen" });
+    for (const hint of hints) {
+      const shown = within(dialog).getByText(hint.message);
+      expect(precedes(retake, shown)).toBe(true);
+      expect(precedes(remove, shown)).toBe(true);
+    }
+    expect(precedes(retake, within(dialog).getByText(/^Aufgenommen am/))).toBe(true);
+    // Only the version switch (phones) comes before them.
+    const footer = dialog.querySelector("footer") as HTMLElement;
+    expect(within(footer.children[0] as HTMLElement).getByRole("radiogroup")).toBeInTheDocument();
+    expect(footer.children[1]).toContainElement(remove);
+    expect(footer.innerHTML).not.toMatch(/\border-/);
   });
 });
 

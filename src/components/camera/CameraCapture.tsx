@@ -193,6 +193,16 @@ export function CameraCapture({
     };
   }, [returnTo]);
 
+  // Toasts appear in the middle of the viewfinder while the camera is shown,
+  // so they never cover the current shot, the progress or the shutter.
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    root.dataset.cameraOpen = "";
+    return () => {
+      delete root.dataset.cameraOpen;
+    };
+  }, []);
+
   async function storeCapture(file: Blob, target: ShotDefinition) {
     const { uploads } = getAppServices();
     // Keep this shot selected while it is saved and previewed (the background

@@ -310,15 +310,19 @@ export class MockDataProvider implements DataProvider {
 
   async recordProcessedPhoto(input: RecordProcessedPhotoInput): Promise<void> {
     await this.ensureReady();
-    const stored = await this.db.get<StoredPhoto>(STORES.photos, input.photoId);
-    if (!stored) throw new AppError("not_found");
-    await this.db.put<StoredPhoto>(STORES.photos, {
-      ...stored,
+    // The hints of this result replace those of an earlier processing.
+    const processingWarnings = parseProcessingWarnings(input.warnings);
+    const updatedAt = new Date().toISOString();
+    // Read and write in one transaction: a retake or "Foto löschen" saved
+    // meanwhile (it archives this photo) is kept – only the processed fields
+    // change, an archived photo never becomes active again.
+    const stored = await this.db.update<StoredPhoto>(STORES.photos, input.photoId, (current) => ({
+      ...current,
       processedStoragePath: input.processedStoragePath,
       processedPreset: input.preset,
-      // The hints of this result replace those of an earlier processing.
-      processingWarnings: parseProcessingWarnings(input.warnings),
-      updatedAt: new Date().toISOString(),
-    });
+      processingWarnings,
+      updatedAt,
+    }));
+    if (!stored) throw new AppError("not_found");
   }
 }

@@ -5,8 +5,8 @@ Assets of the AutoExperten showroom processing (used by the processor in
 
 | File | Purpose |
 | --- | --- |
-| `autoexperten-standard.json` | Preset "AutoExperten Standard": plate set, **branding layout** (wall space), output size, placement limits, shadow, adjustment limits, quality gate. |
-| `autoexperten-standard/` | The **showroom plates**: ONE 3D showroom rendered from eight shot-specific cameras (`<shot>.jpg`, `<shot>-shadow.png`, `plates.json`). |
+| `autoexperten-standard.json` | Preset "AutoExperten Standard": plate set, **branding layout** (wall space), output size (2400 × 1800), placement limits, shadow, reflection, adjustment limits, quality gate. Validated strictly by the processor (`processor/app/presets.py`, ranges in `processor/README.md` → Presets and assets): an invalid value is a configuration error (`presetError` in `/health`), never replaced by a default. |
+| `autoexperten-standard/` | The **showroom plates**: ONE 3D showroom rendered from eight shot-specific cameras (`<shot>.jpg`, `<shot>-shadow.png`, `<shot>-reflection.png`, `plates.json`). |
 | `autoexperten-standard-reference.jpg` | Approved showroom design supplied by AutoExperten (1448 × 1086) – the model for the 3D room. Its lettering is generated, **not** the official logo, so it is never used as a background. |
 
 ## How a listing photo is built
@@ -15,6 +15,7 @@ Assets of the AutoExperten showroom processing (used by the processor in
 3D showroom (processor/showroom3d/render_plates.py, Blender, CC0 assets)
    └─ rendered from the camera of each exterior shot → <shot>.jpg (empty wall, NO text/logo)
                                                        <shot>-shadow.png (floor shadow of a typical car)
+                                                       <shot>-reflection.png (the floor's own reflection)
                                                        plates.json (camera, floor/wall homographies, proxy car)
  + official branding in wall space (logo PNG + SCHWETZINGEN + website + phone,
    processor/app/showroom/wall_branding.py, layout in the JSON `branding`)
@@ -59,22 +60,49 @@ are scaled to the output size).
 
 ### Rendering the plates
 
-Blender 4.2 LTS (CPU, Cycles), from the repository root:
+Blender 4.2 LTS (CPU, Cycles). Run **every command from the repository root**
+(the post-processing uses the processor's virtualenv, see
+`processor/README.md` → Run locally):
 
 ```bash
-# CC0 textures/models from Poly Haven (laminate_floor_02, oak_veneer_01, island_tree_02, …)
-#   → /opt/showroom-assets (see processor/showroom3d/render_plates.py)
-blender -b --factory-startup -P processor/showroom3d/render_plates.py -- \
-    --assets /opt/showroom-assets --out /opt/ae-plates/v1 --width 2400 --samples 160
-# shadow passes (with/without the invisible light-blocking proxy car) are part of the default run;
-# quick preview: --preview, single shots: --shots front_left_45,left_side
-cd processor
-.venv/bin/python showroom3d/postprocess_plates.py /opt/ae-plates/v1 ../public/presets/autoexperten-standard
-# floor reflection pass (gloss-free floor at the shadow resolution, ≈ 3.5 min per shot on 4 cores)
-# and only that added to an existing plate set:
-blender -b --factory-startup -P processor/showroom3d/render_plates.py -- \
-    --assets /opt/showroom-assets --out /opt/ae-plates/v1 --pass reflection --shadow-width 1200 --shadow-samples 48
-.venv/bin/python showroom3d/postprocess_plates.py /opt/ae-plates/v1 ../public/presets/autoexperten-standard --reflection-only
+# CC0 textures/models from Poly Haven (laminate_floor_02, oak_veneer_01, painted_plaster_wall,
+# island_tree_02) → /opt/showroom-assets (once)
+python3 processor/showroom3d/fetch_assets.py /opt/showroom-assets
+B=blender   # Blender 4.2 LTS
+# 1. plates + shadow passes (default --pass plate,shadow; with/without the invisible
+#    light-blocking proxy car; --samples 160 is the default)
+# 2. floor reflection pass (gloss-free floor at the shadow resolution, ≈ 3.5 min per shot on 4 cores)
+# 3. post-processing → the plate set the processor loads
+# Chained with &&: a failed step stops the steps after it.
+$B -b --factory-startup --python-exit-code 1 -P processor/showroom3d/render_plates.py -- \
+    --assets /opt/showroom-assets --out /opt/ae-plates/v1 --width 2400 \
+  && $B -b --factory-startup --python-exit-code 1 -P processor/showroom3d/render_plates.py -- \
+    --assets /opt/showroom-assets --out /opt/ae-plates/v1 --width 2400 --pass reflection \
+  && processor/.venv/bin/python processor/showroom3d/postprocess_plates.py \
+    /opt/ae-plates/v1 public/presets/autoexperten-standard
+```
+
+`--python-exit-code 1` has to come **before** `-P`: then a missing script or a
+Python error ends Blender with exit code 1 – without it Blender exits with 0.
+Keep the steps chained (or run them one by one and check each exit code):
+both post-processing modes write the reflection pass only for shots whose
+`<shot>-glossfree.png` is in the render folder and **drop it from
+`plates.json` otherwise**, with exit code 0. The full post-processing (step 3)
+drops it silently – it prints a "reflection pass" line only for the shots
+that got one; only `--reflection-only` (below) names each shot without one
+("<shot>: no reflection pass in <render dir>"). So render step 2 before
+step 3. Quick preview: `--preview`; single shots:
+`--shots front_left_45,left_side`.
+
+To add or refresh only the reflection pass of an existing plate set (plates,
+shadows and the rest of `plates.json` stay untouched):
+
+```bash
+B=blender   # Blender 4.2 LTS
+$B -b --factory-startup --python-exit-code 1 -P processor/showroom3d/render_plates.py -- \
+    --assets /opt/showroom-assets --out /opt/ae-plates/v1 --width 2400 --pass reflection \
+  && processor/.venv/bin/python processor/showroom3d/postprocess_plates.py \
+    /opt/ae-plates/v1 public/presets/autoexperten-standard --reflection-only
 ```
 
 `postprocess_plates.py` converts the 16-bit renders to sRGB JPEGs (embedded
@@ -86,9 +114,9 @@ third-party dealership photos, no generative AI.
 ### Checking the plates
 
 ```bash
-cd processor
-.venv/bin/python scripts/render_showroom_preview.py -o /tmp/plates.jpg --guides     # all 8 plates
-.venv/bin/python scripts/render_showroom_preview.py -o /tmp/p.jpg --shot front --width 3200 --guides
+processor/.venv/bin/python processor/scripts/render_showroom_preview.py -o /tmp/plates.jpg --guides     # all 8 plates
+processor/.venv/bin/python processor/scripts/render_showroom_preview.py -o /tmp/p.jpg --shot front --width 3200 --guides
+(cd processor && .venv/bin/python -m pytest -q tests/test_plates.py)   # also loads the shipped plate set
 ```
 
 Cyan = wall/floor junction, orange = ground line (lowest tyre contact of the

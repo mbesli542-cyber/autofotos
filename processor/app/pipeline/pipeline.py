@@ -7,7 +7,8 @@ Exterior shots:
     → model alpha snapped onto colour edges → clean-up (foreign spikes cut;
     semantic check: objects the detector does not see as part of THE vehicle
     dropped or the photo rejected; vehicle parts the mask lost – taken from the
-    whole-frame pass after a window pass, otherwise the photo is rejected) → bbox
+    whole-frame pass after a window pass, otherwise the photo is rejected, a
+    partly lost piece gives a hint) → bbox
     → vehicle geometry (tyre contacts, near end, perspective)
     → plate selection (the shot's 3D-showroom plate; mirrored 3/4 plate if the
       photo shows the other side) → placement v2 on the plate → quality gate
@@ -29,7 +30,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from ..presets import EXTERIOR_SHOTS, SHOWROOM_PLATES, BackgroundProvider, Preset
+from ..presets import EXTERIOR_SHOTS, SHOWROOM_PLATES, BackgroundProvider, Preset, PresetConfigError
 from ..showroom.plates import MIRROR_PLATES, PlateSet
 from .color import linear_to_u8, srgb_to_linear
 from .composite import extract_vehicle, feather_layer, over, place_layer, resample_layer
@@ -168,8 +169,11 @@ def process_photo(
     if shot_key is not None and shot_key not in EXTERIOR_SHOTS:
         return _passthrough(decoded.rgb, preset, debug, timer, base_meta, progress)
     shot = shot_key or "front_left_45"
-    # fail fast (before the expensive segmentation) without plates or with a tiny photo
+    # fail fast (before the expensive segmentation) without plates, without a usable
+    # official logo or with a tiny photo
     plates = backgrounds.plate_set(preset)
+    if config_error := backgrounds.config_error(preset):
+        raise PresetConfigError(config_error)
     check_source_resolution(decoded.width, decoded.height, preset.quality)
 
     # the vehicle detector (instance segmentation, detection.py): its full-frame view
@@ -195,19 +199,28 @@ def process_photo(
     # the mask lost)
     progress(0.45, "mask")
     alpha, edges, mask_info = _vehicle_alpha(decoded.rgb, coarse, detector, detections)
-    if mask_info.parts_missing and segmentation.get("windowUsed"):
-        # the window pass lost a part the detector sees (a dark mirror in front of a dark car);
-        # the whole-frame pass may have it – taken only inside that part's claimed region
+    if (mask_info.parts_missing or mask_info.parts_partial) and segmentation.get("windowUsed"):
+        # the window pass lost (a piece of) a part the detector sees (a dark mirror in front of a
+        # dark car, the base of a mirror); the whole-frame pass may have it – taken only inside
+        # that part's claim, as far as it belongs to the part between colour edges
         timer.mark("mask")
         progress(0.5, "segment-parts")
         started = time.perf_counter()
         whole = segmenter.segment(decoded.rgb)
         if whole.shape != coarse.shape:
             raise ValueError("segmenter returned a mask of the wrong size")
-        merged, taken = merge_parts(coarse, whole, mask_info.part_regions, mask_info.semantic_scale)
+        merged, taken = merge_parts(
+            coarse,
+            whole,
+            mask_info.part_regions,
+            mask_info.semantic_scale,
+            rgb=decoded.rgb,
+            cell=mask_info.semantic_cell,
+        )
         del whole
         segmentation["partsFromWholeFrame"] = {
             "missing": mask_info.parts_missing,
+            "partial": mask_info.parts_partial,
             "taken": taken,
             "ms": int(round((time.perf_counter() - started) * 1000)),
         }
@@ -283,6 +296,7 @@ def process_photo(
             "foreignRemoved": mask_info.foreign_removed,
             "foreignSuspected": mask_info.foreign_suspected,
             "partsMissing": mask_info.parts_missing,
+            "partsPartial": mask_info.parts_partial,
             "vehicleDetected": mask_info.vehicle_detected,
             "semantic": mask_info.semantic,
         },
@@ -405,6 +419,7 @@ def process_photo(
             "foreignRemoved": mask_info.foreign_removed,
             "foreignSuspected": mask_info.foreign_suspected,
             "partsMissing": mask_info.parts_missing,
+            "partsPartial": mask_info.parts_partial,
             "vehicleDetected": mask_info.vehicle_detected,
             # semantic check: the detector's vehicle, tiles, verified regions (metadata)
             "semantic": mask_info.semantic,

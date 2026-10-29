@@ -11,13 +11,14 @@ vi.mock("@/lib/camera/image-utils", () => ({
 }));
 
 import { createDemoDatabase, MockDataProvider } from "@/lib/data/mock/mock-data-provider";
-import { AppError, USER_ERROR_MESSAGES } from "@/lib/errors";
+import { AppError, toUserMessage, USER_ERROR_MESSAGES } from "@/lib/errors";
 import { createId } from "@/lib/ids";
 import { DEFAULT_SHOT_TEMPLATE } from "@/lib/shots/shot-template";
 import { savePhotoAndSyncStatus } from "@/lib/workflow/vehicle-workflow";
 import type { IdbDatabase } from "./idb";
 import {
   createUploadQueueDatabase,
+  DISCARD_WHILE_SAVING_MESSAGE,
   UploadQueue,
   type PendingUploadRecord,
   type UploadProcessor,
@@ -350,7 +351,7 @@ describe("UploadQueue.discard", () => {
     expect(queue.getSnapshot().items).toEqual([]);
   });
 
-  it("does not interrupt an upload in progress", async () => {
+  it("does not interrupt an upload in progress – and says so instead of pretending it discarded it", async () => {
     const { capture } = await setup();
     let finish: () => void = () => undefined;
     const save = vi.fn<UploadProcessor>(() => new Promise<void>((resolve) => (finish = resolve)));
@@ -358,11 +359,73 @@ describe("UploadQueue.discard", () => {
     const item = await queue.enqueue(capture(T0));
     await flush();
     expect(queue.getSnapshot().items[0]?.status).toBe("uploading");
-    await queue.discard(item.id);
+    const refused = await queue.discard(item.id).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(refused).toBeInstanceOf(AppError);
+    expect(toUserMessage(refused)).toBe(DISCARD_WHILE_SAVING_MESSAGE);
     expect(queue.getSnapshot().items[0]?.status).toBe("uploading");
     finish();
     await flush();
     expect(queue.getSnapshot().items).toEqual([]);
+    expect(save).toHaveBeenCalledOnce();
+  });
+});
+
+describe("UploadQueue – right before uploading, the stored capture is checked", () => {
+  it("does not upload a capture that another tab of the device discarded", async () => {
+    const { data, vehicle, failures, save, capture } = await setup();
+    // Two tabs share the device's queue database.
+    const shared = createUploadQueueDatabase();
+    const uploadedBy: string[] = [];
+    const tab = (name: string) =>
+      new UploadQueue(
+        async (record, prepared) => {
+          await save(record, prepared);
+          uploadedBy.push(name);
+        },
+        480,
+        shared,
+      );
+    failures.push(new TypeError("Failed to fetch"), new TypeError("Failed to fetch")); // weak Wi-Fi in both tabs
+    const tabA = tab("A");
+    const item = await tabA.enqueue(capture(T0));
+    await flush();
+    // Tab B, opened meanwhile, restores the stored capture and tries it once, too.
+    const tabB = tab("B");
+    await tabB.restore();
+    await flush();
+    expect(tabB.getSnapshot().items.map((entry) => [entry.id, entry.status])).toEqual([[item.id, "failed"]]);
+
+    await tabA.discard(item.id); // "Verwerfen" in tab A
+    tabB.retryAll(); // the connection is back ("online" in tab B)
+    await flush();
+    expect(uploadedBy).toEqual([]);
+    expect(tabB.getSnapshot().items).toEqual([]);
+    expect(await data.listPhotos(vehicle.id)).toEqual([]);
+  });
+
+  it("still uploads a capture that is only kept in memory (the storage refused it)", async () => {
+    const { data, vehicle, save, capture } = await setup();
+    const db = createUploadQueueDatabase();
+    vi.spyOn(db, "put").mockRejectedValue(new DOMException("Speicher voll", "QuotaExceededError"));
+    const queue = new UploadQueue(save, 480, db);
+    const item = await queue.enqueue(capture(T0));
+    await flush();
+    expect(queue.getSnapshot().items).toEqual([]);
+    expect((await data.listPhotos(vehicle.id)).map((photo) => photo.id)).toEqual([item.id]);
+  });
+
+  it("still uploads when the stored capture cannot be read", async () => {
+    const { data, vehicle, save, capture } = await setup();
+    const db = createUploadQueueDatabase();
+    vi.spyOn(db, "get").mockRejectedValue(new DOMException("Datenbankfehler", "UnknownError"));
+    const queue = new UploadQueue(save, 480, db);
+    const item = await queue.enqueue(capture(T0));
+    await flush();
+    expect(queue.getSnapshot().items).toEqual([]);
+    expect((await data.listPhotos(vehicle.id)).map((photo) => photo.id)).toEqual([item.id]);
   });
 });
 

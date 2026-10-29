@@ -50,8 +50,9 @@ class ResultNotReadyError extends ProcessingApiError {}
 const BUSY_RETRY_DEADLINE_MS = 10 * 60_000;
 /**
  * Busy back-off: the wait doubles from the first to the longest one, with
- * jitter. Demo uploads send the photo copy (up to 4 MB) again with every
- * attempt, so in a long busy phase a photo is re-sent at most about once a minute.
+ * "equal jitter" (busyRetryWait: half to all of it). Demo uploads send the
+ * photo copy (up to 4 MB) again with every attempt, so in a long busy phase a
+ * photo is re-sent every 30–60 s.
  */
 const BUSY_RETRY_FIRST_WAIT_MS = 3_000;
 const BUSY_RETRY_MAX_WAIT_MS = 60_000;

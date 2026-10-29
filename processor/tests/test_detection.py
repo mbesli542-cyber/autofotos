@@ -290,6 +290,23 @@ def test_a_separate_part_that_is_another_object_is_dropped_without_touching_the_
     assert "background_object_removed" in [w.code for w in assess_mask(result, mask_bbox(result), info)]
 
 
+def test_a_dropped_foreign_part_is_no_missing_part_even_where_the_vehicle_instance_claims_it():
+    """The coarse vehicle instance also claims the lower 33 px of a separate sign the semantic check
+    drops – that piece is no vehicle part the cut-out lost (the check runs with what was dropped;
+    without it the piece was reported as a partly lost part)."""
+    car = side_view()
+    top = np.zeros_like(car)
+    cv2.rectangle(top.view(np.uint8), (1700, 680), (1790, 790), 1, -1)  # sign top above the hood, 10 px gap
+    sign = np.zeros_like(car)
+    cv2.rectangle(sign.view(np.uint8), (1700, 560), (1790, 1100), 1, -1)
+    lower = np.zeros_like(car)
+    lower[758:791, 1700:1791] = True  # where the car's coarse instance reaches into the sign
+    detector = FakeDetector().add("car", car | lower, 0.95).add("stop sign", sign & ~car & ~lower, 0.8)
+    result, info = clean_mask((car | top).astype(np.float32), rgb=_photo(car | top), detector=detector)
+    assert len(info.foreign_removed) == 1 and (result[680:791, 1700:1791] == 0).all()
+    assert info.parts_missing == [] and info.parts_partial == []
+
+
 def test_without_a_detected_vehicle_the_mask_is_kept_and_a_warning_given():
     car = side_view()
     wheel = np.zeros_like(car)
@@ -386,6 +403,60 @@ def test_a_small_clipped_edge_is_no_missing_part():
     detector = FakeDetector().add("car", car | lens, 0.95)
     _, info = clean_mask(car.astype(np.float32), rgb=_photo(car | lens), detector=detector)
     assert info.parts_missing == []
+
+
+def test_a_see_through_window_that_the_mask_step_fills_is_no_missing_part():
+    """BiRefNet treated the side window as see-through: an enclosed hole that step 4 fills. The
+    detector's car covers its windows – the missing-part check runs on the filled cut-out, so the
+    window is no lost part (it was rejected with the mirror message before)."""
+    from app.pipeline.quality import check_parts
+
+    car = side_view()
+    window = np.zeros_like(car)
+    cv2.rectangle(window.view(np.uint8), (1050, 760), (1300, 880), 1, -1)  # the side window glass
+    assert (car & window).sum() == window.sum()
+    detector = FakeDetector().add("car", car, 0.95)
+    result, info = clean_mask((car & ~window).astype(np.float32), rgb=_photo(car), detector=detector)
+    assert info.holes_filled == 1 and np.array_equal(result >= 0.5, car)  # the window is in the cut-out
+    assert info.parts_missing == [] and info.parts_partial == []
+    assert not [f for f in info.semantic["findings"] if f["evidence"] == "missing_part"]
+    report = GateReport()
+    check_parts(report, info)
+    assert report.failed_code is None
+    # a mirror lost next to the filled window is still found
+    mirror = _mirror(car)
+    detector = FakeDetector().add("car", car | mirror, 0.95)
+    _, info = clean_mask((car & ~window).astype(np.float32), rgb=_photo(car | mirror), detector=detector)
+    assert info.holes_filled == 1 and len(info.parts_missing) == 1
+    x0, y0, x1, y1 = info.parts_missing[0]
+    assert 1755 <= x0 and x1 <= 1875 and 825 <= y0 and y1 <= 915
+
+
+def test_a_partly_lost_mirror_is_reported_as_a_hint_not_a_rejection():
+    """The mask kept a mirror's head but lost its base (thinner than a whole part): reported as
+    partial – the pipeline takes it from another pass where one has it, otherwise the result gets
+    a hint to check it. Nothing is drawn in."""
+    from app.pipeline.quality import check_parts
+
+    car = side_view()
+    head = np.zeros_like(car)
+    cv2.rectangle(head.view(np.uint8), (1775, 820), (1865, 862), 1, -1)
+    base = np.zeros_like(car)
+    cv2.rectangle(base.view(np.uint8), (1785, 862), (1850, 902), 1, -1)  # 40 px (2.4 %) down to the body
+    vehicle = car | head | base
+    detector = FakeDetector().add("car", vehicle, 0.95)
+    result, info = clean_mask((car | head).astype(np.float32), rgb=_photo(vehicle), detector=detector)
+    assert info.parts_missing == [] and len(info.parts_partial) == 1 and len(info.part_regions) == 1
+    x0, y0, x1, y1 = info.parts_partial[0]
+    assert 1770 <= x0 and x1 <= 1870 and 850 <= y0 and y1 <= 915  # the base, not the head
+    finding = next(f for f in info.semantic["findings"] if f["evidence"] == "missing_part")
+    assert finding["partial"] and not finding["missing"] and finding["action"] == "partial"
+    assert np.array_equal(result >= 0.5, car | head)  # nothing is drawn in
+    report = GateReport()
+    check_parts(report, info)
+    assert report.failed_code is None
+    codes = [w.code for w in assess_mask(result, mask_bbox(result), info)]
+    assert "vehicle_part_uncertain" in codes
 
 
 # --------------------------------------------------------------------------- reach beyond the vehicle

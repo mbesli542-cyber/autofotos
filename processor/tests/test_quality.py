@@ -249,8 +249,13 @@ def test_a_missing_vehicle_part_rejects_the_job_with_its_own_message_last():
         report.raise_if_failed()
     assert raised.value.code == "mask_low_confidence" and raised.value.user_message == VEHICLE_PART_MESSAGE
     assert raised.value.details["checks"]["parts"] == {
-        "passed": False, "code": "mask_low_confidence", "reasons": ["vehicle_part_missing"], "partsMissing": 1
+        "passed": False, "code": "mask_low_confidence", "reasons": ["vehicle_part_missing"], "partsMissing": 1,
+        "partsPartial": 0,
     }  # fmt: skip
+    # a partly lost piece (the base of a mirror whose head is there) is a hint, never a rejection
+    report = GateReport()
+    check_parts(report, MaskInfo(coverage=0.3, parts_partial=[[1779, 1181, 1814, 1215]]))
+    assert report.failed_code is None and report.checks["parts"]["partsPartial"] == 1
     report = GateReport()  # both: the glued object is named first
     check_foreign(report, MaskInfo(coverage=0.3, foreign_suspected=[[1500, 250, 1560, 420]]))
     check_parts(report, missing)

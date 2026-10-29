@@ -270,6 +270,84 @@ describe("MockDataProvider – the processor's hints on a processed version", ()
   });
 });
 
+describe("MockDataProvider.recordProcessedPhoto – the photo was archived meanwhile", () => {
+  /**
+   * A result arrives for "old" while a retake (or "Foto löschen") archives it.
+   * The archiving lands at the worst moment: right after the record was read
+   * for the result – or, when the result is written in one transaction with
+   * its read, right before it.
+   */
+  async function setup() {
+    const db = createDemoDatabase(`test-${createId()}`);
+    const provider = new MockDataProvider(db);
+    const vehicle = await provider.createVehicle(NEW_VEHICLE);
+    const capture = (photoId: string, takenAt: string): SavePhotoInput => ({
+      photoId,
+      vehicleId: vehicle.id,
+      shotKey: "rear",
+      shotOrder: 7,
+      title: "Hinten",
+      file: new Blob([photoId], { type: "image/jpeg" }),
+      thumbnail: null,
+      width: 4000,
+      height: 3000,
+      takenAt,
+    });
+    const old = await provider.savePhoto(capture("old", "2026-10-28T10:00:00.000Z"));
+
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let armed = true;
+    const holdsOld = (store: string, key: IDBValidKey) => {
+      const hit = armed && store === DEMO_STORES.photos && key === "old";
+      if (hit) armed = false;
+      return hit;
+    };
+    const realGet = db.get.bind(db);
+    vi.spyOn(db, "get").mockImplementation((async (store: string, key: IDBValidKey) => {
+      const value = await realGet(store, key);
+      if (holdsOld(store, key)) await held;
+      return value;
+    }) as typeof db.get);
+    const realUpdate = db.update.bind(db);
+    vi.spyOn(db, "update").mockImplementation((async (store: string, key: IDBValidKey, change: (current: never) => never) => {
+      if (holdsOld(store, key)) await held;
+      return realUpdate(store, key, change);
+    }) as typeof db.update);
+
+    const recording = provider.saveProcessedPhoto({
+      photo: old,
+      preset: "autoexperten_standard",
+      file: new Blob(["showroom"], { type: "image/jpeg" }),
+      warnings: [REMOVED],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(armed).toBe(false); // the result is being recorded right now
+    return { db, provider, vehicle, capture, release, recording };
+  }
+
+  it("never brings the photo a retake replaced back (one active photo per shot)", async () => {
+    const { db, provider, vehicle, capture, release, recording } = await setup();
+    await provider.savePhoto(capture("retake", "2026-10-28T10:05:00.000Z"));
+    release();
+    await recording;
+
+    expect((await provider.listPhotos(vehicle.id)).map((photo) => photo.id)).toEqual(["retake"]);
+    const old = await db.get<StoredPhoto>(DEMO_STORES.photos, "old");
+    expect(old?.archivedAt).not.toBeNull();
+    // The result is still recorded on the archived photo (a separate file; nothing lost).
+    expect(old?.processedStoragePath).not.toBeNull();
+  });
+
+  it("never brings a deleted photo back", async () => {
+    const { provider, vehicle, release, recording } = await setup();
+    await provider.archivePhoto("old"); // "Foto löschen"
+    release();
+    await recording;
+    expect(await provider.listPhotos(vehicle.id)).toEqual([]);
+  });
+});
+
 describe("MockDataProvider.updateVehicle – on the data it is based on", () => {
   it("never saves over a change made since the data was loaded", async () => {
     const provider = new MockDataProvider(createDemoDatabase(`test-${createId()}`));

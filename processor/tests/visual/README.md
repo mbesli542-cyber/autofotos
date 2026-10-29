@@ -6,8 +6,9 @@ check the exterior pipeline (`processor/app/pipeline/`) for visual realism
 to check that the quality gate (`app/pipeline/quality.py`) accepts and rejects
 the right photos – including photos where an object behind the car (a car
 parked behind it, a hubcap, a dealer sign, a bollard) merges into its outline
-(category `foreign_object` and the cases expecting `mask_low_confidence`), and
-one where the cut-out loses a side mirror (`front`).
+(category `foreign_object` and the cases expecting `mask_low_confidence`),
+one where the cut-out loses a side mirror (`front`), and one that must carry
+the hint for a partly lost vehicle part (`old_hardlight`).
 
 **The images are not in this repository.** They are third-party photos under
 open licences. Only the manifest and this README are committed. The images
@@ -28,7 +29,8 @@ The 8 required cases come first, then the extras. Each case has:
 | `expected` | `accept`, or the gate code the job should fail with: `vehicle_too_small`, `perspective_mismatch`, `vehicle_cropped`, `mask_low_confidence` |
 | `foreignObjects` | (cases expecting `mask_low_confidence`) the object(s) merged into the outline, with source px boxes |
 | `missingParts` | (cases expecting `mask_low_confidence`) the vehicle part(s) the cut-out loses, with source px boxes |
-| `requiredParts` | `[{"part": …, "point": [x, y]}]`: a point inside each part (e.g. both side mirrors) that an accepted result must contain – the runner fails an accepted case without one of them (checked in `debug/mask.png`) |
+| `requiredParts` | (optional) `[{"part": …, "point": [x, y]}]`: a point inside each part (e.g. head and base of each side mirror) that an accepted result must contain – the runner fails an accepted case without one of them (checked in `debug/mask.png`) |
+| `expectedWarnings` | (optional) warning codes an accepted result must carry (e.g. `["vehicle_part_uncertain"]`) – the runner fails an accepted case without one of them (`result.json` `missingWarnings`) |
 | `file` | File name in the cache directory |
 | `url` | Exact URL the cached file was downloaded from |
 | `landingUrl`, `title`, `author`, `authorUrl`, `license`, `licenseUrl` | Source and attribution |
@@ -58,12 +60,12 @@ always right. For example, the Passat B8 "front view" is a front-left 3/4 shot.
 | 3 | `suv_fr45` | front_right_45 | mask_low_confidence | Nissan X-Trail T31, black, snowy dealer lot, overcast, ~70 %; the wheel of the white car parked behind is fused to the front corner |
 | 4 | `hatch_fl` | front_left_45 | accept | Renault Clio V, red, inside a dealership (glossy floor), ~70 % |
 | 5 | `estate_rr45` | rear_right_45 | mask_low_confidence | Audi A4 Avant allroad, black, snowy dealer lot, ~69 %; a strip of the white car's wheel behind is glued to the rear-left corner |
-| 6 | `old_hardlight` | right_side | accept | Mercedes W123, golden hour, very low sun, long shadow, strong colour grade, ~53 % |
+| 6 | `old_hardlight` | right_side | accept | Mercedes W123, golden hour, very low sun, long shadow, strong colour grade, ~53 %; `expectedWarnings`: `vehicle_part_uncertain` (the outline clips the front amber indicator lens) |
 | 7 | `too_far` | right_side | vehicle_too_small | MG ZS EV at a viewpoint, car only ~24 % of frame width |
 | 8 | `too_high` | rear_left_45 | perspective_mismatch | Lada Samara photographed from an upper floor, roof clearly visible |
 | 9 | `side_left` | left_side | accept | Mitsubishi Lancer, left profile, snowy lot, ~90 % (the side overlay uses ~89 %) |
 | 10 | `side_right` | right_side | mask_low_confidence | Nissan X-Trail (same car as 3), right profile, ~90 %; the hubcap of the blue car behind is glued to the rear |
-| 11 | `front` | front | mask_low_confidence | Toyota Yaris GR Sport, straight front, slushy lot, ~53 %; BiRefNet drops the black left side mirror (right in the photo) in front of the dark car parked behind – `requiredParts`: both mirrors |
+| 11 | `front` | front | mask_low_confidence | Toyota Yaris GR Sport, straight front, slushy lot, ~53 %; BiRefNet drops the black left side mirror (right in the photo) in front of the dark car parked behind – `requiredParts`: head and base of each mirror |
 | 12 | `rear` | rear | accept | Toyota Yaris GR Sport (same car), straight rear, ~60 % |
 | 13 | `dark_paint_rl45` | rear_left_45 | accept | Audi A4 Avant allroad (same car as 5), black, ~65 % |
 | 14 | `white_car` | front_left_45 | mask_low_confidence | VW Passat B8 Variant, white car on snow, ~70 %; the rear of a second white car is glued to the Passat's rear |
@@ -85,7 +87,15 @@ parked behind; 13 of 14 other framings tried lose it as well), so the result
 showed the car with one mirror. The detector's vehicle instance claims the
 mirror; the photo is rejected with "Ein Teil des Fahrzeugs (z. B. ein
 Außenspiegel) … würde im Ergebnis fehlen" (check `parts`). Its `requiredParts`
-make sure that a future version accepting it keeps both mirrors.
+are four points, head and base of each mirror – right mirror (left in the
+photo) head (1215, 1150) and base (1205, 1195), left mirror head (2585, 1140)
+and base (2585, 1180) – so that a future version accepting it keeps both
+mirrors whole; they carry over to the derived `front_crop3x4` (below).
+
+Case 6 is accepted, but its outline clips the front amber indicator lens, a
+partly lost piece (Segmentation, step 5 in `processor/README.md`): the result
+lacks the lens and must carry the hint `vehicle_part_uncertain`
+(`expectedWarnings`).
 
 All files are the 3840 px wide renditions that Wikimedia serves of larger
 originals (long edge 3840 px, so all of them are at least 2160 px high). Several
@@ -142,19 +152,22 @@ cd processor
   machine runs only one at a time. Use `--refresh-masks` after changing
   `segment()` itself, or `--no-cache` to skip the cache.
 - **Vehicle detector**: the semantic check runs in the runner process (each
-  call under the same lock, 4–12 calls of ≈ 0.5 s per photo, a few hundred MB). `--no-detector`
-  runs without it (shape-based clean-up only); the caption shows the detector
+  call under the same lock, 4–20 calls of ≈ 0.45–0.9 s per photo – median 9 –,
+  a few hundred MB). `--no-detector` runs without it (shape-based clean-up
+  only); the caption shows the detector
   calls and seconds, `result.json` the semantic findings
   (`metadata.mask.semantic`, for rejected cases `error.details.mask.semantic`).
 - **Window pass**: portrait/square photos are segmented in a window around the
   vehicle; the window's mask is cached like any other (key = its pixels). When
-  the window pass lost a vehicle part the detector sees, the whole-frame pass
-  runs as well (cached the same way) and the part is taken from it
-  (`metadata.segmentation.partsFromWholeFrame`). `--whole-frame` forces the old
-  single whole-frame pass (comparison runs).
+  the window pass lost a vehicle part the detector sees, or a piece of one, the
+  whole-frame pass runs as well (cached the same way) and the part is taken
+  from it where that pass has it (`metadata.segmentation.partsFromWholeFrame`).
+  `--whole-frame` forces the old single whole-frame pass (comparison runs).
 - **Required parts**: `requiredParts` points are checked in the final mask of
   accepted cases (`result.json` `requiredParts`, `missingParts`); an accepted
   case without one of them fails.
+- **Expected warnings**: an accepted case without one of its
+  `expectedWarnings` codes fails (`result.json` `missingWarnings`).
 - **Old test photos**: `--legacy-dir <dir> --label <name>` runs
   `car1.jpg` … `car8.jpg` with fixed shot keys. They are only 1024 px wide, so
   the current gate rejects them (`source_resolution_too_low`). To see the
@@ -185,17 +198,24 @@ cd processor
 | --- | --- | --- |
 | `<case>_9x16`, `<case>_3x4` (`side_left`, `sedan_fl45`, `old_hardlight`, `side_right`) | the photo scaled to 2160 px wide, centred in a 2160 × 3840 / 2160 × 2880 frame; above it the photo's top 12 % (sky) and below it its bottom 12 % (ground), mirrored back and forth – real scene texture, no second car | `side_left`, `sedan_fl45`, `side_right`: accept. `old_hardlight` (car ~53 % of the width, at 2160 px it would need more than 1.5× enlargement): `source_resolution_too_low` with "Für Außenaufnahmen das Smartphone bitte quer halten." |
 | `<case>_9x16_1080` | the 9:16 frame at 1080 × 1920 (an upright 1080p camera stream) | `source_resolution_too_low` with "Für Außenaufnahmen das Smartphone bitte quer halten." |
-| `front_crop3x4` | a real 3:4 crop (2160 × 2880) of `front` centred on the car | accept – with both side mirrors (`requiredParts`, carried over from `front`): the window pass loses both, the whole-frame pass has them and they are taken from it |
+| `front_crop3x4` | a real 3:4 crop (2160 × 2880) of `front` centred on the car | accept – with both side mirrors (all 4 `requiredParts` of `front`, heads and bases): the window pass loses both mirrors, the whole-frame pass has them and they are taken from it, the bases too |
+| `front_crop3x4_flip` (`FLIP_CASES`) | that 3:4 crop mirrored horizontally (the car's sides swapped) | accept with `expectedWarnings` `vehicle_part_uncertain`; `requiredParts`: only both mirror heads. No BiRefNet pass of this frame keeps the mirror bases: the window pass keeps the heads and loses the bases, the whole-frame pass loses both mirrors – the bases stay missing (nothing is drawn in), and the result carries the hint |
 
+The generated set has 14 cases (4 source cases × 3 frames, `front_crop3x4`
+and `front_crop3x4_flip`); all of them pass.
 `--cases`/`--crop-cases` choose other source cases (expected outcome: accept
 unless listed in `DEFAULT_CASES`). `side_right`: the window pass leaves out the
 hubcap of the blue car that is glued to the rear of the landscape photo, and
 the X-Trail's own bonnet edge in front of the snowy car behind – which that
 car's instance claims in the coarse tiles – is kept (it lies within 1.5 mask
 cells of the vehicle outline). Its bright chrome side-step tube against the
-snow is mostly missing in both frames (its lower half already in the landscape
-photo); neither BiRefNet nor the detector assigns it to the vehicle – a known
-limitation (see `processor/README.md`, Known limitations). The script is deterministic: the
+snow is mostly missing in both frames (about half of it already in the
+landscape photo): BiRefNet itself loses it – the window and whole-frame passes
+of these frames keep at most about a third of it, each a different stretch –
+and the detector's vehicle outline runs along the top of the tube, in the
+car's lowest quarter, so no check can see or recover it. Both frames are
+accepted without a warning – a known limitation (see `processor/README.md`,
+Known limitations). The script is deterministic: the
 same cached photos give byte-identical frames (checked by `sha256` in
 `portrait_set.json`).
 

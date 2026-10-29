@@ -17,8 +17,9 @@ missing or broken file of either is a `ModelUnavailableError`.
 (portrait or square) frames, where the car is only a thin band of the
 1024 x 1024 model input and BiRefNet merged a car behind it, a cone or snow into
 the outline – the ORIGINAL pixels of a window around the vehicle. When the
-window pass lost a vehicle part that the detector sees (a dark side mirror),
-`merge_parts` takes that part – and only that part – from the whole-frame pass.
+window pass lost a vehicle part that the detector sees (a dark side mirror) or a
+piece of one (the base of a mirror whose head it kept), `merge_parts` takes that
+part – and only that part, bounded by colour edges – from the whole-frame pass.
 """
 
 from __future__ import annotations
@@ -394,6 +395,24 @@ def segment_vehicle(
 PART_MIN_SHARE = 0.5
 #: The other pass's soft edge around a taken part (photo px).
 PART_FRINGE_PX = 4
+#: The claim's outline is about one mask cell coarse: the part may reach this far (× one cell)
+#: beyond it – the top rim of a merged mirror lay 2–5 px outside its claim and was faded out.
+PART_REACH_CELLS = 0.5
+#: Colour edge (CIE ΔE between pixels two apart) that bounds what is taken: the other pass's solid
+#: pixels in the claim's coarse band are taken only in regions between such edges that hold the
+#: part's interior (its core one mask cell in) or lie mostly (PART_REGION_SHARE) in its core, plus
+#: the edge band next to them up to PART_EDGE_CELLS × one mask cell (the part's anti-aliased rim, a
+#: lens, trim; 7 px at the 10.7-px cells of front_crop3x4, where the indicator lens needed 7–8 px)
+#: – along the vehicle of the window pass only PART_JOIN_PX (that band leads around what lies
+#: beyond the part). Background the other pass merged into the band – the white car behind, seen
+#: between a mirror and the A-pillar, a 10–15 px wedge – lies mostly outside the core and stays out.
+PART_EDGE_DE = 20.0
+PART_REGION_SHARE = 0.5
+PART_EDGE_CELLS = 2 / 3
+PART_JOIN_PX = 2
+#: Where the other pass continues solid beyond what is taken, the alpha is cut with an
+#: anti-aliasing ramp of this width (photo px) – along a colour edge, not faded over PART_FRINGE_PX.
+PART_CUT_PX = 1.5
 
 
 def _to_photo(region: np.ndarray, box: tuple[int, int, int, int], scale: float, shape: tuple[int, int]) -> np.ndarray:
@@ -414,45 +433,97 @@ def _to_photo(region: np.ndarray, box: tuple[int, int, int, int], scale: float, 
     return values >= 0.5
 
 
+def colour_edges(rgb: np.ndarray, threshold: float = PART_EDGE_DE) -> np.ndarray:
+    """Colour edges (bool): pixels where the colour (CIE Lab) differs by ``threshold`` ΔE between
+    the neighbours two apart (horizontally or vertically), grown by 1 px – a thin strip between
+    two edges (a mirror's light rim) is all edge band, and regions do not leak through 1-px gaps."""
+    lab = cv2.cvtColor(np.asarray(rgb, np.float32) / 255.0, cv2.COLOR_RGB2Lab)
+    dx = np.zeros(lab.shape[:2], np.float32)
+    dy = np.zeros(lab.shape[:2], np.float32)
+    dx[:, 1:-1] = np.linalg.norm(lab[:, 2:] - lab[:, :-2], axis=-1)
+    dy[1:-1] = np.linalg.norm(lab[2:] - lab[:-2], axis=-1)
+    edges = (np.maximum(dx, dy) >= threshold).astype(np.uint8)
+    return cv2.dilate(edges, np.ones((3, 3), np.uint8)) > 0
+
+
+def _disk(radius: int) -> np.ndarray:
+    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+
+
 def merge_parts(
-    coarse: np.ndarray, other: np.ndarray, parts: list[tuple[np.ndarray, np.ndarray]], scale: float
+    coarse: np.ndarray,
+    other: np.ndarray,
+    parts: list[tuple[np.ndarray, np.ndarray]],
+    scale: float,
+    *,
+    rgb: np.ndarray,
+    cell: float,
 ) -> tuple[np.ndarray, list[list[int]]]:
-    """``coarse`` with the alpha of ``other`` (another BiRefNet pass of the same photo) inside
-    the claimed region of each missing part (``parts``: (core, claim), bool at ``scale`` working
-    px per photo px, see ``mask.MaskInfo.part_regions``) – only the solid components of
-    ``other`` there that are attached to the vehicle of ``coarse``, plus their soft edge, and
-    only when they cover the part's core; nothing outside the claimed regions changes.
-    Returns the merged alpha and the photo-px boxes of the parts taken."""
+    """``coarse`` with the alpha of ``other`` (another BiRefNet pass of the same photo ``rgb``) for
+    each part the detector claims but ``coarse`` lacks (``parts``: (core, claim), bool at ``scale``
+    working px per photo px, see ``mask.MaskInfo.part_regions``; ``cell``: one mask cell of the
+    instance masks in photo px).
+
+    Only solid pixels of ``other`` are taken, only within the claim (grown by PART_REACH_CELLS –
+    its outline is that coarse), only where they belong to the part between colour edges (see
+    PART_EDGE_DE: background ``other`` merged into the claim's band stays out), only attached to
+    the vehicle of ``coarse`` – with ``other``'s own soft edge, cut with a short anti-aliasing ramp
+    where ``other`` continues beyond them – and only when they cover the part's core: nothing else
+    changes. Returns the merged alpha and the photo-px boxes of the parts taken."""
     height, width = coarse.shape
     merged = coarse.copy()
     taken: list[list[int]] = []
-    margin = PART_FRINGE_PX + 2
+    reach = max(1, int(round(PART_REACH_CELLS * cell)))
+    depth = max(1, int(round(cell)))
+    rim_px = max(3, int(round(PART_EDGE_CELLS * cell)))
+    margin = reach + PART_FRINGE_PX + 2
     for core, claim in parts:
         ys, xs = np.nonzero(claim)
         if len(xs) == 0:
             continue
         x0, y0 = int(xs.min() / scale), int(ys.min() / scale)
         x1, y1 = min(int(np.ceil((xs.max() + 1) / scale)), width), min(int(np.ceil((ys.max() + 1) / scale)), height)
-        # a crop with a margin for the soft edge
+        # a crop with a margin for the reach and the soft edge
         box = (max(x0 - margin, 0), max(y0 - margin, 0), min(x1 + margin, width), min(y1 + margin, height))
         cx0, cy0, cx1, cy1 = box
         shape = (cy1 - cy0, cx1 - cx0)
         claimed = _to_photo(claim, box, scale, shape)
         centre = _to_photo(core, box, scale, shape) & claimed
         current = merged[cy0:cy1, cx0:cx1] >= 0.5
-        solid = (other[cy0:cy1, cx0:cx1] >= 0.5) & claimed & ~current
+        whole = other[cy0:cy1, cx0:cx1]
+        solid = whole >= 0.5
+        candidate = solid & (cv2.dilate(claimed.astype(np.uint8), _disk(reach)) > 0) & ~current
+        # the part's interior: its core one mask cell in (the core's own outline is that coarse)
+        inner = cv2.erode(centre.astype(np.uint8), _disk(depth)) > 0
+        seeds = (inner if (inner & candidate).any() else centre) & candidate
+        # regions between colour edges (not through the vehicle of this pass) that hold the part's
+        # interior or lie mostly in its core – plus the edge band next to them (the part's rim)
+        edges = colour_edges(rgb[cy0:cy1, cx0:cx1])
+        smooth = ~edges & ~current
+        count, regions = cv2.connectedComponents(smooth.astype(np.uint8), connectivity=4)
+        sizes = np.bincount(regions.ravel(), minlength=count)
+        inside = np.bincount(regions.ravel(), weights=centre.ravel().astype(np.float64), minlength=count)
+        chosen = inside >= PART_REGION_SHARE * sizes
+        chosen[regions[seeds & smooth]] = True
+        chosen[0] = False  # the edge band and the vehicle
+        part = (chosen[regions] & candidate) | seeds
+        near = cv2.dilate(current.astype(np.uint8), _disk(PART_JOIN_PX)) > 0
+        for band, steps in ((candidate & edges & ~near, rim_px), (candidate & edges & near, PART_JOIN_PX)):
+            for _ in range(steps):
+                part |= (cv2.dilate(part.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0) & band
         vehicle = cv2.dilate(current.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
-        count, labels = cv2.connectedComponents(solid.astype(np.uint8), connectivity=8)
+        count, labels = cv2.connectedComponents(part.astype(np.uint8), connectivity=8)
         attached = [k for k in range(1, count) if (vehicle & (labels == k)).any()]
-        keep = np.isin(labels, attached) if attached else np.zeros_like(solid)
+        keep = np.isin(labels, attached) if attached else np.zeros_like(part)
         if not centre.any() or int((keep & centre).sum()) < PART_MIN_SHARE * int(centre.sum()):
             continue  # the other pass does not have the part either
-        # the part with its own soft edge; where the other pass continues beyond the claim
-        # (background it merged into the part) it fades out over PART_FRINGE_PX – no hard cut
+        # the part with the other pass's own soft edge; where that pass continues solid beyond it
+        # (background it merged into the part) a short anti-aliased cut
         beyond = cv2.distanceTransform((~keep).astype(np.uint8), cv2.DIST_L2, 3)
-        weight = np.clip(1.0 - beyond / PART_FRINGE_PX, 0.0, 1.0)
+        cut = np.clip(1.0 - (beyond - 0.5) / PART_CUT_PX, 0.0, 1.0)
+        weight = np.where(keep, 1.0, np.where(solid, cut, (beyond <= PART_FRINGE_PX).astype(np.float32)))
         local = merged[cy0:cy1, cx0:cx1]
-        np.maximum(local, other[cy0:cy1, cx0:cx1] * weight, out=local)
+        np.maximum(local, whole * weight, out=local)
         kys, kxs = np.nonzero(keep)
         taken.append([cx0 + int(kxs.min()), cy0 + int(kys.min()), cx0 + int(kxs.max()) + 1, cy0 + int(kys.max()) + 1])
     return merged, taken

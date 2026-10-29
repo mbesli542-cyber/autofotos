@@ -93,12 +93,13 @@ def test_a_part_the_window_pass_lost_is_taken_from_the_other_pass_inside_its_cla
     other[170:202, 440:480] = 1.0  # the whole-frame pass has the mirror …
     other[100:150, 200:260] = 1.0  # … and a merged background object elsewhere
     other[120:160, 455:470] = 1.0  # … and a blob inside the claim, not attached to the car
+    rgb = np.full((400, 600, 3), 90, np.uint8)  # one colour: no edge limits what is taken
     scale = 0.5  # working resolution of the claims (half size)
     claim = np.zeros((200, 300), bool)
     claim[55:101, 215:245] = True  # the mirror's claimed region (photo 430–490 × 110–202) …
     core = np.zeros_like(claim)
     core[86:100, 221:239] = True  # … and its core (photo 442–478 × 172–200)
-    merged, taken = merge_parts(coarse, other, [(core, claim)], scale)
+    merged, taken = merge_parts(coarse, other, [(core, claim)], scale, rgb=rgb, cell=8.0)
     assert len(taken) == 1
     x0, y0, x1, _ = taken[0]
     assert 438 <= x0 and x1 <= 482 and 168 <= y0
@@ -107,5 +108,54 @@ def test_a_part_the_window_pass_lost_is_taken_from_the_other_pass_inside_its_cla
     changed = merged != coarse
     assert not changed[:, :420].any() and not changed[:, 500:].any()
     # the other pass lacks the part as well: nothing is taken
-    merged, taken = merge_parts(coarse, coarse, [(core, claim)], scale)
+    merged, taken = merge_parts(coarse, coarse, [(core, claim)], scale, rgb=rgb, cell=8.0)
     assert taken == [] and np.array_equal(merged, coarse)
+
+
+def _mirror_at_the_pillar():
+    """A dark mirror (x 420–480, y 150–200) beside an A-pillar (x 492–510) on the body (y ≥ 200),
+    in front of a white car; the mirror's light top rim (y 147–150) lies outside its coarse claim.
+    The whole-frame pass has the mirror and its rim – and the white car seen between mirror and
+    pillar (a wedge, x 480–492), which continues into the background above it."""
+    rgb = np.full((400, 600, 3), 238, np.uint8)  # the white car behind
+    rgb[200:300, 100:520] = NAVY  # the body …
+    rgb[90:200, 492:510] = NAVY  # … and the A-pillar
+    rgb[150:200, 420:480] = (28, 28, 32)  # the mirror
+    rgb[147:150, 422:478] = (140, 142, 150)  # its top rim
+    coarse = np.zeros((400, 600), np.float32)
+    coarse[200:300, 100:520] = 1.0
+    coarse[90:200, 492:510] = 1.0  # the window pass: body and pillar, no mirror
+    other = coarse.copy()
+    other[147:200, 420:492] = 1.0  # the whole frame: mirror, rim and the white wedge …
+    other[120:147, 480:492] = 1.0  # … which continues up along the pillar
+    scale = 0.5
+    claim = np.zeros((200, 300), bool)
+    claim[75:100, 208:244] = True  # photo x 416–488, y 150–200: mirror and part of the wedge
+    core = np.zeros_like(claim)
+    core[78:99, 212:238] = True  # photo x 424–476, y 156–198
+    return rgb, coarse, other, [(core, claim)], scale
+
+
+def test_a_part_from_the_other_pass_stops_at_colour_edges_and_keeps_its_own_rim():
+    """Background the whole-frame pass merged into the claim's coarse band (the white car between
+    mirror and A-pillar) stays out; the mirror's own rim just outside its claim comes along."""
+    rgb, coarse, other, parts, scale = _mirror_at_the_pillar()
+    merged, taken = merge_parts(coarse, other, parts, scale, rgb=rgb, cell=10.0)
+    assert len(taken) == 1
+    assert merged[175, 450] == 1.0 and merged[198, 425] == 1.0  # the mirror
+    assert merged[148, 450] >= 0.9  # its top rim, 3 px outside the claim – not faded out
+    assert (merged[150:196, 484:492] == 0.0).all()  # the wedge of the white car …
+    assert (merged[120:147, 484:492] == 0.0).all() and (merged[120:147, 480:492] < 0.5).all()  # … where it continues
+    assert (merged[196:200, 486:492] == 0.0).all()  # along the body only the few px that join the mirror to it
+    assert merged[175, 482] < 1.0  # the cut next to the mirror is anti-aliased, not a white seam
+
+
+def test_without_a_colour_edge_the_other_pass_decides_the_parts_outline():
+    """A dark mirror in front of a dark car (no colour edge): what the whole-frame pass has inside
+    the claim is taken, as far as the claim reaches."""
+    rgb, coarse, other, parts, scale = _mirror_at_the_pillar()
+    rgb[100:200, 400:492] = (34, 34, 38)  # the car behind is dark as well
+    merged, taken = merge_parts(coarse, other, parts, scale, rgb=rgb, cell=10.0)
+    assert len(taken) == 1
+    assert merged[175, 450] == 1.0 and merged[175, 486] == 1.0  # mirror and the claim's band
+    assert (merged[120:140, 480:492] == 0.0).all()  # never beyond the claim's reach

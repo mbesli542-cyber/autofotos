@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { Spinner } from "@/components/ui/Spinner";
 import { getAppServices, getShotTemplate } from "@/lib/app-services";
-import { toUserMessage } from "@/lib/errors";
+import { AppError, toUserMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { needsResultCheck } from "@/lib/processing/processing-warnings";
@@ -24,6 +24,11 @@ type Question =
   | { kind: "delete"; photoId: string; error?: string }
   | { kind: "discard"; uploadId: string; error?: string };
 
+/** What a question is about: the photo to delete or the capture to discard. */
+function targetOf(question: Question): string {
+  return question.kind === "delete" ? `photo:${question.photoId}` : `upload:${question.uploadId}`;
+}
+
 const DISCARD_FAILED_MESSAGE = "Das Foto konnte nicht verworfen werden. Bitte versuchen Sie es erneut.";
 
 /**
@@ -32,8 +37,12 @@ const DISCARD_FAILED_MESSAGE = "Das Foto konnte nicht verworfen werden. Bitte ve
  * saved "Erneut speichern" and "Verwerfen". "Bearbeitet" shows the
  * processor's hints on the result (e.g. "bitte das Ergebnis prüfen").
  * `onDelete` rejects when the photo could not be deleted – the viewer says
- * why. Short viewports (phones in landscape) show the details and actions
- * next to the photo, so hints never squeeze it.
+ * why. A delete or discard on its way belongs to its photo or capture: only
+ * its own question shows it busy, and only that question ends with its
+ * answer. The actions come right below the version switch, before hints and
+ * details, so they never need scrolling – however many hints a small phone
+ * shows. Short viewports (phones in landscape) show details and actions next
+ * to the photo, so hints never squeeze it.
  */
 export function PhotoViewer({
   slots,
@@ -58,7 +67,8 @@ export function PhotoViewer({
   const [variant, setVariant] = useState<PhotoVariant>(defaultVariant);
   const [question, setQuestion] = useState<Question | null>(null);
   const [questionFor, setQuestionFor] = useState(selectedKey);
-  const [busy, setBusy] = useState(false);
+  /** Targets (targetOf) whose answer – a delete or discard – is on its way. */
+  const [answering, setAnswering] = useState<ReadonlySet<string>>(() => new Set());
   const [imageLoaded, setImageLoaded] = useState<string | null>(null);
 
   // A question belongs to the photo it was asked for: showing another photo
@@ -111,6 +121,8 @@ export function PhotoViewer({
   // Shown only while the shot still has the photo / capture it was asked for.
   const askingDelete = question?.kind === "delete" && canDelete && question.photoId === slot.photo?.id;
   const askingDiscard = question?.kind === "discard" && question.uploadId === failedUpload?.id;
+  /** The answer to the question shown is on its way (also when asked again meanwhile). */
+  const busy = question !== null && answering.has(targetOf(question));
   /** The processor's hints on the processed version shown. */
   const warnings = shownVariant === "processed" && processedUrl ? (slot.photo?.processingWarnings ?? []) : [];
 
@@ -124,37 +136,46 @@ export function PhotoViewer({
     if (event.key === "ArrowRight") go(next);
   }
 
-  /** Keeps the question (nothing changed) and shows why its answer failed – if it is still the one asked. */
-  function answerFailed(asked: Question, message: string) {
-    setQuestion((current) => (current === asked ? { ...asked, error: message } : current));
+  /**
+   * Answers a question with `action`. Busy, success and failure belong to the
+   * photo or capture it asked about: a question asked meanwhile for another
+   * one is neither shown busy nor ended by it, nor given its error. Success
+   * ends the question; on failure it stays (nothing changed) and says why.
+   */
+  async function answer(asked: Question, action: () => Promise<void>, failure: (error: unknown) => string) {
+    const target = targetOf(asked);
+    const isAsked = (current: Question | null): current is Question => current !== null && targetOf(current) === target;
+    setAnswering((current) => new Set(current).add(target));
+    try {
+      await action();
+      setQuestion((current) => (isAsked(current) ? null : current));
+    } catch (error) {
+      const message = failure(error);
+      setQuestion((current) => (isAsked(current) ? { ...current, error: message } : current));
+    } finally {
+      setAnswering((current) => {
+        const next = new Set(current);
+        next.delete(target);
+        return next;
+      });
+    }
   }
 
   async function handleDelete() {
-    if (!onDelete || !slot || question?.kind !== "delete" || !askingDelete) return;
-    const asked = question;
-    setBusy(true);
-    try {
-      await onDelete(slot);
-      setQuestion(null);
-    } catch (error) {
-      answerFailed(asked, toUserMessage(error));
-    } finally {
-      setBusy(false);
-    }
+    if (!onDelete || !slot || question?.kind !== "delete" || !askingDelete || busy) return;
+    const shown = slot;
+    await answer(question, () => onDelete(shown), (error) => toUserMessage(error));
   }
 
   async function handleDiscard() {
-    if (question?.kind !== "discard" || !askingDiscard) return;
-    const asked = question;
-    setBusy(true);
-    try {
-      await getAppServices().uploads.discard(asked.uploadId);
-      setQuestion(null);
-    } catch {
-      answerFailed(asked, DISCARD_FAILED_MESSAGE);
-    } finally {
-      setBusy(false);
-    }
+    if (question?.kind !== "discard" || !askingDiscard || busy) return;
+    const { uploadId } = question;
+    await answer(
+      question,
+      () => getAppServices().uploads.discard(uploadId),
+      // The queue's own reason (e.g. the capture is being saved right now); never a storage error.
+      (error) => (error instanceof AppError ? toUserMessage(error) : DISCARD_FAILED_MESSAGE),
+    );
   }
 
   function askDelete() {
@@ -264,28 +285,16 @@ export function PhotoViewer({
             )}
           </div>
 
-          {/* Short viewports: the actions right below the version switch, hints and details after them. */}
+          {/*
+            The actions (or the question) right below the version switch, hints and
+            details after them – in every layout: the actions never need scrolling,
+            however many hints a small phone shows.
+          */}
           <footer className="pb-safe min-h-0 overflow-y-auto border-t border-ae-border/70 bg-ae-bg px-4 pt-3 short:flex short:w-72 short:shrink-0 short:flex-col short:border-t-0 short:border-l">
             {showToggle && (
               <div className="mb-3 flex justify-center sm:hidden">
                 <PhotoVersionToggle value={shownVariant} onChange={setVariant} />
               </div>
-            )}
-            <ProcessingWarningList warnings={warnings} className="mx-auto mb-3 max-w-xl short:order-1" />
-            {slot.photo && !slot.pending && (
-              <p className="mb-3 text-center text-xs text-ae-subtle short:order-1">
-                Aufgenommen am {formatDateTime(slot.photo.takenAt)}
-                {slot.photo.width && slot.photo.height
-                  ? ` · ${slot.photo.width} × ${slot.photo.height} px`
-                  : ""}
-              </p>
-            )}
-            {slot.pending && (
-              <p className="mb-3 text-center text-xs text-ae-warning short:order-1">
-                {slot.pending.status === "failed"
-                  ? (slot.pending.error ?? "Foto konnte nicht gespeichert werden.")
-                  : "Foto wird gespeichert…"}
-              </p>
             )}
 
             {askingDelete ? (
@@ -379,6 +388,23 @@ export function PhotoViewer({
                   </Button>
                 )}
               </div>
+            )}
+
+            <ProcessingWarningList warnings={warnings} className="mx-auto mb-3 max-w-xl" />
+            {slot.photo && !slot.pending && (
+              <p className="mb-3 text-center text-xs text-ae-subtle">
+                Aufgenommen am {formatDateTime(slot.photo.takenAt)}
+                {slot.photo.width && slot.photo.height
+                  ? ` · ${slot.photo.width} × ${slot.photo.height} px`
+                  : ""}
+              </p>
+            )}
+            {slot.pending && (
+              <p className="mb-3 text-center text-xs text-ae-warning">
+                {slot.pending.status === "failed"
+                  ? (slot.pending.error ?? "Foto konnte nicht gespeichert werden.")
+                  : "Foto wird gespeichert…"}
+              </p>
             )}
           </footer>
         </div>

@@ -56,7 +56,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={api}>
       {children}
       <div
-        className="pointer-events-none fixed inset-x-0 top-0 z-[60] flex flex-col items-center gap-2 px-4 pt-[calc(env(safe-area-inset-top)+12px)]"
+        className="pointer-events-none fixed inset-x-0 top-0 z-[60] flex flex-col items-center gap-2 px-4 pt-[calc(env(safe-area-inset-top)+12px)] [[data-camera-open]_&]:top-1/2 [[data-camera-open]_&]:-translate-y-1/2 [[data-camera-open]_&]:pt-0"
         aria-live="polite"
         aria-atomic="false"
       >

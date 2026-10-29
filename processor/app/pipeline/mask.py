@@ -28,13 +28,17 @@ edges). Here:
    certain (the instance masks are coarse), so they are reported
    (``foreign_suspected``) and the job is rejected. Thin parts (antenna masts,
    mirror arms, wipers, roof rails, spoilers) are below the thickness limit.
-   The other direction as well: what the zoomed vehicle instance claims beyond
-   the BiRefNet mask – thick and large, in the upper part of the vehicle,
-   confirmed by a zoom tile centred on it – is a vehicle part the mask lost
-   (e.g. a dark side mirror in front of a dark car). It is reported
-   (``parts_missing``); the pipeline may take it from another segmentation pass,
-   otherwise the quality gate rejects the job – a listing image must never miss
-   a mirror.
+   The other direction as well, checked on the cut-out as it will be (after
+   step 4, so a see-through window that step 4 fills is no lost part): what the
+   zoomed vehicle instance claims beyond the mask – thick and large, in the
+   upper part of the vehicle, confirmed by a zoom tile centred on it – is a
+   vehicle part the mask lost (e.g. a dark side mirror in front of a dark car).
+   It is reported (``parts_missing``); the pipeline may take it from another
+   segmentation pass, otherwise the quality gate rejects the job – a listing
+   image must never miss a mirror. A smaller claim of the same kind is a partly
+   lost piece (the base of a mirror whose head is there, ``parts_partial``):
+   taken from another pass where one has it, otherwise a hint to check the
+   result.
 4. Fill enclosed holes in the UPPER part of the vehicle (windows/glass roofs
    that the model treated as see-through). Holes near the ground (the gap
    under the car between the wheels) are left open.
@@ -94,13 +98,19 @@ class MaskInfo:
     foreign_removed: list[list[int]] = field(default_factory=list)
     #: Foreign objects detected but NOT cut because the cut line was not certain.
     foreign_suspected: list[list[int]] = field(default_factory=list)
-    #: Vehicle parts the detector sees but the mask lacks (photo px boxes [x0, y0, x1, y1]).
+    #: Vehicle parts the detector sees but the mask lacks (photo px boxes [x0, y0, x1, y1]) – the
+    #: quality gate rejects the photo.
     parts_missing: list[list[int]] = field(default_factory=list)
-    #: Their (core, claim) regions (bool, semantic working resolution, ``semantic_scale`` working
-    #: px per photo px; core: the claim without the instance mask's coarse band) – where the
-    #: pipeline may take the part from another segmentation pass.
+    #: Smaller pieces of the vehicle the mask lacks (e.g. the base of a mirror whose head is there,
+    #: a clipped lens; PART_PARTIAL_*) – a hint to check the result, no rejection.
+    parts_partial: list[list[int]] = field(default_factory=list)
+    #: The (core, claim) regions of both (bool, semantic working resolution, ``semantic_scale``
+    #: working px per photo px; core: the claim without the instance mask's coarse band) – where
+    #: the pipeline may take the part from another segmentation pass.
     part_regions: list[tuple[np.ndarray, np.ndarray]] = field(default_factory=list, repr=False)
     semantic_scale: float = 1.0
+    #: One mask cell of the instance masks in photo px (how coarse a claim's outline is).
+    semantic_cell: float = 0.0
     #: The semantic check found the vehicle (None: no detector / no photo given).
     vehicle_detected: bool | None = None
     #: Semantic check details (metadata): vehicle instance, tiles, verified regions.
@@ -533,6 +543,18 @@ PART_MIN_AREA = 8.0e-4
 PART_ZONE = 0.75
 #: … and covered by the vehicle instance of a zoom tile centred on it (lost mirrors 0.95–0.99).
 PART_MIN_VEHICLE_COVER = 0.6
+#: Smaller claims (same zone, same zoom check) at least this thick and large (× vehicle width,
+#: × vehicle width²) are a PARTLY lost piece of the vehicle: the base of a mirror whose head the
+#: mask kept (front_crop3x4_flip: 1.6 %, 2.1e-4), the clipped indicator lens of old_hardlight
+#: (1.5 %, 2.4e-4) – the only two among the 80 evaluated cut-outs. Below this the opening of
+#: PART_OPEN_CELLS (about 1.3 % of the width) leaves nothing anyway. The pipeline takes them from
+#: the whole-frame pass after a window pass; what stays lost is a hint to check the result
+#: (``vehicle_part_uncertain``), no rejection: the photo is otherwise good (old_hardlight is a
+#: regression case to accept), at this size a coarse claim can also be background (a round-2
+#: probe found a mirror's shadow on the ground at 1.5 %, zoom cover 0.78), and nothing of the
+#: car is drawn in.
+PART_PARTIAL_MIN_THICKNESS = 0.012
+PART_PARTIAL_MIN_AREA = 1.5e-4
 #: At most this many missing-part candidates are verified (largest first).
 PART_MAX_VERIFY = 4
 
@@ -549,9 +571,11 @@ class SemanticFinding:
     check: dict
     foreign: bool
     region: np.ndarray | None = None  # bool, semantic working resolution
-    action: str = "kept"  # "removed" | "suspected" | "kept" | "missing"
+    action: str = "kept"  # "removed" | "suspected" | "kept" | "missing" | "partial"
     #: A vehicle part the mask lacks (evidence "missing_part", confirmed by the zoom tile).
     missing: bool = False
+    #: A smaller piece of the vehicle the mask lacks (PART_PARTIAL_*, confirmed by the zoom tile).
+    partial: bool = False
     #: The part as the vehicle instance claims it (bool, working resolution).
     claim: np.ndarray | None = None
 
@@ -565,6 +589,7 @@ class SemanticFinding:
             "verify": self.check,
             "foreign": self.foreign,
             "missing": self.missing,
+            "partial": self.partial,
             "action": self.action,
         }
 
@@ -582,11 +607,12 @@ def _region_box(region: np.ndarray, scale: float, shape: tuple[int, int]) -> lis
 
 def _missing_part_candidates(
     sem, work: np.ndarray, vehicle_w: int, vehicle_h: int, top: int
-) -> list[tuple[np.ndarray, np.ndarray, int]]:
-    """(region, claim, area) of what the zoomed vehicle instance claims beyond the mask
-    ``work`` (working resolution): the coarse band removed (PART_OPEN_CELLS), thick and large
-    enough, centred in the upper part of the vehicle (``top``/``vehicle_*``: photo px);
-    ``claim`` is the region grown back over the band it lost. Largest first."""
+) -> list[tuple[np.ndarray, np.ndarray, int, bool]]:
+    """(region, claim, area, whole part?) of what the zoomed vehicle instance claims beyond the
+    mask ``work`` (working resolution): the coarse band removed (PART_OPEN_CELLS), thick and
+    large enough for a part (PART_MIN_*) or a partly lost one (PART_PARTIAL_MIN_*), centred in
+    the upper part of the vehicle (``top``/``vehicle_*``: photo px); ``claim`` is the region
+    grown back over the band it lost. Largest first."""
     s = sem.scale
     claimed = sem.vehicle_px & ~work
     radius = max(1, int(round(PART_OPEN_CELLS * max(sem.cell, 1.0))))
@@ -601,10 +627,15 @@ def _missing_part_candidates(
         region = labels == label
         thick = 2.0 * float(dist[region].max()) / s
         centre = (float(centroids[label][1]) / s - top) / max(vehicle_h, 1)
-        if thick < PART_MIN_THICKNESS * vehicle_w or area < PART_MIN_AREA * vehicle_w**2 or centre > PART_ZONE:
+        if centre > PART_ZONE:
+            continue
+        whole = thick >= PART_MIN_THICKNESS * vehicle_w and area >= PART_MIN_AREA * vehicle_w**2
+        if not whole and (
+            thick < PART_PARTIAL_MIN_THICKNESS * vehicle_w or area < PART_PARTIAL_MIN_AREA * vehicle_w**2
+        ):
             continue
         claim = claimed & cv2.dilate(region.astype(np.uint8), _ellipse(radius + 1)).astype(bool)
-        found.append((region, claim, int(area)))
+        found.append((region, claim, int(area), whole))
     found.sort(key=lambda c: -c[2])
     return found
 
@@ -617,9 +648,9 @@ def semantic_findings(
     detections: list[Instance] | None = None,
     protrusions: Iterable[ForeignSpike] = (),
 ):
-    """Step 3 of the module doc: (semantic map, verified findings) for the vehicle mask
-    ``binary`` (bool, photo size). Candidates beyond SEMANTIC_MAX_VERIFY are listed but
-    not verified (kept)."""
+    """Step 3 of the module doc, foreign objects: (semantic map, verified findings) for the vehicle
+    mask ``binary`` (bool, photo size). Candidates beyond SEMANTIC_MAX_VERIFY are listed but not
+    verified (kept). Lost vehicle parts: ``missing_part_findings`` with the same map."""
     from .detection import vehicle_semantics, verify_region
 
     sem = vehicle_semantics(rgb, binary, detector, full=detections)
@@ -687,10 +718,26 @@ def semantic_findings(
         findings.append(
             SemanticFinding(_region_box(region, s, binary.shape), area, evidence, [], other, {"skipped": True}, False)
         )
-    # the other direction: vehicle parts the mask lost (a dark mirror in front of a dark car)
-    for region, claim, area in _missing_part_candidates(sem, work, vw, vh, int(ys.min()))[:PART_MAX_VERIFY]:
+    return sem, findings
+
+
+def missing_part_findings(binary: np.ndarray, rgb: np.ndarray, detector: VehicleDetector, sem) -> list[SemanticFinding]:
+    """The other direction of step 3: vehicle parts the mask ``binary`` (bool, photo size – the
+    cut-out after the hole fill of step 4, plus the separate foreign parts step 3 dropped) lost,
+    e.g. a dark mirror in front of a dark car, each verified in a zoom tile centred on it (``sem``:
+    ``semantic_findings``)."""
+    from .detection import verify_region
+
+    findings: list[SemanticFinding] = []
+    if sem.vehicle is None or sem.vehicle_px is None:
+        return findings
+    s, shape = sem.scale, sem.shape
+    work = cv2.resize(binary.astype(np.uint8) * 255, (shape[1], shape[0]), interpolation=cv2.INTER_AREA) >= 128
+    ys, xs = np.nonzero(binary)
+    vw, vh = int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)
+    for region, claim, area, whole in _missing_part_candidates(sem, work, vw, vh, int(ys.min()))[:PART_MAX_VERIFY]:
         check = verify_region(rgb, detector, sem, region, max(vw, vh))
-        missing = check.conclusive and check.vehicle_cover >= PART_MIN_VEHICLE_COVER
+        lost = check.conclusive and check.vehicle_cover >= PART_MIN_VEHICLE_COVER
         findings.append(
             SemanticFinding(
                 box=_region_box(region, s, binary.shape),
@@ -701,12 +748,13 @@ def semantic_findings(
                 check=check.as_dict(),
                 foreign=False,
                 region=region,
-                action="missing" if missing else "kept",
-                missing=missing,
+                action=("missing" if whole else "partial") if lost else "kept",
+                missing=lost and whole,
+                partial=lost and not whole,
                 claim=claim,
             )
         )
-    return sem, findings
+    return findings
 
 
 def _apply_semantic(
@@ -748,6 +796,35 @@ def _apply_semantic(
             finding.action = "suspected"
             info.foreign_suspected.append(finding.box)
     return removed
+
+
+def _fill_holes(keep_mask: np.ndarray, upper_fill_ratio: float, info: MaskInfo) -> np.ndarray:
+    """Step 4: enclosed holes (background components not touching the border) of window size in
+    the upper part of the vehicle – glass the model treated as see-through (uint8, photo size)."""
+    ys, xs = np.nonzero(keep_mask)
+    top, bottom = int(ys.min()), int(ys.max())
+    vehicle_area = int(keep_mask.sum())
+    inverse = (1 - keep_mask).astype(np.uint8)
+    hcount, hlabels, hstats, hcent = cv2.connectedComponentsWithStats(inverse, connectivity=4)
+    filled = np.zeros_like(keep_mask)
+    height, width = keep_mask.shape
+    limit_y = top + upper_fill_ratio * (bottom - top)
+    for label in range(1, hcount):
+        x, y, w, h, area = (int(v) for v in hstats[label])
+        if x == 0 or y == 0 or x + w >= width or y + h >= height:
+            continue  # connected to the outside → real background
+        if area > 0.35 * vehicle_area:
+            continue
+        if hcent[label][1] > limit_y:
+            continue  # near the ground: gap under the car, keep it open
+        if h < MIN_FILL_HOLE_HEIGHT * (bottom - top) or area < 0.25 * w * h:
+            # thin gaps (under roof rails, spoilers, roof boxes) show real
+            # background – only window-sized holes are glass the model missed
+            continue
+        filled[hlabels == label] = 1
+        info.holes_filled += 1
+        info.hole_area_filled += area
+    return filled
 
 
 def clean_mask(
@@ -844,8 +921,11 @@ def clean_mask(
         keep_mask[cut.region] = 0
         cuts.append(cut)
 
-    # Semantic check: what the detector does not see as part of THE vehicle.
+    # Semantic check: what the detector does not see as part of THE vehicle (on the mask as the
+    # model cut it – a filled window is no foreign object) …
     semantic_removed = None
+    sem = None
+    findings: list[SemanticFinding] = []
     if detector is not None and rgb is not None:
         sem, findings = semantic_findings(
             keep_mask.astype(bool), rgb, detector, detections=detections, protrusions=protrusions
@@ -853,40 +933,27 @@ def clean_mask(
         info.vehicle_detected = sem.vehicle is not None
         semantic_removed = _apply_semantic(keep_mask, labels, main, findings, sem.scale, info)
         info.semantic_scale = sem.scale
+
+    filled = _fill_holes(keep_mask, upper_fill_ratio, info)
+
+    # … and what of THE vehicle the cut-out lacks – after the hole fill: a see-through window
+    # or glass roof that step 4 fills is in the cut-out, not a lost part; nor is a separate
+    # foreign part just dropped (the coarse vehicle instance may claim it as well)
+    if sem is not None:
+        checked = (keep_mask | filled).astype(bool)
+        if semantic_removed is not None:
+            checked |= semantic_removed
+        findings += missing_part_findings(checked, rgb, detector, sem)
+        info.semantic_cell = sem.cell / sem.scale if sem.scale > 0 else 0.0
         for finding in findings:
-            if finding.missing and finding.region is not None and finding.claim is not None:
-                info.parts_missing.append(finding.box)
+            if (finding.missing or finding.partial) and finding.region is not None and finding.claim is not None:
+                (info.parts_missing if finding.missing else info.parts_partial).append(finding.box)
                 info.part_regions.append((finding.region, finding.claim))
         info.semantic = {
             "detector": getattr(detector, "name", type(detector).__name__),
             **sem.as_dict(),
             "findings": [f.as_dict() for f in findings],
         }
-
-    # Enclosed holes (background components not touching the border).
-    ys, xs = np.nonzero(keep_mask)
-    top, bottom = int(ys.min()), int(ys.max())
-    vehicle_area = int(keep_mask.sum())
-    inverse = (1 - keep_mask).astype(np.uint8)
-    hcount, hlabels, hstats, hcent = cv2.connectedComponentsWithStats(inverse, connectivity=4)
-    filled = np.zeros_like(keep_mask)
-    height, width = keep_mask.shape
-    limit_y = top + upper_fill_ratio * (bottom - top)
-    for label in range(1, hcount):
-        x, y, w, h, area = (int(v) for v in hstats[label])
-        if x == 0 or y == 0 or x + w >= width or y + h >= height:
-            continue  # connected to the outside → real background
-        if area > 0.35 * vehicle_area:
-            continue
-        if hcent[label][1] > limit_y:
-            continue  # near the ground: gap under the car, keep it open
-        if h < MIN_FILL_HOLE_HEIGHT * (bottom - top) or area < 0.25 * w * h:
-            # thin gaps (under roof rails, spoilers, roof boxes) show real
-            # background – only window-sized holes are glass the model missed
-            continue
-        filled[hlabels == label] = 1
-        info.holes_filled += 1
-        info.hole_area_filled += area
 
     gate = cv2.dilate(keep_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
     result = alpha * gate.astype(np.float32)
@@ -993,6 +1060,14 @@ def assess_mask(alpha: np.ndarray, bbox: BBox, info: MaskInfo) -> list[QualityWa
                 "vehicle_not_detected",
                 "Die Fahrzeugerkennung hat das Fahrzeug nicht sicher erkannt – fremde Objekte an der "
                 "Fahrzeugkontur wurden nicht geprüft. Bitte das Ergebnis prüfen.",
+            )
+        )
+    if info.parts_partial:
+        warnings.append(
+            QualityWarning(
+                "vehicle_part_uncertain",
+                "Ein kleiner Teil des Fahrzeugs (z. B. am Außenspiegel oder an einer Leuchte) hebt sich kaum "
+                "vom Hintergrund ab und fehlt im Ergebnis möglicherweise – bitte das Ergebnis prüfen.",
             )
         )
     return warnings

@@ -131,6 +131,7 @@
       "category": "lighting",
       "shotKey": "right_side",
       "expected": "accept",
+      "expectedWarnings": ["vehicle_part_uncertain"],
       "file": "old_hardlight.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8e/Mercedes_W123_parked_by_a_country_road_during_golden_hour_near_a_small_town_in_autumn_landscape.jpg/3840px-Mercedes_W123_parked_by_a_country_road_during_golden_hour_near_a_small_town_in_autumn_landscape.jpg",
       "landingUrl": "https://commons.wikimedia.org/wiki/File:Mercedes_W123_parked_by_a_country_road_during_golden_hour_near_a_small_town_in_autumn_landscape.jpg",
@@ -272,17 +273,31 @@
       "missingParts": "left side mirror, right in the photo (source x 2526-2634, y 1083-1209): claimed by the detector's vehicle instance (zoom-tile cover 0.99), missing from the BiRefNet mask",
       "requiredParts": [
         {
-          "part": "right side mirror (left in the photo)",
+          "part": "right side mirror head (left in the photo)",
           "point": [
             1215,
             1150
           ]
         },
         {
-          "part": "left side mirror (right in the photo)",
+          "part": "right side mirror base (left in the photo)",
+          "point": [
+            1205,
+            1195
+          ]
+        },
+        {
+          "part": "left side mirror head (right in the photo)",
           "point": [
             2585,
             1140
+          ]
+        },
+        {
+          "part": "left side mirror base (right in the photo)",
+          "point": [
+            2585,
+            1180
           ]
         }
       ]

@@ -139,6 +139,40 @@ export class IdbDatabase {
     await transactionToPromise(tx);
   }
 
+  /**
+   * Read-modify-write of one record in ONE readwrite transaction, so a write
+   * of another transaction can never land between the read and the write
+   * (and be overwritten with the older copy). `change` gets the stored record
+   * – it is not called when there is none – and returns the record to store;
+   * it must not throw. Resolves with the stored record (undefined: none) once
+   * the transaction committed.
+   */
+  async update<T>(storeName: string, key: IDBValidKey, change: (current: T) => T): Promise<T | undefined> {
+    const db = await this.open();
+    if (!db) {
+      const store = this.memoryStore(storeName);
+      const current = store.get(key) as T | undefined;
+      if (current === undefined) return undefined;
+      const next = change(current);
+      store.set(key, next);
+      return next;
+    }
+    const tx = db.transaction(storeName, "readwrite");
+    const store = tx.objectStore(storeName);
+    const committed = transactionToPromise(tx);
+    let next: T | undefined;
+    const request = store.get(key);
+    // Still inside the transaction: the write is queued before it can commit.
+    request.onsuccess = () => {
+      const current = request.result as T | undefined;
+      if (current === undefined) return;
+      next = change(current);
+      store.put(next);
+    };
+    await committed;
+    return next;
+  }
+
   async putMany<T>(storeName: string, values: readonly T[]): Promise<void> {
     const db = await this.open();
     if (!db) {

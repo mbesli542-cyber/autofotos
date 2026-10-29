@@ -430,4 +430,73 @@ describe("useProcessingRun", () => {
     expect(processPhoto).not.toHaveBeenCalled();
     expect(result.current.phase).toBe("idle");
   });
+
+  it("processes a retake saved while its shot still waits in the run – not the photo it replaced", async () => {
+    const vehicleId = "veh_retake_waiting";
+    const photos = ["front_left_45", "front", "front_right_45", "rear"].map((shotKey, index) =>
+      photo(`p_w_${shotKey}`, shotKey, index + 1, vehicleId),
+    );
+    let savedNow: VehiclePhotoWithUrls[] = photos;
+    saved.listPhotos.mockImplementation(async () => savedNow);
+    try {
+      const jobs = gate();
+      vi.mocked(processPhoto).mockImplementation(async () => {
+        await jobs.opened;
+        return DONE;
+      });
+      const { result } = renderHook(() => useProcessingRun(vehicleId));
+      let running: Promise<RunResult> | undefined;
+      await act(async () => {
+        running = result.current.start(photos, "autoexperten_standard", null);
+        await vi.waitFor(() => expect(processPhoto).toHaveBeenCalledTimes(3));
+      });
+      expect(result.current.items.at(-1)).toMatchObject({ photoId: "p_w_rear", status: "waiting" });
+
+      // "Hinten" is retaken (e.g. after leaving the screen) while it waits for a free place.
+      savedNow = [...photos.slice(0, 3), photo("p_w_rear_retake", "rear", 4, vehicleId)];
+      await act(async () => {
+        jobs.open();
+        await running;
+      });
+      expect(vi.mocked(processPhoto).mock.calls.map(([target]) => target.id)).toEqual([
+        "p_w_front_left_45",
+        "p_w_front",
+        "p_w_front_right_45",
+        "p_w_rear_retake",
+      ]);
+      expect(result.current.items.map(({ shotKey, photoId, status }) => [shotKey, photoId, status])).toEqual([
+        ["front_left_45", "p_w_front_left_45", "complete"],
+        ["front", "p_w_front", "complete"],
+        ["front_right_45", "p_w_front_right_45", "complete"],
+        ["rear", "p_w_rear_retake", "complete"],
+      ]);
+      expect(result.current.phase).toBe("done");
+    } finally {
+      saved.listPhotos.mockImplementation(async () => {
+        throw new Error("offline");
+      });
+    }
+  });
+
+  it("never processes a photo twice in one run – e.g. two photos of one shot on the list", async () => {
+    const vehicleId = "veh_twice";
+    const shown = photo("p_tw_rear_a", "rear", 7, vehicleId);
+    const other = photo("p_tw_rear_b", "rear", 7, vehicleId);
+    // Both still active (a damaged demo database): the shot's photo is the first one.
+    saved.listPhotos.mockImplementation(async () => [shown, other]);
+    try {
+      vi.mocked(processPhoto).mockResolvedValue(DONE);
+      const { result } = renderHook(() => useProcessingRun(vehicleId));
+      await act(async () => {
+        await result.current.start([shown, other], "autoexperten_standard", null);
+      });
+      expect(vi.mocked(processPhoto).mock.calls.map(([target]) => target.id)).toEqual(["p_tw_rear_a"]);
+      expect(result.current.items.map(({ photoId, status }) => [photoId, status])).toEqual([["p_tw_rear_a", "complete"]]);
+      expect(result.current.phase).toBe("done");
+    } finally {
+      saved.listPhotos.mockImplementation(async () => {
+        throw new Error("offline");
+      });
+    }
+  });
 });

@@ -335,6 +335,22 @@ describe("<CameraCapture /> when its route gets hidden", () => {
   });
 });
 
+describe("<CameraCapture /> toasts", () => {
+  it("moves toasts off the header while the camera is shown, and back when it is hidden", async () => {
+    const props = { initialShotKey: "front", returnTo: "fotos" } as const;
+    const view = render(camera(props));
+    expect(document.documentElement).toHaveAttribute("data-camera-open");
+    view.rerender(camera(props, "hidden"));
+    await wait(10);
+    expect(document.documentElement).not.toHaveAttribute("data-camera-open");
+    view.rerender(camera(props, "visible"));
+    await wait(10);
+    expect(document.documentElement).toHaveAttribute("data-camera-open");
+    view.unmount();
+    expect(document.documentElement).not.toHaveAttribute("data-camera-open");
+  });
+});
+
 describe("<CameraCapture /> picked files", () => {
   it("offers and accepts only the formats and sizes the storage takes", async () => {
     const view = render(camera());

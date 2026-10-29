@@ -32,7 +32,9 @@ everything else (traceback in result.json). A case passes when it is expected
 to be accepted and was, or was rejected with exactly the expected code. A case
 with ``requiredParts`` ([{"part": …, "point": [x, y]}], px of the decoded photo,
 e.g. both side mirrors) never passes when it is accepted without one of them
-(checked in ``debug/mask.png``; result.json ``requiredParts``/``missingParts``).
+(checked in ``debug/mask.png``; result.json ``requiredParts``/``missingParts``),
+nor one with ``expectedWarnings`` (warning codes, e.g. ``vehicle_part_uncertain``)
+when it is accepted without one of them (result.json ``missingWarnings``).
 
 Masks: the coarse segmentation is cached as 16-bit PNG in
 ``/opt/ae-regression/masks/`` (key = sha256 of the decoded RGB bytes + shape +
@@ -129,6 +131,8 @@ class Case:
     #: Vehicle parts an accepted result must contain: [{"part": name, "point": [x, y]}] in px of
     #: the decoded photo – checked in the final mask (debug/mask.png ≥ 0.5).
     required_parts: list = field(default_factory=list)
+    #: Warning codes an accepted result must carry (e.g. the hint that a piece of a mirror is lost).
+    expected_warnings: list = field(default_factory=list)
 
 
 def manifest_cases(manifest_path: Path, cache_dir: Path | None) -> list[Case]:
@@ -146,6 +150,7 @@ def manifest_cases(manifest_path: Path, cache_dir: Path | None) -> list[Case]:
                 sha256=entry.get("sha256"),
                 credit=credit,
                 required_parts=list(entry.get("requiredParts") or []),
+                expected_warnings=list(entry.get("expectedWarnings") or []),
             )
         )
     return cases
@@ -711,6 +716,13 @@ def run_case(case: Case, ctx: RunContext) -> dict:
         if not all(p["present"] for p in parts):
             # accepted without a part of the vehicle: never a pass, whatever was expected
             record["missingParts"] = [p["part"] for p in parts if not p["present"]]
+            passed = False
+    if status == "accepted" and case.expected_warnings:
+        codes = {w.get("code") for w in warnings}
+        absent = [code for code in case.expected_warnings if code not in codes]
+        if absent:
+            # accepted without the hint the employee needs: never a pass
+            record["missingWarnings"] = absent
             passed = False
     record.update(
         outcome=outcome,

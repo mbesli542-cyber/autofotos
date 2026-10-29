@@ -256,7 +256,9 @@ def check_foreign(report: GateReport, info: MaskInfo) -> None:
 
 def check_parts(report: GateReport, info: MaskInfo) -> None:
     """A vehicle part the detector sees (a mirror, verified in a zoom tile) is missing from the
-    cut-out – the car must stay complete and truthful; nothing is guessed or drawn in."""
+    cut-out – the car must stay complete and truthful; nothing is guessed or drawn in. A partly
+    lost piece (``parts_partial``, e.g. the base of a mirror whose head is there) does not fail the
+    check: the result gets the hint ``vehicle_part_uncertain`` (mask.assess_mask)."""
     reasons = ["vehicle_part_missing"] if info.parts_missing else []
     report.add(
         "parts",
@@ -264,6 +266,7 @@ def check_parts(report: GateReport, info: MaskInfo) -> None:
         message=VEHICLE_PART_MESSAGE if reasons else None,
         reasons=reasons,
         partsMissing=len(info.parts_missing),
+        partsPartial=len(info.parts_partial),
     )
 
 

@@ -19,6 +19,7 @@ import { VehicleInfoCard } from "@/components/vehicles/VehicleInfoCard";
 import { usePendingUploads } from "@/hooks/use-upload-queue";
 import { useVehicleDetail } from "@/hooks/use-vehicle-data";
 import { getAppServices, getShotTemplate } from "@/lib/app-services";
+import { cn } from "@/lib/cn";
 import { vehicleDisplayName } from "@/lib/format";
 import { buildPhotoSlots, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { getShotProgress } from "@/lib/shots/shot-progress";
@@ -108,12 +109,18 @@ export function VehicleDetailScreen({
       <PageContainer className="flex flex-col gap-5">
         {/* Hero */}
         <section className="overflow-hidden rounded-2xl border border-ae-border bg-ae-surface">
-          <div className="relative aspect-[16/9] bg-ae-surface-3 sm:aspect-[21/9]">
+          {/* A processed photo is a finished 4:3 listing image: shown whole, never cropped. */}
+          <div
+            className={cn(
+              "relative bg-ae-surface-3",
+              variant === "processed" ? "aspect-[4/3] sm:aspect-[16/9]" : "aspect-[16/9] sm:aspect-[21/9]",
+            )}
+          >
             {cover && coverUrl ? (
               <img
                 src={coverUrl}
                 alt={`${vehicleDisplayName(vehicle)} – ${cover.title}${variant === "processed" ? " (bearbeitet)" : ""}`}
-                className="size-full object-cover"
+                className={cn("size-full", variant === "processed" ? "object-contain" : "object-cover")}
               />
             ) : cover ? (
               // "Bearbeitet" never falls back to the original photo.

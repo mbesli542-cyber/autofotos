@@ -16,8 +16,10 @@ Single-photo testing:
 
 Every other endpoint requires "Authorization: Bearer <PROCESSOR_API_KEY>" when
 the key is set (checked by app.guard.RequestGuard before any body is read).
+Without a key the API is open: create_app refuses to start then when
+PROCESSOR_REQUIRE_API_KEY=true (set by the Docker image) or SUPABASE_* is set.
 
-Run: uvicorn app.main:app --host 0.0.0.0 --port 8000
+Run: uvicorn app.main:app --host 127.0.0.1 --port 8000   (0.0.0.0 only with PROCESSOR_API_KEY)
 """
 
 from __future__ import annotations
@@ -100,6 +102,16 @@ def create_app(
     warm_up: bool = True,
 ) -> FastAPI:
     settings = settings or Settings.from_env()
+    if settings.require_api_key and not settings.api_key:
+        # The Docker image sets PROCESSOR_REQUIRE_API_KEY=true: a published container must never
+        # accept jobs (≈ 7 GB RAM each) from anyone who can reach its port.
+        message = (
+            "PROCESSOR_API_KEY is not set and PROCESSOR_REQUIRE_API_KEY=true (the Docker image default) – "
+            "refusing to start an unauthenticated processor. Set PROCESSOR_API_KEY (the same value as the "
+            "app's IMAGE_PROCESSING_API_KEY); only for a local test without a key set PROCESSOR_REQUIRE_API_KEY=false."
+        )
+        log.error(message)
+        raise RuntimeError(message)
     if settings.supabase_configured and not settings.api_key:
         # The service role bypasses RLS – never expose it through an open API.
         raise RuntimeError("PROCESSOR_API_KEY is required when SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY are set")

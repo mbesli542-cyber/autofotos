@@ -14,6 +14,7 @@ describe("processor hints on a result", () => {
   it("knows every hint the processor reports (processor/app/pipeline: mask.py, pipeline.py)", () => {
     expect(getWarningKind("plate_mirrored")).toBe("retake");
     expect(getWarningKind("background_object_suspected")).toBe("retake");
+    expect(getWarningKind("vehicle_part_uncertain")).toBe("check");
     for (const code of [
       "background_object_removed",
       "vehicle_occluded",

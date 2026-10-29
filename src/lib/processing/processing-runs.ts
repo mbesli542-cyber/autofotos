@@ -9,7 +9,10 @@
  * skipped), at most CONCURRENCY photos at a time. Right before submitting,
  * `start` and `retry` read the vehicle's current photos again: the list on
  * screen can be older (a retake saved a moment ago, its reload still on its
- * way) and would make the run process the photo it replaced. The adapter
+ * way) and would make the run process the photo it replaced. Each shot is
+ * read again right before its photo is submitted, too: a retake saved while
+ * the shot waited in the run (e.g. taken after leaving the screen) is
+ * processed instead of the photo it replaced. The adapter
  * follows the data backend (Supabase contract or demo upload); only real
  * results are saved, with the processor's hints (`warnings`), failures save
  * nothing. Shots the processor rejected (e.g. quality gate) stay failed
@@ -319,7 +322,10 @@ export class ProcessingRuns {
     let accessDenied: string | null = null;
     const queue = [...photos];
     const worker = async () => {
-      for (let photo = queue.shift(); photo && !controller.signal.aborted; photo = queue.shift()) {
+      for (let queued = queue.shift(); queued && !controller.signal.aborted; queued = queue.shift()) {
+        const photo = await this.photoToSubmit(run, generation, queued);
+        // Reset, signed out or the access code refused meanwhile: nothing more is sent.
+        if (!photo || controller.signal.aborted) continue;
         try {
           await this.processOne(run, generation, photo, preset, accessCode, controller.signal);
         } catch (error) {
@@ -330,6 +336,38 @@ export class ProcessingRuns {
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
     return accessDenied;
+  }
+
+  /**
+   * The photo to submit for `queued`, read right before it is submitted: the
+   * shot's photo as saved now. A retake saved while the shot waited in the
+   * queue replaces the photo it archived, and the shot's row follows it.
+   * null: that photo already has a row in this run (processed or on its way)
+   * – it is not processed twice, the queued row is dropped. The queued photo
+   * itself when the photos cannot be read or the shot has none right now
+   * (e.g. its retake is just being saved) – the processor's answer tells.
+   */
+  private async photoToSubmit(
+    run: VehicleRun,
+    generation: number,
+    queued: VehiclePhotoWithUrls,
+  ): Promise<VehiclePhotoWithUrls | null> {
+    let photo: VehiclePhotoWithUrls | undefined;
+    try {
+      const { backend } = getAppServices();
+      const current = (await backend.data.listPhotos(run.vehicleId)).find((entry) => entry.shotKey === queued.shotKey);
+      if (current && current.id !== queued.id) [photo] = await backend.data.resolvePhotoUrls([current]);
+    } catch {
+      // Not readable right now: the queued photo.
+    }
+    // Unchanged – or the run was reset meanwhile (then nothing is submitted).
+    if (!photo || run.generation !== generation) return queued;
+    if (run.snapshot.items.some((item) => item.photoId === photo.id)) {
+      this.set(run, { ...run.snapshot, items: run.snapshot.items.filter((item) => item.photoId !== queued.id) });
+      return null;
+    }
+    this.updateItem(run, generation, queued.id, { photoId: photo.id, title: photo.title });
+    return photo;
   }
 
   /** Processes one photo and records its outcome; throws only AccessCodeRequiredError. */
