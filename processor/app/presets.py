@@ -33,6 +33,8 @@ from .config import Settings
 from .showroom.branding import (
     FONT_DIR,
     FONT_FILES,
+    ICON_GAP,
+    ICON_SCALE,
     BrandingAssetError,
     BrandingConfig,
     BrandingLayout,
@@ -40,6 +42,7 @@ from .showroom.branding import (
     load_official_logo,
     logo_stamp,
 )
+from .showroom.icons import ICON_NAMES
 from .showroom.plates import Plate, PlateSet, PlateSetError, load_plate_set
 from .showroom.wall_branding import apply_wall_branding
 
@@ -68,6 +71,12 @@ class Placement:
     min_margin: float = 0.03
     #: Warn when the limits shrink the vehicle below this fraction of the target width.
     min_target_fraction: float = 0.9
+    #: × the plate's target width (vehicle.targetWidthRatio); 1 = as the plate says.
+    width_scale: float = 1.0
+    #: Metres the car stands further back in the room than the plate's proxy car (along the
+    #: camera's viewing ray: perspective-consistent smaller, higher, shadow/reflection follow;
+    #: limited per plate so that ~0.5 m of floor stays to the wall). 0 = the plate's spot.
+    depth_offset_m: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -181,6 +190,56 @@ class QualityConfig:
 
 
 @dataclass(frozen=True)
+class DetailBackdropConfig:
+    """EXPERIMENTAL (off by default): detail close-ups get a defocused crop of a showroom plate
+    behind the ORIGINAL car part (app/pipeline/detail_backdrop.py). Off = detail shots stay the
+    unchanged original, as before. A photo whose part mask is unclear stays the original with a
+    hint (gate thresholds below) – nothing is drawn in."""
+
+    enabled: bool = False
+    #: Shots that get the backdrop (DETAIL_BACKDROP_SHOTS; "extra" = every extra_NN photo).
+    shots: tuple[str, ...] = ("wheel_detail", "special_detail")
+    #: The plate (exterior shot key) the crop is taken from.
+    plate: str = "front"
+    #: Crop height as a fraction of the plate height (smaller = more zoom into the room).
+    crop_height: float = 0.55
+    #: Crop centre as a fraction of the plate width, for photos whose background lies right of
+    #: the part (slat panel, LED and plant of the room on that side); mirrored (1 - centerX) else.
+    center_x: float = 0.7
+    #: Where the plate's floor/wall line lands, as a fraction of the output height (from the top).
+    horizon: float = 0.45
+    #: Depth of field: Gaussian sigma of the wall as a fraction of the output long edge …
+    blur: float = 0.006
+    #: … and of the floor where the part meets it and below (× blur; that floor is in focus).
+    floor_blur: float = 0.2
+    #: 0..1: the crop's mean colour/brightness moves this far towards the photo's own background.
+    light_match: float = 0.5
+    #: × the sensor noise measured in the photo's background, added to the clean render (0 = none).
+    grain: float = 1.0
+    #: 0..1: the darkening the photo's own floor shows next to the part (contact shadow) is carried
+    #: over onto the plate floor (measured from the photo, never drawn).
+    contact_shadow: float = 1.0
+    #: Gate: at least this share of the photo must be background (else nothing to replace).
+    min_background: float = 0.08
+    #: Gate: the detector's vehicle must agree with the part mask at least this much (IoU).
+    min_vehicle_iou: float = 0.85
+    #: Gate: detector-vehicle pixels the part mask leaves open to the background (glass edge,
+    #: lost piece), as a share of the photo.
+    max_undecided: float = 0.0005
+    #: Gate: soft mask pixels per outline pixel, as a share of the photo's long edge.
+    max_edge_softness: float = 0.004
+    #: Gate: another detected object may lie at most this share of its area next to the part.
+    max_foreign_touch: float = 0.02
+    #: Gate: the plate's floor line may move at most this far (fraction of the height) above
+    #: ``horizon`` to stay above the part's floor contact (more = a steep top-down view).
+    max_horizon_drop: float = 0.1
+    #: Gate: a part standing over open floor needs at least this measured contact darkening …
+    min_contact_shadow: float = 0.15
+    #: … and at most this share of the contact band darker than the plate floor can carry.
+    max_shadow_clipped: float = 0.2
+
+
+@dataclass(frozen=True)
 class Preset:
     id: str
     name: str
@@ -194,6 +253,7 @@ class Preset:
     reflection: ReflectionConfig = field(default_factory=ReflectionConfig)
     adjustments: VehicleAdjustments = field(default_factory=VehicleAdjustments)
     quality: QualityConfig = field(default_factory=QualityConfig)
+    detail_backdrop: DetailBackdropConfig = field(default_factory=DetailBackdropConfig)
 
     def placement_for(self, shot_key: str | None) -> Placement:
         if shot_key and shot_key in self.shot_placement:
@@ -219,6 +279,11 @@ EXTERIOR_SHOTS = frozenset(
     }
 )
 
+#: Detail shots that MAY get the experimental showroom backdrop (DetailBackdropConfig.shots;
+#: "extra" stands for every extra_NN photo). Interior shots never do (cockpit, seats).
+DETAIL_BACKDROP_SHOTS = frozenset({"wheel_detail", "special_detail", "extra"})
+EXTRA_SHOT_PREFIX = "extra_"
+
 
 def _camel_to_snake(name: str) -> str:
     out = []
@@ -235,7 +300,7 @@ def _camel_to_snake(name: str) -> str:
 _FRACTIONS = {
     "max_height_ratio", "min_margin", "min_target_fraction",
     "top", "center_x", "max_width", "max_height", "cap_height", "opacity", "clearance", "light_match",
-    "shadow_opacity", "shadow_offset", "shadow_blur",
+    "shadow_opacity", "shadow_offset", "shadow_blur", "rule_length", "rule_gap", "rule_thickness",
     "contact_opacity", "crease_opacity", "underbody_opacity", "edge_opacity", "ambient_opacity",
     "min_floor_light",
     "min_vehicle_width_ratio", "max_uncertain_fraction", "min_coverage", "max_coverage",
@@ -245,6 +310,7 @@ _HEX_COLOUR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _TOP_LEVEL_KEYS = {
     "id", "name", "description", "background", "branding", "output",
     "placement", "shotPlacement", "shadow", "reflection", "vehicleAdjustments", "quality",
+    "detailBackdrop",
 }  # fmt: skip
 _BACKGROUND_KEYS = {"plates", "notes"}
 
@@ -277,6 +343,10 @@ def _check_value(owner: str, key: str, name: str, value, default):
             raise PresetConfigError(f"{where} must be a colour like #403F3F")
         if name == "weight" and value not in ("semibold", "medium"):
             raise PresetConfigError(f"{where} must be 'semibold' or 'medium'")
+        if name == "align" and value not in ("center", "left"):
+            raise PresetConfigError(f"{where} must be 'center' or 'left'")
+        if name == "icon" and value not in ("", *sorted(ICON_NAMES)):
+            raise PresetConfigError(f"{where} must be '' (none) or one of: {', '.join(sorted(ICON_NAMES))}")
     elif isinstance(default, tuple):
         if not isinstance(value, (list, tuple)) or len(value) != len(default):
             raise PresetConfigError(f"{where} must be a list of {len(default)} numbers")
@@ -330,6 +400,10 @@ OUTPUT_LONG_EDGE_RANGE = (320, 8000)
 OUTPUT_ASPECT_RANGE = (0.5, 3.0)
 #: Free margin per side (fraction of the frame) – more leaves no sensible room for the vehicle.
 MAX_MIN_MARGIN = 0.2
+#: placement.widthScale: smaller is a toy car on the plate's spot, larger crowds the room.
+WIDTH_SCALE_RANGE = (0.7, 1.2)
+#: placement.depthOffsetM: the shipped room has at most ~1.6 m of floor behind the proxy car.
+MAX_DEPTH_OFFSET_M = 2.0
 #: Branding sizes (fractions of the brand wall): larger values only blow up the
 #: rendering canvases (a mount shadow blurred over the whole wall needs gigabytes).
 MAX_MOUNT_SHADOW = 0.02
@@ -345,6 +419,10 @@ MAX_TEXT_CHARS = 60
 MAX_TEXT_WIDTH = 2.5
 #: Cap height of the bundled Inter font in em (used to turn capHeight into an em scale).
 _CAP_HEIGHT_EM = 0.73
+#: Side lines of a branding text: length / gap (fractions of the wall width), thickness (of its height).
+MAX_RULE_LENGTH = 0.4
+MAX_RULE_GAP = 0.1
+MAX_RULE_THICKNESS = 0.01
 #: The official logo must stay clearly visible (size: fraction of the brand wall).
 MIN_LOGO_SIZE = 0.02
 MIN_LOGO_OPACITY = 0.5
@@ -389,6 +467,14 @@ def _check_branding(branding: BrandingConfig) -> None:
         raise PresetConfigError(f"branding.mount shadowOffset and shadowBlur must be 0..{MAX_MOUNT_SHADOW}")
     for name in ("city", "website", "phone"):
         text = getattr(branding, name)
+        rules = (text.rule_length, text.rule_gap, text.rule_thickness)
+        if any(v > limit for v, limit in zip(rules, (MAX_RULE_LENGTH, MAX_RULE_GAP, MAX_RULE_THICKNESS))):
+            raise PresetConfigError(
+                f"branding.{name}: ruleLength must be 0..{MAX_RULE_LENGTH}, ruleGap 0..{MAX_RULE_GAP} (fractions of "
+                f"the wall width) and ruleThickness 0..{MAX_RULE_THICKNESS} (fraction of the wall height)"
+            )
+        if text.rule_length > 0 and text.rule_thickness <= 0:
+            raise PresetConfigError(f"branding.{name}: side lines (ruleLength > 0) need a ruleThickness > 0")
         if text.cap_height > MAX_CAP_HEIGHT or text.tracking > MAX_TRACKING_EM:
             raise PresetConfigError(
                 f"branding.{name}: capHeight must be 0..{MAX_CAP_HEIGHT} and tracking 0..{MAX_TRACKING_EM} em"
@@ -428,7 +514,10 @@ def _nominal_text_width(text: TextConfig) -> float:
         return 0.0
     font = _branding_font(text.weight)
     advance_em = font.getlength(line) / 1000 if font is not None else float(chars)
-    return text.cap_height / _CAP_HEIGHT_EM * (advance_em + max(chars - 1, 0) * text.tracking)
+    width = text.cap_height / _CAP_HEIGHT_EM * (advance_em + max(chars - 1, 0) * text.tracking)
+    if text.icon:
+        width += (ICON_SCALE + ICON_GAP) * text.cap_height
+    return width
 
 
 def _parse_quality(data) -> QualityConfig:
@@ -462,6 +551,63 @@ def _parse_shadow(data) -> ShadowConfig:
     if shadow.min_floor_light < 0.02:
         raise PresetConfigError("shadow.minFloorLight must be at least 0.02 (never pure black)")
     return shadow
+
+
+#: detailBackdrop ranges: (min, max) per field (fractions unless noted).
+_DETAIL_RANGES = {
+    "crop_height": (0.25, 1.0),
+    "horizon": (0.05, 0.95),
+    "blur": (0.0, 0.03),
+    "floor_blur": (0.0, 1.0),
+    "grain": (0.0, 2.0),
+    "contact_shadow": (0.0, 1.0),
+    "min_background": (0.02, 0.9),
+    "min_vehicle_iou": (0.5, 1.0),
+    "max_undecided": (0.0, 0.1),
+    "max_edge_softness": (0.0, 0.05),
+    "max_foreign_touch": (0.0, 0.5),
+    "max_horizon_drop": (0.0, 0.9),
+    "min_contact_shadow": (0.0, 0.9),
+    "max_shadow_clipped": (0.0, 1.0),
+}
+
+
+def _parse_detail_backdrop(data) -> DetailBackdropConfig:
+    if data is None:
+        return DetailBackdropConfig()
+    if not isinstance(data, dict):
+        raise PresetConfigError("detailBackdrop must be an object")
+    data = dict(data)
+    shots = data.pop("shots", None)
+    config = _build(DetailBackdropConfig, data, "detailBackdrop")
+    if shots is not None:
+        if (
+            not isinstance(shots, list)
+            or not all(isinstance(s, str) for s in shots)
+            or not set(shots) <= DETAIL_BACKDROP_SHOTS
+            or len(set(shots)) != len(shots)
+        ):
+            raise PresetConfigError(
+                f"detailBackdrop.shots must be a list of distinct shot keys from: {', '.join(sorted(DETAIL_BACKDROP_SHOTS))}"
+            )
+        config = replace(config, shots=tuple(shots))
+    if config.plate not in EXTERIOR_SHOTS:
+        raise PresetConfigError(f"detailBackdrop.plate must be one of: {', '.join(sorted(EXTERIOR_SHOTS))}")
+    for name, (low, high) in _DETAIL_RANGES.items():
+        value = getattr(config, name)
+        if not low <= value <= high:
+            camel = name.split("_")[0] + "".join(part.title() for part in name.split("_")[1:])
+            raise PresetConfigError(f"detailBackdrop.{camel} must be {low}..{high}, got {value}")
+    return config
+
+
+def detail_backdrop_applies(config: DetailBackdropConfig, shot_key: str | None) -> bool:
+    """The shot gets the experimental detail backdrop (enabled and listed)."""
+    if not config.enabled or not shot_key:
+        return False
+    if shot_key.startswith(EXTRA_SHOT_PREFIX):
+        return "extra" in config.shots
+    return shot_key in config.shots
 
 
 def _parse_reflection(data) -> ReflectionConfig:
@@ -499,6 +645,7 @@ def parse_preset(data: dict) -> Preset:
 
     for section in (
         "branding", "output", "placement", "shotPlacement", "shadow", "reflection", "vehicleAdjustments", "quality",
+        "detailBackdrop",
     ):  # fmt: skip
         if section in data and not isinstance(data[section], dict):
             raise PresetConfigError(f"{section} must be an object")
@@ -516,6 +663,12 @@ def parse_preset(data: dict) -> Preset:
     for name, placement in [("placement", base_placement), *((f"shotPlacement.{k}", v) for k, v in shots.items())]:
         if placement.max_height_ratio < 0.2:
             raise PresetConfigError(f"{name}.maxHeightRatio ({placement.max_height_ratio}) leaves no room for the vehicle")
+        if not WIDTH_SCALE_RANGE[0] <= placement.width_scale <= WIDTH_SCALE_RANGE[1]:
+            raise PresetConfigError(
+                f"{name}.widthScale must be {WIDTH_SCALE_RANGE[0]}..{WIDTH_SCALE_RANGE[1]} (× the plate's target width)"
+            )
+        if placement.depth_offset_m > MAX_DEPTH_OFFSET_M:
+            raise PresetConfigError(f"{name}.depthOffsetM must be 0..{MAX_DEPTH_OFFSET_M} (metres further back)")
         if placement.min_margin > MAX_MIN_MARGIN:
             raise PresetConfigError(
                 f"{name}.minMargin ({placement.min_margin}) must be 0..{MAX_MIN_MARGIN} (fraction per side) "
@@ -544,6 +697,7 @@ def parse_preset(data: dict) -> Preset:
         reflection=_parse_reflection(data.get("reflection")),
         adjustments=_build(VehicleAdjustments, data.get("vehicleAdjustments"), "vehicleAdjustments"),
         quality=_parse_quality(data.get("quality")),
+        detail_backdrop=_parse_detail_backdrop(data.get("detailBackdrop")),
     )
 
 

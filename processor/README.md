@@ -42,6 +42,34 @@ re-encoded (orientation, sRGB, long edge scaled down to at most
 `output.longEdgeMax` = 2400 px, never up) because a showroom background makes
 no sense there.
 
+**EXPERIMENTAL – detail backdrop (off by default).** Preset section
+`detailBackdrop` (`enabled: false`; `shots` ⊆ `wheel_detail`,
+`special_detail`, `extra` = every `extra_NN`; never interior shots) puts the
+ORIGINAL car part of a close-up in front of a defocused crop of ONE plate
+(`app/pipeline/detail_backdrop.py`): BiRefNet alpha → `refine_edges` →
+enclosed holes (see-through glass) filled = original pixels → gate against the
+RF-DETR vehicle (semantic check only) → plate crop (`plate`, `cropHeight`,
+`centerX` – mirrored to the side where the photo shows background –, floor
+line at `horizon` but always above where the part meets the floor), Gaussian
+depth of field (`blur` on the wall, `floorBlur` × it at the part's floor
+contact), mean colour moved towards the photo's background (`lightMatch`,
+±1 EV, ±12 % per channel), the photo's measured sensor noise (`grain`), the
+photo's OWN floor darkening next to the part carried over (`contactShadow`,
+measured against the unshadowed floor of the same rows, never drawn). Opaque
+car pixels away from the outline band stay bit-identical. Gate on the mask
+(`minBackground`, `minVehicleIou`, `maxUndecided`, `maxEdgeSoftness`,
+`maxForeignTouch`): merged background objects, an object touching the part,
+glass open to the photo border (also semi-transparent glass alpha: it would
+be blended with the plate), soft outline, nothing to replace. Gate on the
+scene (`maxHorizonDrop`, `minContactShadow`, `maxShadowClipped`): a steep
+top-down view the plate's frontal floor cannot show, a part standing over
+open floor without a measurable contact shadow (it would float) or with one
+darker than the plate floor can carry. Every rejection leaves the original
+with the hint `detail_backdrop_skipped` (German text) – nothing is drawn in.
+Not evaluated on enough real close-ups to be switched on. Metadata:
+`shotKind` `detail_backdrop` / `detail_passthrough`, `detailBackdrop` (gate,
+crop, light, timings). Tests: `tests/test_detail_backdrop.py`.
+
 ### Segmentation
 
 `VehicleSegmenter` is a small protocol (`segment(rgb) -> float32 alpha`,
@@ -230,7 +258,19 @@ logo `maxWidth`/`maxHeight` ≥ 0.02 and `opacity` ≥ 0.5, mount
 ≤ 2 em; city/website/phone are one line (no control characters or line
 separators) of at most 60 characters whose width – measured with the bundled
 Inter font, each glyph's real advance – is at most 2.5 brand-wall heights
-(the plates' wall is ≈ 1.6 heights wide); `quality.borderPx` ≤ 50. The
+(the plates' wall is ≈ 1.6 heights wide); `quality.borderPx` ≤ 50;
+`placement.widthScale` 0.7–1.2 (× the plate's target width) and
+`placement.depthOffsetM` 0–2 m (also per shot); text `align` `center`/`left`
+(left: `centerX` is the left edge), `icon` `""`/`globe`/`phone` (Lucide line
+icons, ISC, `app/showroom/icons.py`), side lines `ruleLength` ≤ 0.4 and
+`ruleGap` ≤ 0.1 (fractions of the wall width), `ruleThickness` ≤ 0.01 (> 0
+when there are lines). Look variants (reference branding, glossier floor,
+car further back): `public/presets/variants/` (README there). Both
+placement fields are maxima fitted per photo (`app/pipeline/room_depth.py`,
+metadata `placement.roomFit`): the depth offset, then the width scale, is
+reduced until the floor rule binds no harder than on the plate's spot and the
+car's fitted footprint keeps 0.5 m to the wall (or no less than on the
+plate's spot); at 0 / 1.0 nothing is searched (the shipped look). The
 code clamps every vehicle adjustment to `HARD_LIMITS` in
 `app/pipeline/light.py`, so the JSON cannot make the vehicle correction
 aggressive.

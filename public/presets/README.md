@@ -7,6 +7,7 @@ Assets of the AutoExperten showroom processing (used by the processor in
 | --- | --- |
 | `autoexperten-standard.json` | Preset "AutoExperten Standard": plate set, **branding layout** (wall space), output size (2400 × 1800), placement limits, shadow, reflection, adjustment limits, quality gate. Validated strictly by the processor (`processor/app/presets.py`, ranges in `processor/README.md` → Presets and assets): an invalid value is a configuration error (`presetError` in `/health`), never replaced by a default. |
 | `autoexperten-standard/` | The **showroom plates**: ONE 3D showroom rendered from eight shot-specific cameras (`<shot>.jpg`, `<shot>-shadow.png`, `<shot>-reflection.png`, `plates.json`). |
+| `variants/` | Look variants for the dealer to choose (reference branding with big logo, lines and icons; glossier floor; car further back in the room) – complete presets, not active. See `variants/README.md`. |
 | `autoexperten-standard-reference.jpg` | Approved showroom design supplied by AutoExperten (1448 × 1086) – the model for the 3D room. Its lettering is generated, **not** the official logo, so it is never used as a background. |
 
 ## How a listing photo is built

@@ -371,11 +371,19 @@ export class UploadQueue {
           }
           await this.processor(record, prepared);
           const done = this.items.find((item) => item.id === record.id);
-          await this.remove(record.id);
+          // Listeners first – while the capture is still in the queue – so no screen
+          // shows the shot without it in between (e.g. the replaced photo's check).
           if (done) {
-            await this.dropOlderCaptures(record);
-            for (const listener of this.uploadedListeners) listener(done);
+            for (const listener of this.uploadedListeners) {
+              try {
+                listener(done);
+              } catch {
+                // A listener's failure must not mark the saved capture as failed.
+              }
+            }
           }
+          await this.remove(record.id);
+          if (done) await this.dropOlderCaptures(record);
         } catch (error) {
           // Removed meanwhile (saved, or the queue was cleared): nothing to keep.
           if (!this.records.has(record.id)) continue;

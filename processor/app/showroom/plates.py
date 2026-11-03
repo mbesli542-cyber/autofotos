@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -147,6 +147,9 @@ class Plate:
     #: Measured floor reflectance: ((v, k), ...) – v normalised image row, k = reflection /
     #: mirrored wall radiance (both linear). Set together with `reflection`.
     reflectance: tuple[tuple[float, float], ...] | None = None
+    #: Floor metres (x, y) the proxy car was moved from where the plate was rendered
+    #: (:func:`move_proxy_back`); the rendered proxy shadow is sampled that much closer.
+    proxy_shift: tuple[float, float] = (0.0, 0.0)
 
     def reflectance_at(self, v) -> np.ndarray:
         """Floor reflectance at normalised image rows `v` (constant beyond the samples)."""
@@ -491,6 +494,94 @@ def parse_plate(key: str, data, directory: Path) -> Plate:
     )
     _check_geometry(where, plate)
     return plate
+
+
+#: The moved proxy footprint keeps at least this much floor (m) to the wall.
+WALL_CLEARANCE_M = 0.5
+
+
+def move_proxy_back(plate: Plate, offset_m: float) -> tuple[Plate, float]:
+    """The plate with its proxy car (where a typical car stands) moved `offset_m` metres
+    further into the room, away from the camera – perspective-consistent: the floor point
+    under the image centre column at the ground line moves along the camera's viewing ray,
+    so the car stays centred, rises towards the horizon and gets smaller exactly as the
+    floor homography says (target width × the local floor-scale ratio). Tyre contacts are
+    re-projected through the floor homography; the proxy bbox is scaled about the ground
+    point. The offset is limited so that the proxy footprint keeps WALL_CLEARANCE_M to the
+    wall (y = 0) – an upper bound only: the pipeline fits the offset per photo against the
+    real car's footprint (app/pipeline/room_depth.py). Returns (plate, applied offset in
+    metres); 0 returns the plate itself.
+
+    Shadow and reflection follow automatically: the ground model fits the pose from the
+    moved proxy, and the rendered proxy shadow is sampled `proxy_shift` closer.
+    """
+    if offset_m <= 0.0:
+        return plate, 0.0
+    inv = np.linalg.inv(plate.floor_h)
+    ref = inv @ np.array([0.5, plate.ground_v, 1.0])
+    ref = ref[:2] / ref[2]
+    cam = np.asarray(plate.camera.position[:2], np.float64)
+    direction = ref - cam
+    direction /= max(float(np.linalg.norm(direction)), 1e-9)
+    # proxy footprint (axle centre ± half length/width) → farthest corner towards the wall
+    c = plate.proxy_contacts
+    centre = np.mean([np.asarray(p.floor, np.float64) for p in c.values()], axis=0)
+    front = 0.5 * (np.asarray(c["front_left"].floor) + np.asarray(c["front_right"].floor))
+    rear = 0.5 * (np.asarray(c["rear_left"].floor) + np.asarray(c["rear_right"].floor))
+    axis = (front - rear) / max(float(np.linalg.norm(front - rear)), 1e-9)
+    side = np.array([-axis[1], axis[0]])
+    half_l, half_w = 0.5 * float(plate.proxy["lengthM"]), 0.5 * float(plate.proxy["widthM"])
+    far_y = max(float((centre + i * half_l * axis + j * half_w * side)[1]) for i in (-1, 1) for j in (-1, 1))
+    if direction[1] > 1e-6:
+        offset_m = min(offset_m, max(0.0, (-WALL_CLEARANCE_M - far_y) / float(direction[1])))
+    if offset_m <= 1e-3:
+        return plate, 0.0
+    shift = direction * offset_m
+
+    def across_scale(point: np.ndarray) -> float:
+        step = 0.05 * side_view
+        (u0, v0), (u1, v1) = (plate.floor_to_uv(*(point - step)), plate.floor_to_uv(*(point + step)))
+        return float(np.hypot((u1 - u0) * plate.size[0], (v1 - v0) * plate.size[1]))
+
+    side_view = np.array([-direction[1], direction[0]])
+    moved_ref = ref + shift
+    scale = across_scale(moved_ref) / max(across_scale(ref), 1e-9)
+    ru, rv = (float(x) for x in plate.floor_to_uv(*ref))
+    mu, mv = (float(x) for x in plate.floor_to_uv(*moved_ref))
+    u0, v0, u1, v1 = plate.proxy_bbox
+    bbox = (mu + (u0 - ru) * scale, mv + (v0 - rv) * scale, mu + (u1 - ru) * scale, mv + (v1 - rv) * scale)
+
+    def moved_floor(point) -> tuple[float, float]:
+        return float(point[0] + shift[0]), float(point[1] + shift[1])
+
+    def depth(point) -> float:
+        return float(np.hypot(point[0] - cam[0], point[1] - cam[1]))
+
+    contacts = {}
+    for label, contact in c.items():
+        floor = moved_floor(contact.floor)
+        u, v = plate.floor_to_uv(*floor)
+        contacts[label] = ProxyContact(
+            label=label,
+            u=float(u),
+            v=float(v),
+            depth_m=contact.depth_m + depth(floor) - depth(contact.floor),
+            floor=floor,
+        )
+    anchor = moved_floor(plate.anchor_floor)
+    au, av = plate.floor_to_uv(*anchor)
+    moved = replace(
+        plate,
+        anchor_floor=anchor,
+        anchor_u=float(au),
+        anchor_v=float(av),
+        anchor_depth_m=plate.anchor_depth_m + depth(anchor) - depth(plate.anchor_floor),
+        target_width_ratio=plate.target_width_ratio * scale,
+        proxy_bbox=bbox,
+        proxy_contacts=contacts,
+        proxy_shift=(plate.proxy_shift[0] + float(shift[0]), plate.proxy_shift[1] + float(shift[1])),
+    )
+    return moved, float(offset_m)
 
 
 def _check_geometry(where: str, plate: Plate) -> None:

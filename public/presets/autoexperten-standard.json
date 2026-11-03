@@ -28,7 +28,12 @@
       "color": "#403F3F",
       "weight": "semibold",
       "opacity": 1.0,
-      "mounted": true
+      "mounted": true,
+      "align": "center",
+      "icon": "",
+      "ruleLength": 0.0,
+      "ruleGap": 0.0,
+      "ruleThickness": 0.0
     },
     "website": {
       "text": "www.autoexperten-rn.de",
@@ -39,7 +44,12 @@
       "color": "#4A4949",
       "weight": "medium",
       "opacity": 1.0,
-      "mounted": false
+      "mounted": false,
+      "align": "center",
+      "icon": "",
+      "ruleLength": 0.0,
+      "ruleGap": 0.0,
+      "ruleThickness": 0.0
     },
     "phone": {
       "text": "+49 6202 9262357",
@@ -50,7 +60,12 @@
       "color": "#4A4949",
       "weight": "medium",
       "opacity": 1.0,
-      "mounted": false
+      "mounted": false,
+      "align": "center",
+      "icon": "",
+      "ruleLength": 0.0,
+      "ruleGap": 0.0,
+      "ruleThickness": 0.0
     },
     "mount": {
       "shadowOpacity": 0.28,
@@ -70,7 +85,9 @@
   "placement": {
     "maxHeightRatio": 0.62,
     "minMargin": 0.03,
-    "minTargetFraction": 0.9
+    "minTargetFraction": 0.9,
+    "widthScale": 1.0,
+    "depthOffsetM": 0.0
   },
   "shadow": {
     "contactOpacity": 0.92,

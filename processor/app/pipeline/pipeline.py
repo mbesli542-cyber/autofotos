@@ -19,6 +19,10 @@ Exterior shots:
 
 Interior/detail shots are not composited (a showroom behind a cockpit makes
 no sense); they are exported unchanged except for orientation/size.
+EXPERIMENTAL, off by default: detail shots listed in the preset's
+``detailBackdrop`` get a defocused showroom crop behind the original part
+(detail_backdrop.py) – or stay the original with a hint when the part mask is
+unclear.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from .color import linear_to_u8, srgb_to_linear
 from .composite import extract_vehicle, feather_layer, over, place_layer, resample_layer
 from .debug import NULL_DEBUG, DebugSink
 from .decode import decode_image
+from .detail_backdrop import detail_backdrop_applies, run_detail
 from .detection import vehicle_box
 from .export import encode_jpeg
 from .grounding import (
@@ -44,13 +49,11 @@ from .grounding import (
     clean_ground_fringe,
     draw_ground_model,
     ground_contacts,
-    ground_line_without_contacts,
 )
 from .harmonize import decontaminate_edges, light_wrap
 from .light import effective_limits, estimate_correction, guarded_correction
 from .mask import QualityWarning, assess_mask, clean_mask, mask_bbox
 from .matting import model_alpha, refine_edges
-from .placement import compute_placement, output_size
 from .quality import (
     GateReport,
     check_contacts,
@@ -63,6 +66,7 @@ from .quality import (
     check_upscale,
 )
 from .reflection import apply_reflection
+from .room_depth import place_in_room
 from .segmentation import VehicleSegmenter, merge_parts, segment_vehicle
 from .vehicle_geometry import VehicleGeometry, analyse_vehicle
 
@@ -167,6 +171,25 @@ def process_photo(
     }
 
     if shot_key is not None and shot_key not in EXTERIOR_SHOTS:
+        if detail_backdrop_applies(preset.detail_backdrop, shot_key):
+            # EXPERIMENTAL, opt-in (preset detailBackdrop): the original part in front of a defocused
+            # plate crop – or the original with a hint when the part mask is unclear
+            detail = run_detail(
+                decoded.rgb, preset=preset, segmenter=segmenter, backgrounds=backgrounds, debug=debug, progress=progress
+            )
+            timer.mark("detail")
+            meta = {**base_meta, "detailBackdrop": detail.meta}
+            return _passthrough(
+                detail.rgb,
+                preset,
+                debug,
+                timer,
+                meta,
+                progress,
+                warnings=detail.warnings,
+                shot_kind=detail.shot_kind,
+                progress_at=0.9,  # run_detail reported up to 0.8 – never step back
+            )
         return _passthrough(decoded.rgb, preset, debug, timer, base_meta, progress)
     shot = shot_key or "front_left_45"
     # fail fast (before the expensive segmentation) without plates, without a usable
@@ -248,30 +271,21 @@ def process_photo(
                 f"„{SHOT_TITLES.get(plate_key, plate_key)}“ verwendet. Bitte die Aufnahmeposition prüfen.",
             )
         )
-    width, height = output_size(bbox, preset.output, plate.target_width_ratio)
-    showroom = backgrounds.get(preset, plate_key, width, height)
     placement_cfg = preset.placement_for(shot)
-    # the roof stays below every branding element on the wall (minus the clearance)
-    boxes = showroom.branding.boxes
-    min_top = max(b[4] for b in boxes) + preset.branding.clearance * height if boxes else None
-    x0 = int(np.clip(round(0.5 * width - 0.5 * plate.target_width_ratio * width), 0, width - 1))
-    x1 = int(np.clip(round(0.5 * width + 0.5 * plate.target_width_ratio * width), x0 + 1, width))
-    # lowest tyre contact onto the proxy's lowest tyre contact; without visible tyre
-    # contacts (front/rear: the bumper hides them) lowest point onto the proxy's lowest point
-    ground_v = plate.ground_v if geometry.contacts else ground_line_without_contacts(plate)
-    placement = compute_placement(
-        bbox,
-        width,
-        height,
-        placement_cfg,
-        target_width_ratio=plate.target_width_ratio,
-        ground_v=min(ground_v, 0.97),
-        ground_y_src=geometry.ground_y,
-        roof_y_src=geometry.solid_top,
-        contact_rise=geometry.contact_rise,
-        floor_y=float(showroom.floor_top[x0:x1].max()),
-        min_top=min_top,
+    # the plate's spot – or (preview variants: placement.depthOffsetM / widthScale) further back
+    # in the room / larger, fitted per photo so the car stays in front of the wall (room_depth.py)
+    room = place_in_room(
+        plate,
+        plate_key,
+        preset=preset,
+        placement_cfg=placement_cfg,
+        backgrounds=backgrounds,
+        bbox=bbox,
+        geometry=geometry,
+        alpha=alpha,
     )
+    plate, showroom, placement = room.plate, room.showroom, room.placement
+    width, height = room.width, room.height
     timer.mark("geometry")
 
     # quality gate (cheap checks, all before the pixel work)
@@ -435,7 +449,11 @@ def process_photo(
             "output": [[round(c.x, 1), round(c.y, 1)] for c in contacts_out],
         },
         "qualityGate": gate.as_dict(),
-        "placement": {**placement.as_dict(), "layerOrigin": list(origin)},
+        "placement": {
+            **placement.as_dict(),
+            "layerOrigin": list(origin),
+            **({"depthOffsetM": round(room.depth_offset_m, 3), "roomFit": room.info} if room.info else {}),
+        },
         "grounding": grounding,
         "reflection": reflection,
         "adjustments": correction.as_dict(),
@@ -497,10 +515,20 @@ def _geometry_overlay(
 
 
 def _passthrough(
-    rgb: np.ndarray, preset: Preset, debug: DebugSink, timer: _Timer, base_meta: dict, progress: ProgressFn
+    rgb: np.ndarray,
+    preset: Preset,
+    debug: DebugSink,
+    timer: _Timer,
+    base_meta: dict,
+    progress: ProgressFn,
+    *,
+    warnings: list[QualityWarning] | None = None,
+    shot_kind: str = "interior_passthrough",
+    progress_at: float = 0.5,
 ) -> ProcessResult:
-    """Interior/detail shots: no background replacement, no colour changes."""
-    progress(0.5, "passthrough")
+    """Interior/detail shots: no background replacement, no colour changes (and the export
+    of the experimental detail backdrop, ``shot_kind`` "detail_backdrop")."""
+    progress(progress_at, "passthrough")
     height, width = rgb.shape[:2]
     limit = preset.output.long_edge_max
     scale = min(1.0, limit / float(max(height, width)))
@@ -511,11 +539,13 @@ def _passthrough(
     timer.mark("export")
     metadata = {
         **base_meta,
-        "shotKind": "interior_passthrough",
+        "shotKind": shot_kind,
         "output": {"width": int(rgb.shape[1]), "height": int(rgb.shape[0])},
         "showroomPlaceholder": False,
         "timingsMs": timer.times,
     }
     debug.json("metadata.json", metadata)
     progress(1.0, "done")
-    return ProcessResult(jpeg=jpeg, width=int(rgb.shape[1]), height=int(rgb.shape[0]), metadata=metadata)
+    return ProcessResult(
+        jpeg=jpeg, width=int(rgb.shape[1]), height=int(rgb.shape[0]), warnings=list(warnings or []), metadata=metadata
+    )

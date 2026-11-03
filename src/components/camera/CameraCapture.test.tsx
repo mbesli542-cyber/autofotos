@@ -9,12 +9,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@/components/ui/Toast";
 import type { Vehicle, VehiclePhotoWithUrls } from "@/lib/domain/types";
 import type { NewPendingUpload } from "@/lib/offline/upload-queue";
+import { photoChecks, type PhotoCheck, type PhotoChecksSnapshot } from "@/lib/processing/photo-checks";
 import { AUTOEXPERTEN_STANDARD_TEMPLATE as T } from "@/lib/shots/shot-template";
 import { CameraCapture } from "./CameraCapture";
 
 const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }));
 const uploads = vi.hoisted(() => ({ enqueue: vi.fn(), retryAll: vi.fn() }));
 const queue = vi.hoisted(() => ({ items: [] as unknown[] }));
+/** The automatic checks as the camera sees them (photo-checks.ts). */
+const checks = vi.hoisted(() => ({
+  snapshot: { availability: "unknown", checks: new Map(), captures: new Map() } as {
+    availability: string;
+    checks: Map<string, unknown>;
+    captures: Map<string, unknown>;
+  },
+}));
 
 vi.mock("next/navigation", () => ({ useRouter: () => router }));
 // Like next/link: a click navigates (push or replace) unless onNavigate prevents it.
@@ -51,6 +60,15 @@ vi.mock("@/lib/app-services", async (importOriginal) => ({
   getAppServices: () => ({ uploads }),
 }));
 vi.mock("@/hooks/use-upload-queue", () => ({ usePendingUploads: () => queue.items }));
+vi.mock("@/hooks/use-photo-checks", async () => {
+  const { getShotCheckStates } = await import("@/lib/processing/shot-check");
+  return {
+    useShotCheckStates: (vehicleId: string, slots: Parameters<typeof getShotCheckStates>[0]) => {
+      const snapshot = checks.snapshot as PhotoChecksSnapshot;
+      return { states: getShotCheckStates(slots, vehicleId, snapshot), snapshot };
+    },
+  };
+});
 vi.mock("@/hooks/use-camera-stream", () => ({
   useCameraStream: () => ({
     state: { status: "ready", width: 4000, height: 3000 },
@@ -155,6 +173,7 @@ beforeEach(() => {
   uploads.enqueue.mockImplementation(async (input: NewPendingUpload) => ({ id: "u_new", ...input, status: "queued" }));
   uploads.retryAll.mockReset();
   queue.items = [];
+  checks.snapshot = { availability: "unknown", checks: new Map(), captures: new Map() };
   objectUrls = 0;
   URL.createObjectURL = vi.fn(() => `blob:preview-${++objectUrls}`);
   URL.revokeObjectURL = vi.fn();
@@ -514,5 +533,150 @@ describe("<CameraCapture /> header", () => {
     const position = view.container.querySelector("header p.tabular-nums");
     // The default 24 px line box of the wrapper pushed the title 2 px onto the progress row.
     expect(position?.parentElement).toHaveClass("short:text-sm", "short:leading-5");
+  });
+});
+
+describe("<CameraCapture /> automatic check", () => {
+  function check(shotKey: string, patch: Partial<PhotoCheck>): PhotoCheck {
+    const shot = T.shots.find((entry) => entry.key === shotKey);
+    if (!shot) throw new Error(shotKey);
+    return {
+      photoId: `p_${shotKey}`,
+      vehicleId: VEHICLE.id,
+      shotKey,
+      shotOrder: shot.order,
+      title: shot.title,
+      takenAt: "2026-10-28T10:00:00.000Z",
+      preset: "autoexperten_standard",
+      status: "ok",
+      message: null,
+      errorCode: null,
+      warnings: [],
+      ...patch,
+    };
+  }
+
+  function setChecks(availability: PhotoChecksSnapshot["availability"], list: PhotoCheck[]) {
+    checks.snapshot = {
+      availability,
+      checks: new Map(list.map((entry) => [entry.photoId, entry])),
+      captures: new Map(),
+    };
+  }
+
+  const TOO_SMALL = "Fahrzeug im Originalfoto zu klein. Bitte näher fotografieren.";
+
+  it("shows each shot's check in the progress and jumps to a rejected shot for the retake", () => {
+    setChecks("on", [
+      check("front_left_45", { status: "retake", message: TOO_SMALL, errorCode: "vehicle_too_small" }),
+      check("front", { status: "ok" }),
+      check("front_right_45", { status: "checking" }),
+    ]);
+    render(camera({ photos: photosOf(3) }));
+    expect(screen.getByRole("button", { name: `1. Vorne links (45°) – bitte neu aufnehmen: ${TOO_SMALL}` })).toHaveAttribute(
+      "data-check",
+      "retake",
+    );
+    expect(screen.getByRole("button", { name: "2. Vorne – geprüft, passt" })).toHaveAttribute("data-check", "ok");
+    expect(screen.getByRole("button", { name: "3. Vorne rechts (45°) – aufgenommen, wird geprüft" })).toHaveAttribute(
+      "data-check",
+      "checking",
+    );
+    // Current shot, progress and remaining photos stay visible; the shutter is free.
+    expect(heading()).toHaveTextContent("Linke Fahrzeugseite");
+    expect(screen.getByText("3 von 15 aufgenommen · noch 12")).toBeInTheDocument();
+    expect(shutter("Foto aufnehmen")).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "1 Foto neu aufnehmen · zum ersten springen" }));
+    expect(heading()).toHaveTextContent("Vorne links (45°)");
+    expect(screen.getByText(TOO_SMALL)).toBeInTheDocument();
+    expect(shutter("Foto wiederholen")).toBeEnabled();
+  });
+
+  it("never shows the result of a photo that a newer capture replaces", () => {
+    setChecks("on", [check("front_left_45", { status: "retake", message: TOO_SMALL, errorCode: "vehicle_too_small" })]);
+    queue.items = [
+      {
+        id: "u_retake",
+        vehicleId: VEHICLE.id,
+        shotKey: "front_left_45",
+        shotOrder: 1,
+        title: "Vorne links (45°)",
+        takenAt: "2026-10-28T10:05:00.000Z",
+        status: "uploading",
+        thumbnailUrl: null,
+        error: null,
+        retryable: true,
+      },
+    ];
+    render(camera({ photos: photosOf(1) }));
+    expect(screen.getByRole("button", { name: "1. Vorne links (45°) – aufgenommen, wird geprüft" })).toBeInTheDocument();
+    expect(screen.queryByText(TOO_SMALL)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /neu aufnehmen · zum ersten springen/ })).not.toBeInTheDocument();
+  });
+
+  it("shows a short banner when a check finishes", async () => {
+    let settled: ((entry: PhotoCheck) => void) | null = null;
+    const spy = vi.spyOn(photoChecks, "onSettled").mockImplementation((listener) => {
+      settled = listener;
+      return () => {};
+    });
+    try {
+      setChecks("on", []);
+      render(camera({ photos: photosOf(2) }));
+      act(() => settled?.(check("front", { status: "ok" })));
+      expect(screen.getByText("02 Vorne passt ✓")).toBeInTheDocument();
+      // Choosing a shot closes the banner, so that shot's own state shows.
+      fireEvent.click(screen.getByRole("button", { name: /^2\. Vorne – / }));
+      expect(screen.queryByText("02 Vorne passt ✓")).not.toBeInTheDocument();
+      act(() =>
+        settled?.(check("front_left_45", { status: "retake", message: TOO_SMALL, errorCode: "vehicle_too_small" })),
+      );
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveTextContent(`01 Vorne links (45°): bitte neu aufnehmen – ${TOO_SMALL}`);
+      fireEvent.click(within(alert).getByRole("button", { name: /Jetzt wiederholen/ }));
+      expect(heading()).toHaveTextContent("Vorne links (45°)");
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      // A check of another vehicle says nothing here.
+      act(() => settled?.({ ...check("front", { status: "ok" }), vehicleId: "veh_other" }));
+      expect(screen.queryByText("02 Vorne passt ✓")).not.toBeInTheDocument();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("works as before with one discreet hint when the check is off (demo: code entry in the camera)", async () => {
+    const checkVehicle = vi.spyOn(photoChecks, "checkVehicle").mockResolvedValue();
+    try {
+      setChecks("access_code", []);
+      render(camera({ photos: photosOf(2) }));
+      expect(screen.getByRole("button", { name: "2. Vorne – aufgenommen" })).not.toHaveAttribute("data-check", "checking");
+      expect(shutter("Foto aufnehmen")).toBeEnabled();
+      fireEvent.click(screen.getByRole("button", { name: "Automatische Prüfung aus · Details" }));
+      const dialog = screen.getByRole("dialog", { name: "Automatische Prüfung aus" });
+      expect(dialog).toHaveTextContent("Zugangscode");
+      fireEvent.change(within(dialog).getByLabelText("Zugangscode für die Bildbearbeitung"), { target: { value: "geheim" } });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Speichern" }));
+      expect(window.localStorage.getItem("ae-photo.processing-access-code")).toBe("geheim");
+      expect(checkVehicle).toHaveBeenCalledWith(VEHICLE.id);
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    } finally {
+      checkVehicle.mockRestore();
+      window.localStorage.removeItem("ae-photo.processing-access-code");
+    }
+  });
+  it("checks the photos taken meanwhile when the check comes on again (connection back)", () => {
+    const checkVehicle = vi.spyOn(photoChecks, "checkVehicle").mockResolvedValue();
+    try {
+      setChecks("offline", []);
+      const { rerender } = render(camera({ photos: photosOf(2) }));
+      expect(checkVehicle).not.toHaveBeenCalled();
+      setChecks("on", []);
+      rerender(camera({ photos: photosOf(2) }));
+      expect(checkVehicle).toHaveBeenCalledTimes(1);
+      expect(checkVehicle).toHaveBeenCalledWith(VEHICLE.id);
+    } finally {
+      checkVehicle.mockRestore();
+    }
   });
 });

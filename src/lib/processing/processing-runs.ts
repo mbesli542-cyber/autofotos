@@ -20,6 +20,15 @@
  * new photos after "Foto neu aufnehmen" or the same photo after a temporary
  * failure.
  *
+ * Photos whose result is already known – processed with the run's style
+ * (e.g. by the automatic check right after the capture, photo-checks.ts) or
+ * rejected by the processor in this visit – are not sent again: they show as
+ * done or failed at once. A check still running is joined instead of sending
+ * the photo a second time. `retry` ("Erneut versuchen", "Erneut prüfen")
+ * always sends a rejected photo again, and a run started with
+ * `reprocess: true` ("Bereits geprüfte Fotos erneut bearbeiten") sends every
+ * photo again (e.g. after a showroom update).
+ *
  * Runs belong to the signed-in user: when the session ends or another user
  * signs in (shared devices), every run is stopped – its uploads and polls
  * are aborted – and the next person starts with the style selection.
@@ -28,9 +37,11 @@ import { getAppServices } from "@/lib/app-services";
 import type { AuthState } from "@/lib/auth/auth-store";
 import type { ProcessingPresetId, ProcessingWarning, VehiclePhotoWithUrls } from "@/lib/domain/types";
 import { toUserMessage } from "@/lib/errors";
+import { isOlderCapture } from "@/lib/photos/capture-order";
 import { sortPhotosByShotOrder } from "@/lib/shots/shot-progress";
 import { markProcessedIfDone } from "@/lib/workflow/vehicle-workflow";
-import { ProcessingJobFailedError, processPhoto, type PhotoStep } from "./photo-processing";
+import { ProcessingJobFailedError, type PhotoStep } from "./photo-processing";
+import { photoChecks, type PhotoCheck } from "./photo-checks";
 import { PRESET_UNAVAILABLE_MESSAGE, isProcessingPresetAvailable } from "./presets";
 import { AccessCodeRequiredError } from "./processing-client";
 import { getShotTreatment, selectPhotosForProcessing, type ShotTreatment } from "./shot-treatment";
@@ -78,6 +89,19 @@ export interface ProcessingRunSnapshot {
 
 export const IDLE_RUN: ProcessingRunSnapshot = { phase: "idle", items: [], preset: null };
 
+export interface StartOptions {
+  /** Send every photo again, also those already processed with the style or rejected. */
+  reprocess?: boolean;
+}
+
+/**
+ * What a run does with photos whose outcome is known (photo-checks.ts):
+ * - skip_known:   not sent again (a new run)
+ * - skip_results: only saved results count, rejections are sent again (`retry`)
+ * - all:          everything is sent again (`reprocess`)
+ */
+type KnownPolicy = "skip_known" | "skip_results" | "all";
+
 const CONCURRENCY = 3;
 
 const GENERIC_FAILURE = "Bearbeitung fehlgeschlagen.";
@@ -119,10 +143,22 @@ function sessionUser(auth: AuthState): string | null | undefined {
   return auth.status === "authenticated" ? auth.user.id : null;
 }
 
+/** The newest finished check of a photo of the shot taken after `takenAt` (photo-checks.ts). */
+function newestSettledCheck(vehicleId: string, shotKey: string, takenAt: string): PhotoCheck | null {
+  let newest: PhotoCheck | null = null;
+  for (const check of photoChecks.getSnapshot().checks.values()) {
+    if (check.vehicleId !== vehicleId || check.shotKey !== shotKey) continue;
+    if (check.status === "waiting" || check.status === "checking" || !isOlderCapture(takenAt, check.takenAt)) continue;
+    if (!newest || isOlderCapture(newest.takenAt, check.takenAt)) newest = check;
+  }
+  return newest;
+}
+
 export class ProcessingRuns {
   private readonly runs = new Map<string, VehicleRun>();
   private readonly listeners = new Set<() => void>();
   private watchingSession = false;
+  private followingChecks = false;
 
   /* ---------- useSyncExternalStore API ---------- */
 
@@ -145,6 +181,7 @@ export class ProcessingRuns {
     photos: readonly VehiclePhotoWithUrls[],
     preset: ProcessingPresetId,
     accessCode: string | null,
+    options: StartOptions = {},
   ): Promise<RunResult> {
     if (!isProcessingPresetAvailable(preset)) {
       return { outcome: "preset_unavailable", message: PRESET_UNAVAILABLE_MESSAGE };
@@ -172,7 +209,8 @@ export class ProcessingRuns {
       return { outcome: "nothing_to_do" };
     }
     this.set(run, { phase: "running", preset, items: toItems(selected) });
-    const accessDenied = await this.processAll(run, generation, selected, preset, accessCode);
+    const policy: KnownPolicy = options.reprocess ? "all" : "skip_known";
+    const accessDenied = await this.processAll(run, generation, selected, preset, accessCode, policy);
     return this.complete(run, generation, accessDenied);
   }
 
@@ -236,7 +274,14 @@ export class ProcessingRuns {
       });
     }
     queue(targets);
-    const accessDenied = await this.processAll(run, generation, [...targets.values()], preset, accessCode);
+    const accessDenied = await this.processAll(
+      run,
+      generation,
+      [...targets.values()],
+      preset,
+      accessCode,
+      "skip_results",
+    );
     return this.complete(run, generation, accessDenied);
   }
 
@@ -293,6 +338,7 @@ export class ProcessingRuns {
    * must neither see the previous user's runs nor keep them going.
    */
   private watchSession(): void {
+    this.followChecks();
     if (this.watchingSession) return;
     this.watchingSession = true;
     const { authStore } = getAppServices();
@@ -307,6 +353,42 @@ export class ProcessingRuns {
   }
 
   /**
+   * A retake saved after its shot was processed is checked automatically
+   * (photo-checks.ts): its result replaces the shot's row, so the run shows
+   * it as done (or rejected) instead of offering to process it again. The
+   * same goes for a failed row whose photo was checked later (e.g. it failed
+   * because the processor was gone and was checked once it answered again).
+   */
+  private followChecks(): void {
+    if (this.followingChecks) return;
+    this.followingChecks = true;
+    photoChecks.onSettled((check) => this.adoptCheck(check));
+  }
+
+  private adoptCheck(check: PhotoCheck): void {
+    const run = this.runs.get(check.vehicleId);
+    if (!run || run.snapshot.phase === "idle" || run.snapshot.preset !== check.preset) return;
+    const item = run.snapshot.items.find((entry) => entry.shotKey === check.shotKey);
+    // Only a finished row (a row on its way follows its own photo): of an older
+    // photo, or a failed row of this photo.
+    if (!item || !isFinished(item) || (item.photoId === check.photoId && item.status !== "failed")) return;
+    let patch: Partial<PhotoRunState>;
+    if (check.status === "ok" || (check.status === "retake" && check.errorCode === null)) {
+      patch = { status: "complete", progress: 1, error: null, errorCode: null, warnings: check.warnings };
+    } else if (check.status === "retake") {
+      patch = { status: "failed", error: check.message ?? GENERIC_FAILURE, errorCode: check.errorCode, warnings: [] };
+    } else {
+      return; // not checked: the new photo can be processed from the run
+    }
+    this.set(run, {
+      ...run.snapshot,
+      items: run.snapshot.items.map((entry) =>
+        entry === item ? { ...entry, ...patch, photoId: check.photoId, title: check.title } : entry,
+      ),
+    });
+  }
+
+  /**
    * Processes `photos` with at most CONCURRENCY in flight. Returns the German
    * message when the access code was refused (the remaining photos are skipped).
    */
@@ -316,6 +398,7 @@ export class ProcessingRuns {
     photos: readonly VehiclePhotoWithUrls[],
     preset: ProcessingPresetId,
     accessCode: string | null,
+    policy: KnownPolicy,
   ): Promise<string | null> {
     // This generation's controller – `reset` replaces run.controller.
     const { controller } = run;
@@ -327,7 +410,10 @@ export class ProcessingRuns {
         // Reset, signed out or the access code refused meanwhile: nothing more is sent.
         if (!photo || controller.signal.aborted) continue;
         try {
-          await this.processOne(run, generation, photo, preset, accessCode, controller.signal);
+          await this.processOne(run, generation, photo, preset, accessCode, controller.signal, policy);
+          // A retake of the shot was checked meanwhile: its result is the shot's result now.
+          const newer = newestSettledCheck(run.vehicleId, photo.shotKey, photo.takenAt);
+          if (newer && run.generation === generation) this.adoptCheck(newer);
         } catch (error) {
           accessDenied ??= toUserMessage(error);
           controller.abort(); // stop the other uploads – the code is wrong for all of them
@@ -378,13 +464,23 @@ export class ProcessingRuns {
     preset: ProcessingPresetId,
     accessCode: string | null,
     signal: AbortSignal,
+    policy: KnownPolicy,
   ): Promise<void> {
     const update = (patch: Partial<PhotoRunState>) => this.updateItem(run, generation, photo.id, patch);
-    const { backend } = getAppServices();
+    // Checked automatically after the capture (or processed before): not sent again.
+    const known =
+      policy === "all" ? null : photoChecks.knownOutcome(photo, preset, { ignoreFailures: policy === "skip_results" });
+    if (known?.status === "complete") {
+      update({ status: "complete", progress: 1, error: null, errorCode: null, warnings: known.warnings });
+      return;
+    }
+    if (known?.status === "failed") {
+      update({ status: "failed", error: known.error, errorCode: known.errorCode });
+      return;
+    }
     try {
-      const { warnings } = await processPhoto(photo, preset, {
-        mode: backend.mode,
-        data: backend.data,
+      // Joins the automatic check of the photo if it is still running.
+      const { warnings } = await photoChecks.process(photo, preset, {
         accessCode,
         signal,
         onStep: (status, progress) => update(progress === undefined ? { status } : { status, progress }),

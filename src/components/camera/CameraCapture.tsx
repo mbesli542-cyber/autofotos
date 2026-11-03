@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, CircleCheck, CloudOff, LayoutGrid } from "lucide-react";
+import { ArrowLeft, CloudOff, LayoutGrid, RotateCcw, ShieldOff } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
@@ -8,6 +8,7 @@ import { getSlotImageUrl } from "@/components/photos/ShotThumbnail";
 import { Spinner } from "@/components/ui/Spinner";
 import { useToast } from "@/components/ui/Toast";
 import { useCameraStream } from "@/hooks/use-camera-stream";
+import { useShotCheckStates } from "@/hooks/use-photo-checks";
 import { usePendingUploads } from "@/hooks/use-upload-queue";
 import { getAppServices } from "@/lib/app-services";
 import { cameraReturnHref, isEntryForPage, type CameraReturnTarget } from "@/lib/camera/camera-links";
@@ -16,17 +17,23 @@ import { CAMERA_CONFIG } from "@/lib/camera/config";
 import { checkPhotoFile, PHOTO_FILE_ACCEPT } from "@/lib/camera/photo-file";
 import { noopQualityChecker, type CaptureQualityWarning } from "@/lib/camera/quality";
 import type { Vehicle, VehiclePhotoWithUrls } from "@/lib/domain/types";
-import { buildPhotoSlots, isSlotCaptured } from "@/lib/photos/photo-slots";
+import { isOlderThanSavedPhoto } from "@/lib/photos/capture-order";
+import { buildPhotoSlots, isSlotCaptured, type PhotoSlot } from "@/lib/photos/photo-slots";
+import { storeAccessCode } from "@/lib/processing/access-code-storage";
+import { photoChecks, type PhotoCheck } from "@/lib/processing/photo-checks";
+import { autoCheckOffMessage, checkResultMessage, getPhotoCheckState } from "@/lib/processing/shot-check";
 import {
   getAdjacentShotKey,
   getFirstMissingShotKey,
   getNextShotKeyAfterCapture,
 } from "@/lib/shots/shot-progress";
 import { getOrderedShots, getShot, type ShotDefinition, type ShotTemplate } from "@/lib/shots/shot-template";
+import { AutoCheckInfo } from "./AutoCheckInfo";
 import { CameraErrorPanel } from "./CameraErrorPanel";
 import { CameraOverlay } from "./CameraOverlay";
 import { CapturePreview } from "./CapturePreview";
 import { CaptureControls } from "./CaptureControls";
+import { CheckBanner, ShotCheckChip, type CheckBannerState } from "./CheckBanner";
 import { InstructionPanel } from "./InstructionPanel";
 import { ShotProgress } from "./ShotProgress";
 
@@ -65,6 +72,24 @@ function isPreviousPage(href: string): boolean {
 function leaveCamera(router: Router, href: string) {
   if (isPreviousPage(href)) router.back();
   else router.replace(href);
+}
+
+/** How long the banner of a finished check stays (ms): a rejection longer than an OK. */
+const CHECK_BANNER_MS = { ok: 3_500, retake: 9_000, error: 6_000 } as const;
+
+/**
+ * The banner for a finished check of the camera's vehicle – null when the
+ * check is outdated: a newer capture of its shot is on its way or saved.
+ */
+function bannerFor(check: PhotoCheck, slots: readonly PhotoSlot[]): CheckBannerState | null {
+  const slot = slots.find((entry) => entry.key === check.shotKey);
+  if (!slot) return null;
+  if (slot.pending && slot.pending.id !== check.photoId) return null;
+  if (slot.photo && slot.photo.id !== check.photoId && isOlderThanSavedPhoto(check.takenAt, slot.photo)) return null;
+  const state = getPhotoCheckState(check);
+  const text = checkResultMessage(slot, state);
+  if (!text || (state.kind !== "ok" && state.kind !== "retake" && state.kind !== "error")) return null;
+  return { id: `${check.photoId}-${check.status}`, shotKey: slot.key, kind: state.kind, text };
 }
 
 const UNKNOWN_SHOT_HINT = "Diese Aufnahme gibt es in der Kamera nicht. Es geht mit den Pflichtfotos weiter.";
@@ -107,12 +132,18 @@ export function CameraCapture({
   const [busy, setBusy] = useState(false);
   const [flashKey, setFlashKey] = useState(0);
   const [preview, setPreview] = useState<PreviewState | null>(null);
+  /** Result of the last finished automatic check (shown briefly). */
+  const [banner, setBanner] = useState<CheckBannerState | null>(null);
+  const [showCheckInfo, setShowCheckInfo] = useState(false);
 
   const reviewHref = cameraReturnHref(vehicle.id, "fotos");
   /** Close button / after a single retake: back to where the retake was started. */
   const exitHref = cameraReturnHref(vehicle.id, returnTo);
   const shots = useMemo(() => getOrderedShots(template).filter((s) => s.required), [template]);
   const slots = useMemo(() => buildPhotoSlots(template, photos, pending).required, [template, photos, pending]);
+  const { states: checkStates, snapshot: checkSnapshot } = useShotCheckStates(vehicle.id, slots);
+  /** The slots as shown, for the check listener (see below). */
+  const slotsRef = useRef(slots);
   const capturedKeys = useMemo(
     () => new Set(slots.filter(isSlotCaptured).map((slot) => slot.key)),
     [slots],
@@ -144,6 +175,9 @@ export function CameraCapture({
   const savingCount = pending.length - failedItems.length;
   const capturedCount = capturedKeys.size;
   const remainingCount = shots.length - capturedCount;
+  /** Shots the automatic check rejected (template order). */
+  const retakeKeys = slots.filter((slot) => checkStates.get(slot.key)?.kind === "retake").map((slot) => slot.key);
+  const checkOffMessage = autoCheckOffMessage(checkSnapshot.availability);
 
   const completePreview = useCallback(
     (state: PreviewState) => {
@@ -177,6 +211,38 @@ export function CameraCapture({
     previewRef.current = preview;
   }, [preview]);
 
+  useLayoutEffect(() => {
+    slotsRef.current = slots;
+  }, [slots]);
+
+  // A finished automatic check of this vehicle shows a short banner (while the camera is shown).
+  useEffect(
+    () =>
+      photoChecks.onSettled((check) => {
+        if (check.vehicleId !== vehicle.id || !shownRef.current) return;
+        const next = bannerFor(check, slotsRef.current);
+        if (next) setBanner(next);
+      }),
+    [vehicle.id],
+  );
+
+  // The checks are on again (connection back, code entered, processor answering):
+  // photos of this vehicle taken while they were off are checked now.
+  const availabilityRef = useRef(checkSnapshot.availability);
+  useEffect(() => {
+    const previous = availabilityRef.current;
+    availabilityRef.current = checkSnapshot.availability;
+    if (checkSnapshot.availability === "on" && previous !== "on" && previous !== "unknown") {
+      void photoChecks.checkVehicle(vehicle.id);
+    }
+  }, [checkSnapshot.availability, vehicle.id]);
+
+  useEffect(() => {
+    if (!banner) return;
+    const timer = setTimeout(() => setBanner(null), CHECK_BANNER_MS[banner.kind]);
+    return () => clearTimeout(timer);
+  }, [banner]);
+
   // Routes stay mounted (React Activity): the browser's Back shows this camera
   // again as it was left (a new visit gets a fresh camera, see CameraScreen).
   // A preview still shown when the camera is left is finished without
@@ -190,6 +256,8 @@ export function CameraCapture({
       if (left?.nextKey && !returnTo) setSelectedKey(left.nextKey);
       setPreview(null);
       setFlashKey(0);
+      setBanner(null);
+      setShowCheckInfo(false);
     };
   }, [returnTo]);
 
@@ -279,12 +347,26 @@ export function CameraCapture({
     if (key) setSelectedKey(key);
   }
 
+  /** A shot chosen in the progress, banner or retake hint: jump there (the banner closes, so its state shows). */
+  function selectShot(key: string) {
+    setBanner(null);
+    goTo(key);
+  }
+
+  /** Access code entered in the camera (demo mode): stored on this device, the photos taken so far are checked. */
+  function handleAccessCode(code: string) {
+    storeAccessCode(code);
+    setShowCheckInfo(false);
+    void photoChecks.checkVehicle(vehicle.id);
+  }
+
   if (!shot || !currentSlot) return null;
 
   const streamReady = camera.state.status === "ready";
   const ratio = streamReady && camera.state.status === "ready" ? camera.state.width / camera.state.height : 4 / 3;
   const isPortraitStream = streamReady && ratio < 1;
   const alreadyCaptured = isSlotCaptured(currentSlot);
+  const currentCheck = checkStates.get(shot.key) ?? { kind: "none" as const };
   const shotHint =
     selectedKey !== null || preview || busy
       ? null
@@ -329,8 +411,8 @@ export function CameraCapture({
             <LayoutGrid className="size-5" aria-hidden />
           </Link>
         </div>
-        <ShotProgress slots={slots} currentKey={shot.key} onSelect={goTo} />
-        <div className="mt-1.5 flex min-h-5 items-center justify-center gap-3 text-xs text-white/60 short:mt-0 short:min-h-0">
+        <ShotProgress slots={slots} currentKey={shot.key} onSelect={selectShot} checks={checkStates} />
+        <div className="mt-1.5 flex min-h-5 flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-white/60 short:mt-0 short:min-h-0 short:flex-nowrap">
           <span className="short:hidden">
             {capturedCount} von {shots.length} aufgenommen · noch {remainingCount}
           </span>
@@ -367,6 +449,32 @@ export function CameraCapture({
               <span className="short:sr-only">Foto wird gespeichert…</span>
             </span>
           ) : null}
+          {retakeKeys.length > 0 && (
+            <button
+              type="button"
+              onClick={() => selectShot(retakeKeys[0] as string)}
+              aria-label={`${retakeKeys.length === 1 ? "1 Foto" : `${retakeKeys.length} Fotos`} neu aufnehmen · zum ersten springen`}
+              className="flex items-center gap-1 rounded-full bg-ae-danger px-2 py-0.5 font-semibold text-white short:ml-3"
+            >
+              <RotateCcw className="size-3" aria-hidden />
+              <span>
+                {retakeKeys.length}
+                <span className="short:hidden"> neu aufnehmen</span>
+              </span>
+            </button>
+          )}
+          {checkOffMessage && (
+            <button
+              type="button"
+              onClick={() => setShowCheckInfo((shown) => !shown)}
+              aria-label="Automatische Prüfung aus · Details"
+              aria-expanded={showCheckInfo}
+              className="flex items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-white/70 short:ml-3"
+            >
+              <ShieldOff className="size-3" aria-hidden />
+              <span className="short:hidden">Prüfung aus</span>
+            </button>
+          )}
         </div>
       </header>
 
@@ -388,7 +496,7 @@ export function CameraCapture({
               />
               <CameraOverlay shot={shot} />
 
-              {!preview && (shotHint || alreadyCaptured) && (
+              {!preview && !banner && (shotHint || alreadyCaptured) && (
                 <div className="pointer-events-none absolute inset-x-3 top-3 flex flex-col items-center gap-2">
                   {shotHint && (
                     <p
@@ -398,12 +506,7 @@ export function CameraCapture({
                       {shotHint}
                     </p>
                   )}
-                  {alreadyCaptured && (
-                    <span className="flex items-center gap-1 rounded-full bg-black/60 px-2.5 py-1 text-xs font-semibold text-white backdrop-blur">
-                      <CircleCheck className="size-3.5 text-ae-blue" aria-hidden />
-                      Bereits aufgenommen
-                    </span>
-                  )}
+                  {alreadyCaptured && <ShotCheckChip state={currentCheck} />}
                 </div>
               )}
 
@@ -424,6 +527,7 @@ export function CameraCapture({
               {flashKey > 0 && (
                 <div key={flashKey} className="pointer-events-none absolute inset-0 animate-flash bg-white opacity-0" />
               )}
+              {banner && <CheckBanner banner={banner} onSelect={selectShot} onDismiss={() => setBanner(null)} />}
               {preview && (
                 <CapturePreview
                   url={preview.url}
@@ -454,6 +558,15 @@ export function CameraCapture({
           />
         </div>
       </div>
+
+      {showCheckInfo && checkOffMessage && (
+        <AutoCheckInfo
+          message={checkOffMessage}
+          askAccessCode={checkSnapshot.availability === "access_code"}
+          onAccessCode={handleAccessCode}
+          onClose={() => setShowCheckInfo(false)}
+        />
+      )}
 
       <input
         ref={fileInputRef}

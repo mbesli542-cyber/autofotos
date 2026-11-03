@@ -1,6 +1,6 @@
 "use client";
 
-import { Camera, CloudOff, ImageOff, Images, Pencil, TriangleAlert } from "lucide-react";
+import { Camera, CloudOff, ImageOff, Images, Pencil, RotateCcw, TriangleAlert } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useLayoutEffect, useMemo, useState } from "react";
 import { AppHeader } from "@/components/layout/AppHeader";
@@ -16,6 +16,7 @@ import { PageLoading } from "@/components/ui/Spinner";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { useToast } from "@/components/ui/Toast";
 import { VehicleInfoCard } from "@/components/vehicles/VehicleInfoCard";
+import { useShotCheckStates } from "@/hooks/use-photo-checks";
 import { usePendingUploads } from "@/hooks/use-upload-queue";
 import { useVehicleDetail } from "@/hooks/use-vehicle-data";
 import { getAppServices, getShotTemplate } from "@/lib/app-services";
@@ -53,6 +54,9 @@ export function VehicleDetailScreen({
   const photos = useMemo(() => (state.status === "ready" ? state.photos : []), [state]);
   const slots = useMemo(() => buildPhotoSlots(template, photos, pending), [template, photos, pending]);
   const allSlots = useMemo(() => [...slots.required, ...slots.extras], [slots]);
+  const { states: checks } = useShotCheckStates(vehicleId, slots.required);
+  /** Shots the automatic check (or a processing) rejected. */
+  const retakes = slots.required.filter((slot) => checks.get(slot.key)?.kind === "retake");
   const savedKeys = useMemo(() => new Set(photos.map((photo) => photo.shotKey)), [photos]);
   const progress = getShotProgress(template, savedKeys);
   const hasProcessed = photos.some((photo) => photo.urls.processed);
@@ -225,6 +229,14 @@ export function VehicleDetailScreen({
               <PhotoVersionToggle value={variant} onChange={setChosenVariant} />
             )}
           </div>
+          {retakes.length > 0 && (
+            <p className="mb-3 flex items-start gap-1.5 text-sm text-ae-danger">
+              <RotateCcw className="mt-0.5 size-4 shrink-0" aria-hidden />
+              {retakes.length === 1
+                ? `Bitte ${retakes[0]?.title} neu aufnehmen – Grund in der Großansicht.`
+                : `Bitte ${retakes.length} Fotos neu aufnehmen – Gründe in der Großansicht.`}
+            </p>
+          )}
           {toCheck > 0 && (
             <p className="mb-3 flex items-start gap-1.5 text-sm text-ae-warning">
               <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
@@ -233,7 +245,13 @@ export function VehicleDetailScreen({
                 : `Bitte ${toCheck} bearbeitete Fotos prüfen – Hinweise in der Großansicht.`}
             </p>
           )}
-          <PhotoGrid slots={slots.required} variant={variant} onSelect={(slot) => setSelectedKey(slot.key)} label="Pflichtfotos" />
+          <PhotoGrid
+            slots={slots.required}
+            variant={variant}
+            checks={checks}
+            onSelect={(slot) => setSelectedKey(slot.key)}
+            label="Pflichtfotos"
+          />
           {slots.extras.length > 0 && (
             <>
               <h3 className="mt-5 mb-3 text-sm font-semibold text-ae-muted">Zusatzfotos</h3>
@@ -258,6 +276,7 @@ export function VehicleDetailScreen({
         onRetake={handleRetake}
         onDelete={handleDelete}
         onRetryUpload={(slot) => slot.pending && getAppServices().uploads.retry(slot.pending.id)}
+        checks={checks}
       />
     </>
   );

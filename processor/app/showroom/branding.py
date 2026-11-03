@@ -42,6 +42,9 @@ SYSTEM_FONT_CANDIDATES = (
 
 #: Text is rendered at this multiple of the target size and then downsampled.
 SUPERSAMPLE = 3
+#: Line icons: height (× cap height) and gap to the text (× cap height).
+ICON_SCALE = 1.75
+ICON_GAP = 0.75
 
 
 class BrandingAssetError(Exception):
@@ -80,6 +83,18 @@ class TextConfig:
     #: "semibold" or "medium" (bundled Inter weights).
     weight: str = "medium"
     mounted: bool = False
+    #: "center": centerX is the centre of the text (with icon/lines); "left": centerX is the
+    #: LEFT edge of the block (icon + text) – for a column of left-aligned lines.
+    align: str = "center"
+    #: Line icon before the text ("" = none, "globe", "phone"; Lucide, app/showroom/icons.py),
+    #: ICON_SCALE × the cap height, centred on the capitals, in the text colour.
+    icon: str = ""
+    #: Thin horizontal line on each side of the text (0 = none): length and gap to the text
+    #: (fractions of the width), thickness (fraction of the height); in the text colour, at the
+    #: middle of the lowercase letters.
+    rule_length: float = 0.0
+    rule_gap: float = 0.0
+    rule_thickness: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -230,6 +245,62 @@ def _cap_ratio(font) -> float:
         return 0.7
 
 
+def _x_ratio(font) -> float:
+    """x-height / cap height of the font (for the position of the side lines)."""
+    try:
+        _, xy0, _, xy1 = font.getbbox("x")
+        _, hy0, _, hy1 = font.getbbox("H")
+        return float(np.clip((xy1 - xy0) / max(hy1 - hy0, 1), 0.4, 1.0))
+    except Exception:  # pragma: no cover - bitmap fallback font
+        return 0.72
+
+
+def _decorated_mask(cfg: TextConfig, mask: np.ndarray, width: int, height: int) -> tuple[np.ndarray, int, int]:
+    """The text mask with its icon and side lines: (mask, x of the text in it, y of the text in it).
+
+    The text keeps its own pixels; icon and lines are added around it (the element's top is
+    the top of the capitals unless the icon reaches higher)."""
+    if not cfg.icon and cfg.rule_length <= 0:
+        return mask, 0, 0
+    from .icons import icon_mask
+
+    cap_px = max(4.0, cfg.cap_height * height)
+    th, tw = mask.shape
+    left = right = 0
+    icon = None
+    if cfg.icon:
+        size = max(4, int(round(ICON_SCALE * cap_px)))
+        icon = icon_mask(cfg.icon, size)
+        left = size + int(round(ICON_GAP * cap_px))
+    rule_len = rule_gap = 0
+    if cfg.rule_length > 0:
+        rule_len = max(1, int(round(cfg.rule_length * width)))
+        rule_gap = int(round(cfg.rule_gap * width))
+        left += rule_gap + rule_len
+        right = rule_gap + rule_len
+    top = 0
+    if icon is not None:
+        top = max(0, int(round((icon.shape[0] - cap_px) / 2.0)))
+    out_h = max(th + top, icon.shape[0] if icon is not None else 0)
+    out = np.zeros((out_h, left + tw + right), np.float32)
+    out[top : top + th, left : left + tw] = mask
+    if icon is not None:
+        iy = int(round(top + cap_px / 2.0 - icon.shape[0] / 2.0))
+        iy = min(max(iy, 0), out_h - icon.shape[0])
+        out[iy : iy + icon.shape[0], : icon.shape[1]] = np.maximum(out[iy : iy + icon.shape[0], : icon.shape[1]], icon)
+    if rule_len:
+        probe = _font(cfg.weight, 100)
+        centre = top + cap_px * (1.0 - 0.5 * _x_ratio(probe))
+        half = max(0.5, 0.5 * cfg.rule_thickness * height)
+        rows = np.arange(out_h, dtype=np.float32) + 0.5
+        # anti-aliased band: coverage of each row by [centre - half, centre + half]
+        cover = np.clip(np.minimum(rows + 0.5, centre + half) - np.maximum(rows - 0.5, centre - half), 0.0, 1.0)
+        for x0 in (left - rule_gap - rule_len, left + tw + rule_gap):
+            band = out[:, x0 : x0 + rule_len]
+            np.maximum(band, cover[:, None], out=band)
+    return out, left, top
+
+
 def _text_mask(cfg: TextConfig, height: int) -> np.ndarray | None:
     """Anti-aliased coverage mask of the text, cap height = cfg.cap_height * height."""
     text = cfg.text.strip()
@@ -292,11 +363,15 @@ def _text_element(name: str, cfg: TextConfig, width: int, height: int) -> _Eleme
     mask = _text_mask(cfg, height)
     if mask is None:
         return None
+    mask, _, text_y = _decorated_mask(cfg, mask, width, height)
     opacity = float(np.clip(cfg.opacity, 0.0, 1.0))
     alpha = mask * opacity
     premul = alpha[..., None] * _hex_to_linear(cfg.color)[None, None, :]
-    x = int(round(cfg.center_x * width - mask.shape[1] / 2.0))
-    y = int(round(cfg.top * height))
+    if cfg.align == "left":
+        x = int(round(cfg.center_x * width))
+    else:
+        x = int(round(cfg.center_x * width - mask.shape[1] / 2.0))
+    y = int(round(cfg.top * height)) - text_y
     return _Element(name, premul.astype(np.float32), alpha.astype(np.float32), x, y, cfg.mounted)
 
 

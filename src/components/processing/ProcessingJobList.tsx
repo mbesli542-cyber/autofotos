@@ -30,7 +30,8 @@ const LABELS: Record<PhotoRunStatus, string> = {
  * - "retry":  a temporary failure (connection, busy processor) → process the same photo again
  */
 export type JobRetakeAction =
-  | { kind: "retake"; href: string }
+  /** `onRecheck`: send the same photo again anyway ("Erneut prüfen", e.g. after a processor update). */
+  | { kind: "retake"; href: string; onRecheck?: () => void }
   | { kind: "saving"; failed: boolean; error?: string | null; onRetryUpload: () => void }
   | { kind: "ready"; onProcess: () => void }
   | { kind: "retry"; onRetry: () => void };
@@ -46,16 +47,30 @@ function StatusIcon({ status, check }: { status: PhotoRunStatus; check: boolean 
 function RetakeActionView({ action, title }: { action: JobRetakeAction; title: string }) {
   if (action.kind === "retake") {
     return (
-      <ButtonLink
-        href={action.href}
-        variant="secondary"
-        size="sm"
-        className="mt-2 h-10"
-        icon={<Camera className="size-4" aria-hidden />}
-        aria-label={`Foto neu aufnehmen: ${title}`}
-      >
-        Foto neu aufnehmen
-      </ButtonLink>
+      <div className="mt-2 flex flex-wrap items-center gap-x-1 gap-y-1">
+        <ButtonLink
+          href={action.href}
+          variant="secondary"
+          size="sm"
+          className="h-10"
+          icon={<Camera className="size-4" aria-hidden />}
+          aria-label={`Foto neu aufnehmen: ${title}`}
+        >
+          Foto neu aufnehmen
+        </ButtonLink>
+        {action.onRecheck && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-10"
+            onClick={action.onRecheck}
+            icon={<RotateCw className="size-4" aria-hidden />}
+            aria-label={`Erneut prüfen: ${title}`}
+          >
+            Erneut prüfen
+          </Button>
+        )}
+      </div>
     );
   }
   if (action.kind === "retry") {

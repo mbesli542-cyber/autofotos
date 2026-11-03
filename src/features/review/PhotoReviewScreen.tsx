@@ -13,6 +13,7 @@ import { LoadingButton } from "@/components/ui/LoadingButton";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { PageLoading } from "@/components/ui/Spinner";
 import { useToast } from "@/components/ui/Toast";
+import { useShotCheckStates } from "@/hooks/use-photo-checks";
 import { usePendingUploads } from "@/hooks/use-upload-queue";
 import { useVehicleDetail } from "@/hooks/use-vehicle-data";
 import { getAppServices, getShotTemplate } from "@/lib/app-services";
@@ -44,6 +45,7 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
   const photos = useMemo(() => (state.status === "ready" ? state.photos : []), [state]);
   const slots = useMemo(() => buildPhotoSlots(template, photos, pending), [template, photos, pending]);
   const allSlots = useMemo(() => [...slots.required, ...slots.extras], [slots]);
+  const { states: checks } = useShotCheckStates(vehicleId, slots.required);
   const savedKeys = useMemo(() => new Set(photos.map((photo) => photo.shotKey)), [photos]);
   const progress = getShotProgress(template, savedKeys);
   const uploadsInProgress = pending.some((item) => item.status !== "failed");
@@ -161,7 +163,7 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
         />
         <p className="mb-5 text-xs text-ae-subtle">Tippen Sie auf ein Foto für die Großansicht.</p>
 
-        <PhotoGrid slots={slots.required} onSelect={(slot) => setSelectedKey(slot.key)} label="Pflichtfotos" />
+        <PhotoGrid slots={slots.required} checks={checks} onSelect={(slot) => setSelectedKey(slot.key)} label="Pflichtfotos" />
 
         {isCompleted && (
           <Button
@@ -250,6 +252,7 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
         onRetake={handleRetake}
         onDelete={handleDelete}
         onRetryUpload={(slot) => slot.pending && getAppServices().uploads.retry(slot.pending.id)}
+        checks={checks}
       />
     </>
   );

@@ -86,6 +86,19 @@ describe("<ProcessingJobList />", () => {
     expect(screen.getAllByRole("link")).toHaveLength(1);
   });
 
+  it("can check a rejected photo again anyway (e.g. after a processor update)", () => {
+    const onRecheck = vi.fn();
+    render(
+      <ProcessingJobList
+        items={[item({ title: "Front", status: "failed", errorCode: "vehicle_too_small", error: TOO_SMALL })]}
+        retakeAction={() => ({ kind: "retake", href: "/fahrzeuge/v1/kamera?shot=front", onRecheck })}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "Foto neu aufnehmen: Front" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Erneut prüfen: Front" }));
+    expect(onRecheck).toHaveBeenCalledTimes(1);
+  });
+
   it("offers to process the new photo once it was saved", () => {
     const onProcess = vi.fn();
     const action: JobRetakeAction = { kind: "ready", onProcess };

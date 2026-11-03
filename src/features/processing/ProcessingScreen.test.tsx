@@ -11,7 +11,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAppServices } from "@/lib/app-services";
 import type { ProcessingPresetId, ProcessingWarning, VehiclePhotoWithUrls } from "@/lib/domain/types";
 import { AppError } from "@/lib/errors";
-import { processPhoto, type PhotoProcessingDeps, type PhotoProcessingResult } from "@/lib/processing/photo-processing";
+import {
+  ProcessingJobFailedError,
+  processPhoto,
+  type PhotoProcessingDeps,
+  type PhotoProcessingResult,
+} from "@/lib/processing/photo-processing";
 import { PROCESSOR_STORAGE_MISSING_MESSAGE, type ProcessingStatus } from "@/lib/processing/types";
 import { completeCapture, savePhotoAndSyncStatus } from "@/lib/workflow/vehicle-workflow";
 import { ProcessingScreen } from "./ProcessingScreen";
@@ -279,7 +284,7 @@ describe("<ProcessingScreen />", () => {
     expect(stored.find((photo) => photo.shotKey === "front")?.processingWarnings).toEqual([]);
   });
 
-  it("offers the photo retaken during the run for processing and brings its row into view", async () => {
+  it("checks a photo retaken during the run automatically and shows the shot done with it", async () => {
     const vehicleId = await createCompleteVehicle("Retake");
     const { backend, uploads } = getAppServices();
     const oldFront = (await backend.data.listPhotos(vehicleId)).find((photo) => photo.shotKey === "front")?.id;
@@ -301,47 +306,28 @@ describe("<ProcessingScreen />", () => {
       file: new Blob(["retake"], { type: "image/jpeg" }),
       takenAt: new Date().toISOString(),
     });
+    // Saved, then checked right away (photo-checks.ts) – with the style of the check.
     await waitFor(async () =>
-      expect((await backend.data.listPhotos(vehicleId)).find((p) => p.shotKey === "front")?.id).toBe(retake.id),
+      expect((await backend.data.listPhotos(vehicleId)).find((p) => p.shotKey === "front")).toMatchObject({
+        id: retake.id,
+        processedPreset: "autoexperten_standard",
+      }),
     );
     await act(async () => frontJob.open());
 
-    const ready = await screen.findByRole("button", { name: "Neues Foto bereit – jetzt bearbeiten" });
-    expect(within(row("Vorne")).getByRole("button", { name: "Neues Foto bearbeiten: Vorne" })).toBeInTheDocument();
-    expect(scrolledRows).toContain("front");
-    // The summary does not claim every photo is done while the new one is unprocessed.
-    expect(screen.getByText("14 von 15 Fotos bearbeitet · 1 neues Foto noch nicht bearbeitet.")).toBeInTheDocument();
-    expect((await backend.data.getVehicle(vehicleId))?.status).toBe("complete");
-
-    vi.mocked(processPhoto).mockClear();
-    fireEvent.click(ready);
+    // The shot shows the checked retake – nothing is offered to process again.
+    await screen.findByText("15 von 15 Fotos bearbeitet.");
+    expect(screen.queryByRole("button", { name: /jetzt bearbeiten/ })).not.toBeInTheDocument();
     await waitFor(async () => expect((await backend.data.getVehicle(vehicleId))?.status).toBe("processed"));
-    expect(vi.mocked(processPhoto).mock.calls.map(([photo]) => photo.id)).toEqual([retake.id]);
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: "Neues Foto bereit – jetzt bearbeiten" })).not.toBeInTheDocument(),
-    );
+    expect(vi.mocked(processPhoto).mock.calls.filter(([photo]) => photo.id === retake.id)).toHaveLength(1);
   });
 
-  it("processes the new photos from the summary at most three at a time", async () => {
+  it("checks photos retaken after the run at most two at a time and shows them done", async () => {
     const vehicleId = await createCompleteVehicle("Batch");
     const { template, uploads } = getAppServices();
     renderScreen(vehicleId);
     fireEvent.click(await startButton());
     await screen.findByText("15 von 15 Fotos bearbeitet.");
-
-    // Later the employee retakes five shots.
-    for (const shot of template.shots.slice(0, 5)) {
-      await uploads.enqueue({
-        vehicleId,
-        shotKey: shot.key,
-        shotOrder: shot.order,
-        title: shot.title,
-        file: new Blob(["retake"], { type: "image/jpeg" }),
-        takenAt: new Date().toISOString(),
-      });
-    }
-    const ready = await screen.findByRole("button", { name: "5 neue Fotos bereit – jetzt bearbeiten" });
-    expect(screen.getByText("10 von 15 Fotos bearbeitet · 5 neue Fotos noch nicht bearbeitet.")).toBeInTheDocument();
 
     const jobs = gate();
     let inFlight = 0;
@@ -355,12 +341,24 @@ describe("<ProcessingScreen />", () => {
       inFlight -= 1;
       return result;
     });
-    fireEvent.click(ready);
-    await waitFor(() => expect(inFlight).toBe(3));
+    // Later the employee retakes five shots.
+    for (const shot of template.shots.slice(0, 5)) {
+      await uploads.enqueue({
+        vehicleId,
+        shotKey: shot.key,
+        shotOrder: shot.order,
+        title: shot.title,
+        file: new Blob(["retake"], { type: "image/jpeg" }),
+        takenAt: new Date().toISOString(),
+      });
+    }
+    await waitFor(() => expect(inFlight).toBe(2));
     await act(async () => jobs.open());
+    await waitFor(() => expect(processPhoto).toHaveBeenCalledTimes(5));
+    await waitFor(() => expect(inFlight).toBe(0));
+    expect(maxInFlight).toBe(2);
     await screen.findByText("15 von 15 Fotos bearbeitet.");
-    expect(maxInFlight).toBe(3);
-    expect(processPhoto).toHaveBeenCalledTimes(5);
+    expect(screen.queryByRole("button", { name: /jetzt bearbeiten/ })).not.toBeInTheDocument();
   });
 
   it("keeps a processed shot done when its new capture was refused for good", async () => {
@@ -504,6 +502,36 @@ describe("<ProcessingScreen />", () => {
     fireEvent.click(within(row("Hinten")).getByRole("button", { name: "Erneut versuchen: Hinten" }));
     await screen.findByText("Bearbeitung abgeschlossen");
     expect(vi.mocked(processPhoto).mock.calls.map(([photo]) => photo.shotKey)).toEqual(["rear"]);
+  });
+
+  it("checks a rejected photo again on request and reprocesses already processed photos only when asked", async () => {
+    const vehicleId = await createCompleteVehicle("Again");
+    const TOO_SMALL = "Fahrzeug im Originalfoto zu klein. Bitte näher fotografieren.";
+    vi.mocked(processPhoto).mockImplementation(async (photo, preset, deps) => {
+      if (photo.shotKey === "front") throw new ProcessingJobFailedError("vehicle_too_small", TOO_SMALL);
+      return saveResult(photo, preset, deps);
+    });
+    renderScreen(vehicleId);
+    fireEvent.click(await startButton());
+    await screen.findByText("Bearbeitung mit Fehlern abgeschlossen");
+    expect(within(row("Vorne")).getByRole("link", { name: "Foto neu aufnehmen: Vorne" })).toBeInTheDocument();
+
+    // "Erneut prüfen" (e.g. after a processor update): the same photo is sent again.
+    vi.mocked(processPhoto).mockReset();
+    vi.mocked(processPhoto).mockImplementation(saveResult);
+    fireEvent.click(within(row("Vorne")).getByRole("button", { name: "Erneut prüfen: Vorne" }));
+    await screen.findByText("Bearbeitung abgeschlossen");
+    expect(vi.mocked(processPhoto).mock.calls.map(([photo]) => photo.shotKey)).toEqual(["front"]);
+
+    // Back to the style selection: everything is known, nothing is sent again unless asked for.
+    fireEvent.click(screen.getByRole("button", { name: "Anderen Stil wählen" }));
+    await screen.findByText("Alle Fotos wurden schon geprüft und bearbeitet – es wird nichts erneut gesendet.");
+    vi.mocked(processPhoto).mockClear();
+    fireEvent.click(screen.getByLabelText(/Bereits geprüfte Fotos erneut bearbeiten/));
+    expect(screen.getByText("Alle 15 Fotos werden neu bearbeitet – auch die bereits geprüften.")).toBeInTheDocument();
+    fireEvent.click(await startButton());
+    await screen.findByText("Bearbeitung abgeschlossen");
+    expect(processPhoto).toHaveBeenCalledTimes(15);
   });
 
   it("does not offer the demo sample vehicle (placeholder drawings) for processing", async () => {

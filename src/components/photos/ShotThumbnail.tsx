@@ -1,8 +1,9 @@
-import { Camera, Check, CloudOff, ImageOff, TriangleAlert } from "lucide-react";
+import { Camera, Check, CloudOff, ImageOff, RotateCcw, TriangleAlert } from "lucide-react";
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/lib/cn";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { needsResultCheck } from "@/lib/processing/processing-warnings";
+import type { ShotCheckState } from "@/lib/processing/shot-check";
 
 export type PhotoVariant = "original" | "processed";
 
@@ -23,16 +24,22 @@ export function processedNeedsCheck(slot: PhotoSlot, variant: PhotoVariant): boo
   return needsResultCheck(slot.photo?.processingWarnings ?? []);
 }
 
-/** 4:3 tile with shot number, capture state and checkmark (processed version to check: warning sign). */
+/**
+ * 4:3 tile with shot number, capture state and checkmark (processed version
+ * to check: warning sign). With the automatic check (`check`): green check
+ * when the photo passed, red when it must be retaken, spinner while checked.
+ */
 export function ShotThumbnail({
   slot,
   variant = "original",
   active = false,
+  check,
   className,
 }: {
   slot: PhotoSlot;
   variant?: PhotoVariant;
   active?: boolean;
+  check?: ShotCheckState;
   className?: string;
 }) {
   const url = getSlotImageUrl(slot, variant);
@@ -50,6 +57,11 @@ export function ShotThumbnail({
     >
       {url ? (
         <img src={url} alt="" className="size-full object-cover" loading="lazy" decoding="async" />
+      ) : variant === "processed" && captured && check?.kind === "retake" ? (
+        <div className="flex size-full flex-col items-center justify-center gap-1 bg-ae-danger/12 px-2 text-center text-ae-danger">
+          <RotateCcw className="size-5" aria-hidden />
+          <span className="text-[11px] leading-tight font-semibold">Neu aufnehmen</span>
+        </div>
       ) : variant === "processed" && captured ? (
         <div className="flex size-full flex-col items-center justify-center gap-1 px-2 text-center text-ae-subtle">
           <ImageOff className="size-5" aria-hidden />
@@ -79,6 +91,20 @@ export function ShotThumbnail({
         >
           <Spinner className="size-3.5" />
         </span>
+      ) : check?.kind === "retake" ? (
+        <span
+          className="absolute right-1.5 bottom-1.5 flex size-6 items-center justify-center rounded-full bg-ae-danger text-white shadow"
+          title="Bitte neu aufnehmen"
+        >
+          <RotateCcw className="size-3.5" strokeWidth={3} aria-hidden />
+        </span>
+      ) : check?.kind === "checking" ? (
+        <span
+          className="absolute right-1.5 bottom-1.5 flex size-6 items-center justify-center rounded-full bg-ae-blue text-white shadow"
+          title="Wird geprüft"
+        >
+          <Spinner className="size-3.5" />
+        </span>
       ) : processedNeedsCheck(slot, variant) ? (
         <span
           className="absolute right-1.5 bottom-1.5 flex size-6 items-center justify-center rounded-full bg-ae-warning text-black shadow"
@@ -87,7 +113,13 @@ export function ShotThumbnail({
           <TriangleAlert className="size-3.5" aria-hidden />
         </span>
       ) : slot.photo && (variant === "original" || url) ? (
-        <span className="absolute right-1.5 bottom-1.5 flex size-6 items-center justify-center rounded-full bg-ae-blue text-white shadow">
+        <span
+          className={cn(
+            "absolute right-1.5 bottom-1.5 flex size-6 items-center justify-center rounded-full shadow",
+            check?.kind === "ok" ? "bg-ae-success text-black" : "bg-ae-blue text-white",
+          )}
+          title={check?.kind === "ok" ? "Geprüft – passt" : undefined}
+        >
           <Check className="size-3.5" strokeWidth={3} aria-hidden />
         </span>
       ) : null}

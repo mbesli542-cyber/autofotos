@@ -302,6 +302,8 @@ describe("useProcessingRun", () => {
     vi.mocked(processPhoto).mockImplementation(async (_target, _preset, deps) => {
       signals.push(deps.signal);
       await job.opened;
+      // Like processPhoto: an aborted processing saves nothing.
+      if (deps.signal?.aborted) throw new DOMException("Aborted", "AbortError");
       return DONE;
     });
     const target = photo("p_r1", "rear", 7, "veh_reset");
@@ -329,6 +331,7 @@ describe("useProcessingRun", () => {
     vi.mocked(processPhoto).mockImplementationOnce(async (_target, _preset, deps) => {
       signals.push(deps.signal);
       await again.opened;
+      if (deps.signal?.aborted) throw new DOMException("Aborted", "AbortError");
       return DONE;
     });
     let retried: Promise<RunResult> | undefined;
@@ -498,5 +501,73 @@ describe("useProcessingRun", () => {
         throw new Error("offline");
       });
     }
+  });
+  it("does not send a photo again whose result is known (checked after the capture)", async () => {
+    vi.mocked(processPhoto).mockImplementation(async (target) => {
+      if (target.id === "p_k_rejected") throw new ProcessingJobFailedError("vehicle_too_small", TOO_SMALL);
+      return DONE;
+    });
+    const { result } = renderHook(() => useProcessingRun("veh_known"));
+    const rejected = photo("p_k_rejected", "front_left_45", 1, "veh_known");
+    // The automatic check rejected this photo before (same processing code path).
+    await act(async () => {
+      await result.current.start([rejected], "autoexperten_standard", null);
+    });
+    act(() => result.current.reset());
+    vi.mocked(processPhoto).mockClear();
+
+    const checked = {
+      ...photo("p_k_done", "front", 2, "veh_known"),
+      processedStoragePath: "vehicle-processed/veh_known/front/p_k_done.jpg",
+      processedPreset: "autoexperten_standard" as const,
+      processingWarnings: [MIRRORED],
+    };
+    const fresh = photo("p_k_new", "rear", 7, "veh_known");
+    await act(async () => {
+      await result.current.start([rejected, checked, fresh], "autoexperten_standard", null);
+    });
+    expect(vi.mocked(processPhoto).mock.calls.map(([target]) => target.id)).toEqual(["p_k_new"]);
+    expect(result.current.items.map(({ photoId, status, errorCode, warnings }) => ({ photoId, status, errorCode, warnings }))).toEqual([
+      { photoId: "p_k_rejected", status: "failed", errorCode: "vehicle_too_small", warnings: [] },
+      { photoId: "p_k_done", status: "complete", errorCode: null, warnings: [MIRRORED] },
+      { photoId: "p_k_new", status: "complete", errorCode: null, warnings: [] },
+    ]);
+  });
+  it("sends a rejected photo again on 'Erneut prüfen' and every photo when asked to reprocess", async () => {
+    let gateCode: string | null = "vehicle_too_small";
+    vi.mocked(processPhoto).mockImplementation(async (target) => {
+      if (target.id === "p_r_rejected" && gateCode) throw new ProcessingJobFailedError(gateCode, TOO_SMALL);
+      return DONE;
+    });
+    const { result } = renderHook(() => useProcessingRun("veh_again"));
+    const rejected = photo("p_r_rejected", "front_left_45", 1, "veh_again");
+    const checked = {
+      ...photo("p_r_done", "front", 2, "veh_again"),
+      processedStoragePath: "vehicle-processed/veh_again/front/p_r_done.jpg",
+      processedPreset: "autoexperten_standard" as const,
+    };
+    await act(async () => {
+      await result.current.start([rejected, checked], "autoexperten_standard", null);
+    });
+    expect(vi.mocked(processPhoto).mock.calls.map(([target]) => target.id)).toEqual(["p_r_rejected"]);
+    expect(result.current.items[0]).toMatchObject({ status: "failed", errorCode: "vehicle_too_small" });
+
+    // The quality gate was updated: "Erneut prüfen" sends the same photo again.
+    gateCode = null;
+    vi.mocked(processPhoto).mockClear();
+    await act(async () => {
+      await result.current.retry([rejected], "autoexperten_standard", null);
+    });
+    expect(vi.mocked(processPhoto).mock.calls.map(([target]) => target.id)).toEqual(["p_r_rejected"]);
+    expect(result.current.items[0]).toMatchObject({ photoId: "p_r_rejected", status: "complete", errorCode: null });
+
+    // "Bereits geprüfte Fotos erneut bearbeiten" (e.g. after a showroom update): everything is sent.
+    act(() => result.current.reset());
+    vi.mocked(processPhoto).mockClear();
+    await act(async () => {
+      await result.current.start([rejected, checked], "autoexperten_standard", null, { reprocess: true });
+    });
+    expect(vi.mocked(processPhoto).mock.calls.map(([target]) => target.id).sort()).toEqual(["p_r_done", "p_r_rejected"]);
+    expect(result.current.items.every((item) => item.status === "complete")).toBe(true);
   });
 });

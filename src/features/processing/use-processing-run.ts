@@ -2,7 +2,12 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 import type { ProcessingPresetId, VehiclePhotoWithUrls } from "@/lib/domain/types";
-import { IDLE_RUN, processingRuns, type ProcessingRunSnapshot } from "@/lib/processing/processing-runs";
+import {
+  IDLE_RUN,
+  processingRuns,
+  type ProcessingRunSnapshot,
+  type StartOptions,
+} from "@/lib/processing/processing-runs";
 
 export type {
   PhotoRunState,
@@ -10,6 +15,7 @@ export type {
   RunOutcome,
   RunPhase,
   RunResult,
+  StartOptions,
 } from "@/lib/processing/processing-runs";
 
 const getServerSnapshot = (): ProcessingRunSnapshot => IDLE_RUN;
@@ -24,8 +30,12 @@ export function useProcessingRun(vehicleId: string) {
   const { phase, items, preset } = useSyncExternalStore(processingRuns.subscribe, getSnapshot, getServerSnapshot);
 
   const start = useCallback(
-    (photos: readonly VehiclePhotoWithUrls[], runPreset: ProcessingPresetId, accessCode: string | null) =>
-      processingRuns.start(vehicleId, photos, runPreset, accessCode),
+    (
+      photos: readonly VehiclePhotoWithUrls[],
+      runPreset: ProcessingPresetId,
+      accessCode: string | null,
+      options?: StartOptions,
+    ) => processingRuns.start(vehicleId, photos, runPreset, accessCode, options),
     [vehicleId],
   );
   const retry = useCallback(

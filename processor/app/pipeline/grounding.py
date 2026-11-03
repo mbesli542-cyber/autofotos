@@ -1110,7 +1110,10 @@ def apply_grounding(
     fx, fy = frame.to_floor(gx, gy)
     rows = gy[:, :1]
     ahead = np.maximum(rows - line_f[None, :], 0.0) / np.maximum(AMBIENT_FRONT_REACH * depth_px * line_steep, 1.0)[None, :]
-    px_, py_ = plate.plate.floor_to_uv(*pose.invert(fx, fy))
+    # (a proxy moved back into the room samples its rendered shadow where it was rendered)
+    sx, sy = plate.plate.proxy_shift
+    qx, qy = pose.invert(fx, fy)
+    px_, py_ = plate.plate.floor_to_uv(qx - sx, qy - sy)
     map_x = (np.asarray(px_) * width - 0.5).astype(np.float32)
     map_y = (np.asarray(py_) * height - 0.5).astype(np.float32)
     proxy = cv2.remap(

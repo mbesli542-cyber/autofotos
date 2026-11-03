@@ -1,6 +1,6 @@
 "use client";
 
-import { Camera, ChevronLeft, ChevronRight, ImageOff, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
+import { Camera, ChevronLeft, ChevronRight, CircleCheck, ImageOff, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { ProcessingWarningList } from "@/components/processing/ProcessingWarningList";
 import { Button } from "@/components/ui/Button";
@@ -11,6 +11,7 @@ import { AppError, toUserMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { needsResultCheck } from "@/lib/processing/processing-warnings";
+import type { ShotCheckState } from "@/lib/processing/shot-check";
 import { getShotTreatment } from "@/lib/processing/shot-treatment";
 import { PhotoVersionToggle } from "./PhotoVersionToggle";
 import type { PhotoVariant } from "./ShotThumbnail";
@@ -53,6 +54,7 @@ export function PhotoViewer({
   onRetake,
   onDelete,
   onRetryUpload,
+  checks,
 }: {
   slots: readonly PhotoSlot[];
   selectedKey: string | null;
@@ -62,6 +64,8 @@ export function PhotoViewer({
   onRetake: (slot: PhotoSlot) => void;
   onDelete?: (slot: PhotoSlot) => Promise<void>;
   onRetryUpload?: (slot: PhotoSlot) => void;
+  /** Results of the automatic check by shot key (shot-check.ts). */
+  checks?: ReadonlyMap<string, ShotCheckState>;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [variant, setVariant] = useState<PhotoVariant>(defaultVariant);
@@ -390,6 +394,7 @@ export function PhotoViewer({
               </div>
             )}
 
+            <CheckResult state={checks?.get(slot.key)} />
             <ProcessingWarningList warnings={warnings} className="mx-auto mb-3 max-w-xl" />
             {slot.photo && !slot.pending && (
               <p className="mb-3 text-center text-xs text-ae-subtle">
@@ -411,4 +416,35 @@ export function PhotoViewer({
       </div>
     </dialog>
   );
+}
+
+/** Result of the automatic check of the photo shown (the processor's reason for a retake). */
+function CheckResult({ state }: { state: ShotCheckState | undefined }) {
+  if (state?.kind === "retake") {
+    return (
+      <p className="mx-auto mb-3 flex max-w-xl items-start gap-2 rounded-lg bg-ae-danger/12 px-3 py-2 text-sm text-ae-danger">
+        <RotateCcw className="mt-0.5 size-4 shrink-0" aria-hidden />
+        <span>
+          <span className="font-semibold">Bitte neu aufnehmen:</span> {state.reason}
+        </span>
+      </p>
+    );
+  }
+  if (state?.kind === "ok") {
+    return (
+      <p className="mb-3 flex items-center justify-center gap-1.5 text-xs font-medium text-ae-success">
+        <CircleCheck className="size-3.5" aria-hidden />
+        Automatisch geprüft – passt
+      </p>
+    );
+  }
+  if (state?.kind === "checking") {
+    return (
+      <p className="mb-3 flex items-center justify-center gap-1.5 text-xs text-ae-muted" role="status">
+        <Spinner className="size-3.5" />
+        Wird automatisch geprüft…
+      </p>
+    );
+  }
+  return null;
 }

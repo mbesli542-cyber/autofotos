@@ -569,3 +569,20 @@ describe("UploadQueue over plain HTTP (no crypto.randomUUID)", () => {
     expect(item.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
 });
+
+describe("UploadQueue – saved captures", () => {
+  it("reports a saved capture while it is still in the queue – no moment without it", async () => {
+    const { save, capture } = await setup();
+    const queue = new UploadQueue(save, 480, createUploadQueueDatabase());
+    const seen: { id: string; stillQueued: boolean }[] = [];
+    queue.onUploaded((item) => {
+      seen.push({ id: item.id, stillQueued: queue.getSnapshot().items.some((entry) => entry.id === item.id) });
+      throw new Error("a failing listener");
+    });
+    const saved = await queue.enqueue(capture(T0));
+    await flush();
+    expect(seen).toEqual([{ id: saved.id, stillQueued: true }]);
+    // A failing listener does not turn the saved capture into a failed one.
+    expect(queue.getSnapshot().items).toEqual([]);
+  });
+});

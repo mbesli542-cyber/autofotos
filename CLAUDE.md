@@ -118,6 +118,7 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Camera (stream, capture, picked-file check, quality-check interface) | `src/lib/camera/` (`photo-file.ts`: JPG/PNG/WebP/HEIC ≤ 50 MB), `src/components/camera/` |
 | Processing contract, config, presets, real processor, client, adapters | `src/lib/processing/` |
 | Processing runs (per vehicle, outside the screen), start blockers, processor hints | `src/lib/processing/processing-runs.ts`, `run-blockers.ts`, `processing-warnings.ts`, `src/components/processing/ProcessingWarningList.tsx` |
+| Instant per-photo check in the camera (auto-processing after a capture is saved, green/red shot segments; one job per photo shared with runs) | `src/lib/processing/photo-checks.ts`, `shot-check.ts`, `src/hooks/use-photo-checks.ts`, `src/components/camera/CheckBanner.tsx`, `AutoCheckInfo.tsx` |
 | Data backend decision (`NEXT_PUBLIC_DATA_BACKEND`) | `src/lib/data/backend-mode.ts` |
 | Demo data migrations (IndexedDB) | `src/lib/data/mock/migrations.ts` |
 | API routes | `src/app/api/processing-status`, `process-photo`, `process-upload`, `process-job/[jobId]` (+ `/result`) |
@@ -125,9 +126,9 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Client service container | `src/lib/app-services.ts` |
 | DB schema, RLS, storage policies (apply the files in file-name order) | `supabase/migrations/`, static guard `src/lib/data/supabase/migrations.test.ts` |
 | Brand config / official logo | `src/config/brand.ts`, `src/components/brand/BrandLogo.tsx`, `public/brand/` |
-| Showroom preset, 3D plates, branding layer | `public/presets/` (README = plates + rendering), `processor/showroom3d/`, `processor/app/showroom/` (`plates.py`, `wall_branding.py`, `branding.py`) |
+| Showroom preset, 3D plates, branding layer | `public/presets/` (README = plates + rendering; `variants/` = look previews, not shipped defaults), `processor/showroom3d/`, `processor/app/showroom/` (`plates.py`, `wall_branding.py`, `branding.py`, `icons.py` Lucide ISC) |
 | Image processor (Python/FastAPI) | `processor/` (see `processor/README.md`) |
-| Processor pipeline steps | `processor/app/pipeline/` (decode, detection, segmentation, matting, mask, vehicle_geometry, placement, quality, light, grounding/shadow, reflection, composite, export; debug allow-list `debug.py`) |
+| Processor pipeline steps | `processor/app/pipeline/` (decode, detection, segmentation, matting, mask, vehicle_geometry, placement, quality, light, grounding/shadow, reflection, composite, export; `room_depth.py` variant placement fit; `detail_backdrop.py` EXPERIMENTAL detail-shot showroom backdrop, off by default; debug allow-list `debug.py`) |
 | Processor scripts | `processor/scripts/` (`download_models.py` – both models, SHA-256; `make_portrait_cases.py` – derived portrait test frames; `visual_regression.py`; `render_showroom_preview.py`) |
 | Dev test page (dev only) | `src/app/dev/processing-test`, `src/app/api/dev/`, `src/lib/dev-tools.ts` |
 

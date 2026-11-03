@@ -1,0 +1,150 @@
+{
+  "id": "autoexperten_standard",
+  "name": "AutoExperten Standard",
+  "description": "Variante 2: wie Variante 1, das Fahrzeug steht perspektivisch korrekt weiter hinten im Raum (mehr Showroom sichtbar).",
+  "background": {
+    "plates": "autoexperten-standard/plates.json",
+    "notes": "ONE physical 3D showroom (processor/showroom3d/render_plates.py, Blender, CC0 assets) rendered from eight shot-specific cameras: <shot>.jpg = empty plate WITHOUT branding, <shot>-shadow.png = floor shadow of a typical car (16-bit, linear multiplier), plates.json = camera + floor/wall homographies + proxy car. Missing or invalid plates: every exterior job fails with 'AutoExperten Showroom-Master fehlt.' (no fallback)."
+  },
+  "branding": {
+    "enabled": true,
+    "clearance": 0.02,
+    "lightMatch": 0.0,
+    "logo": {
+      "file": "official/AutoExperten_Logo.png",
+      "centerX": 0.38,
+      "top": 0.093,
+      "maxWidth": 0.6,
+      "maxHeight": 0.2,
+      "opacity": 1.0,
+      "mounted": true
+    },
+    "city": {
+      "text": "Schwetzingen",
+      "centerX": 0.38,
+      "top": 0.265,
+      "capHeight": 0.034,
+      "tracking": 0.38,
+      "color": "#403F3F",
+      "weight": "medium",
+      "opacity": 1.0,
+      "mounted": true,
+      "align": "center",
+      "icon": "",
+      "ruleLength": 0.12,
+      "ruleGap": 0.02,
+      "ruleThickness": 0.0025
+    },
+    "website": {
+      "text": "www.autoexperten-rn.de",
+      "centerX": 0.725,
+      "top": 0.26,
+      "capHeight": 0.019,
+      "tracking": 0.0,
+      "color": "#4A4949",
+      "weight": "medium",
+      "opacity": 1.0,
+      "mounted": false,
+      "align": "left",
+      "icon": "globe",
+      "ruleLength": 0.0,
+      "ruleGap": 0.0,
+      "ruleThickness": 0.0
+    },
+    "phone": {
+      "text": "+49 6202 9262357",
+      "centerX": 0.725,
+      "top": 0.325,
+      "capHeight": 0.019,
+      "tracking": 0.0,
+      "color": "#4A4949",
+      "weight": "medium",
+      "opacity": 1.0,
+      "mounted": false,
+      "align": "left",
+      "icon": "phone",
+      "ruleLength": 0.0,
+      "ruleGap": 0.0,
+      "ruleThickness": 0.0
+    },
+    "mount": {
+      "shadowOpacity": 0.28,
+      "shadowOffset": 0.0016,
+      "shadowBlur": 0.0022
+    }
+  },
+  "output": {
+    "aspect": [
+      4,
+      3
+    ],
+    "longEdgeMin": 2400,
+    "longEdgeMax": 2400,
+    "jpegQuality": 92
+  },
+  "placement": {
+    "maxHeightRatio": 0.62,
+    "minMargin": 0.03,
+    "minTargetFraction": 0.9,
+    "widthScale": 1.0,
+    "depthOffsetM": 0.45
+  },
+  "shadow": {
+    "contactOpacity": 0.92,
+    "creaseOpacity": 0.85,
+    "underbodyOpacity": 0.85,
+    "edgeOpacity": 0.4,
+    "underbodyFalloff": 0.12,
+    "ambientOpacity": 0.35,
+    "ambientReach": 0.6,
+    "minFloorLight": 0.04
+  },
+  "reflection": {
+    "enabled": true,
+    "strength": 1.4,
+    "maxReflectance": 0.26,
+    "defaultReflectance": 0.1,
+    "fade": 1.3,
+    "blurRate": 0.025
+  },
+  "vehicleAdjustments": {
+    "exposureEvLimit": 0.25,
+    "contrastLimit": 0.0,
+    "whiteBalanceLimit": 0.02,
+    "lightWrap": 0.1
+  },
+  "quality": {
+    "minSourceLongEdge": 1600,
+    "maxUpscale": 1.5,
+    "minVehicleWidthRatio": 0.45,
+    "maxUncertainFraction": 0.3,
+    "maxSplitParts": 3,
+    "minCoverage": 0.004,
+    "maxCoverage": 0.85,
+    "minFillRatio": 0.3,
+    "borderPx": 2,
+    "topTouchRatio": 0.15,
+    "minContacts": 2,
+    "maxRiseFactor": 2.6,
+    "minRiseFactor": 0.0,
+    "riseTolerance": 0.03,
+    "minAspectFactor": 0.5,
+    "maxAspectFactor": 1.9,
+    "highViewRiseFactor": 1.7,
+    "highViewAspectFactor": 0.8
+  },
+  "shotPlacement": {
+    "front_left_45": {
+      "widthScale": 1.06
+    },
+    "front_right_45": {
+      "widthScale": 1.06
+    },
+    "rear_left_45": {
+      "widthScale": 1.06
+    },
+    "rear_right_45": {
+      "widthScale": 1.06
+    }
+  }
+}

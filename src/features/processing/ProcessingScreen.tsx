@@ -17,6 +17,7 @@ import { ErrorState } from "@/components/ui/ErrorState";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { PageLoading } from "@/components/ui/Spinner";
+import { usePhotoChecks } from "@/hooks/use-photo-checks";
 import { useProcessingAccessCode } from "@/hooks/use-processing-access-code";
 import { useProcessingStatus } from "@/hooks/use-processing-status";
 import { usePendingUploads } from "@/hooks/use-upload-queue";
@@ -33,6 +34,7 @@ import {
   PROCESSING_PRESET_LIST,
   isProcessingPresetAvailable,
 } from "@/lib/processing/presets";
+import { knownOutcomeOf } from "@/lib/processing/photo-checks";
 import { needsResultCheck } from "@/lib/processing/processing-warnings";
 import { getRetakeStatus } from "@/lib/processing/quality-gate";
 import { PROCESSING_BLOCKER_MESSAGES, getProcessingBlocker } from "@/lib/processing/run-blockers";
@@ -56,6 +58,8 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
   const [accessCodeError, setAccessCodeError] = useState<string | null>(null);
   /** Preset of a run that was refused because of the access code – retried after entering it. */
   const [retryPreset, setRetryPreset] = useState<ProcessingPresetId | null>(null);
+  /** "Bereits geprüfte Fotos erneut bearbeiten": send every photo again (e.g. after a showroom update). */
+  const [reprocessAll, setReprocessAll] = useState(false);
   const detailHref = `/fahrzeuge/${vehicleId}`;
 
   const photos = useMemo(
@@ -63,6 +67,9 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
     [state, template],
   );
   const counts = useMemo(() => countByTreatment(template, photos), [template, photos]);
+  const checks = usePhotoChecks();
+  /** Photos already processed with the chosen style or rejected (e.g. checked right after the capture). */
+  const alreadyKnown = photos.filter((photo) => knownOutcomeOf(photo, preset, checks.checks.get(photo.id)) !== null).length;
   const finished = run.items.filter((item) => item.status === "complete" || item.status === "failed").length;
   /** Shots a new photo would fix (quality gate etc.) or replaced meanwhile, by shot key. */
   const retakes = useMemo(
@@ -119,7 +126,8 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
 
   async function startRun(selectedPreset: ProcessingPresetId, accessCode: string | null) {
     setAccessCodeError(null);
-    handleRunResult(await run.start(photos, selectedPreset, accessCode), selectedPreset);
+    const reprocess = reprocessAll && alreadyKnown > 0;
+    handleRunResult(await run.start(photos, selectedPreset, accessCode, { reprocess }), selectedPreset);
   }
 
   /**
@@ -140,7 +148,14 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
       return photo ? { kind: "retry", onRetry: () => void processAgain([photo]) } : null;
     }
     if (retake.kind === "retake") {
-      return { kind: "retake", href: cameraHref(vehicleId, { shot: item.shotKey, returnTo: "bearbeiten" }) };
+      // The rejected photo is still the shot's photo: it can be checked again anyway
+      // (e.g. after a processor update) – a new photo is the usual fix.
+      const photo = photos.find((entry) => entry.id === item.photoId);
+      return {
+        kind: "retake",
+        href: cameraHref(vehicleId, { shot: item.shotKey, returnTo: "bearbeiten" }),
+        onRecheck: photo && item.status === "failed" ? () => void processAgain([photo]) : undefined,
+      };
     }
     if (retake.kind === "saving") {
       return {
@@ -252,6 +267,22 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
                   />
                 ))}
               </div>
+              {alreadyKnown > 0 && (
+                <label className="mt-3 flex min-h-11 cursor-pointer items-center gap-3 rounded-xl border border-ae-border bg-ae-surface px-4 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="size-4 shrink-0 accent-ae-blue"
+                    checked={reprocessAll}
+                    onChange={(event) => setReprocessAll(event.target.checked)}
+                  />
+                  <span>
+                    <span className="font-semibold">Bereits geprüfte Fotos erneut bearbeiten</span>
+                    <span className="block text-xs text-ae-muted">
+                      Z. B. nach einer Aktualisierung des Showrooms – sonst werden nur die übrigen Fotos gesendet.
+                    </span>
+                  </span>
+                </label>
+              )}
             </section>
 
             <div className="mt-5 flex gap-3 rounded-xl border border-ae-border bg-ae-surface p-4 text-sm">
@@ -284,6 +315,15 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
                 {pluralizePhotos(photos.length)}: {counts.showroom} im AutoExperten Showroom,{" "}
                 {counts.original_environment} Innenraum/Detail in Originalumgebung.
               </p>
+              {alreadyKnown > 0 && (
+                <p className="mt-1 text-center text-xs text-ae-subtle sm:text-left">
+                  {reprocessAll
+                    ? `Alle ${photos.length} Fotos werden neu bearbeitet – auch die bereits geprüften.`
+                    : alreadyKnown === photos.length
+                      ? "Alle Fotos wurden schon geprüft und bearbeitet – es wird nichts erneut gesendet."
+                      : `${alreadyKnown} von ${photos.length} Fotos wurden schon geprüft – nur die übrigen werden jetzt bearbeitet.`}
+                </p>
+              )}
             </StickyActions>
           </>
         ) : (
