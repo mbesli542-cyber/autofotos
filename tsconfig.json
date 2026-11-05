@@ -43,6 +43,7 @@
     "node_modules",
     ".next",
     "public",
-    "processor"
+    "processor",
+    ".claude"
   ]
 }

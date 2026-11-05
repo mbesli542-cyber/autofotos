@@ -24,6 +24,8 @@ const eslintConfig = defineConfig([
     "public/sw.js",
     // Python image processor (its virtualenv may contain vendored JS).
     "processor/**",
+    // Local agent worktrees / tooling state (never part of the app).
+    ".claude/**",
   ]),
 ]);
 
