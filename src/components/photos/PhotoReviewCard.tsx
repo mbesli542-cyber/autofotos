@@ -1,16 +1,15 @@
 import { cn } from "@/lib/cn";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
-import { SHOT_CHECK_LABELS, type ShotCheckState } from "@/lib/processing/shot-check";
+import { SHOT_CHECK_LABELS, shotCheckDescription, type ShotCheckState } from "@/lib/processing/shot-check";
 import { processedNeedsCheck, ShotThumbnail, type PhotoVariant } from "./ShotThumbnail";
 
+/** The tile's state for screen readers – the same wording as everywhere (SHOT_CHECK_LABELS). */
 function describeState(slot: PhotoSlot, variant: PhotoVariant, check: ShotCheckState | undefined): string {
   if (slot.pending?.status === "failed") return "nicht gespeichert";
   if (slot.pending) return check?.kind === "checking" ? "wird gespeichert und geprüft" : "wird gespeichert";
-  if (check?.kind === "retake") return `bitte neu aufnehmen: ${check.reason}`;
-  if (check?.kind === "checking") return "wird geprüft";
+  if (check?.kind === "retake" || check?.kind === "checking") return shotCheckDescription(check) ?? "";
   if (processedNeedsCheck(slot, variant) || (check?.kind === "ok" && check.hint)) return SHOT_CHECK_LABELS.hint;
-  if (check?.kind === "ok") return "geprüft, passt";
-  if (check?.kind === "saved") return "gespeichert";
+  if (check?.kind === "ok" || check?.kind === "saved") return shotCheckDescription(check) ?? "";
   return slot.photo ? "aufgenommen" : "fehlt";
 }
 

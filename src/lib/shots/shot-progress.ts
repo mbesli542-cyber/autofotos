@@ -145,6 +145,24 @@ export function getNextRetakeShotKey(
   return null;
 }
 
+/**
+ * Where the guided camera goes after a capture when no shot is missing
+ * (pure): the next rejected shot after the current one (getNextRetakeShotKey)
+ * – or the current shot itself when its NEW photo was already rejected
+ * (`retakeKeys` are the shots red right now, the current one only then).
+ * `left`: the shots still to retake, the current one included when red.
+ * null: no shot is red – the camera is left for "Fotos überprüfen".
+ */
+export function getRetakeContinuation(
+  template: ShotTemplate,
+  retakeKeys: readonly string[],
+  currentKey: string,
+): { key: string; left: number } | null {
+  const left = new Set(retakeKeys).size;
+  const key = getNextRetakeShotKey(template, retakeKeys, currentKey) ?? (retakeKeys.includes(currentKey) ? currentKey : null);
+  return key === null ? null : { key, left };
+}
+
 /** Previous/next shot in template order (no wrapping). */
 export function getAdjacentShotKey(
   template: ShotTemplate,

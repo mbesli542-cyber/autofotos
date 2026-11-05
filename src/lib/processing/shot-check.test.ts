@@ -9,7 +9,10 @@ import {
   getShotCheckState,
   getShotCheckStates,
   passThroughState,
+  resultsToCheckMessage,
   retakesLeftMessage,
+  shotCheckDescription,
+  shotCheckDetail,
   shotCheckLabel,
 } from "./shot-check";
 
@@ -174,18 +177,28 @@ describe("getShotCheckState", () => {
 });
 
 describe("checkResultMessage", () => {
-  it("says in one line whether the shot is usable", () => {
-    expect(checkResultMessage({ order: 2, title: "Vorne" }, { kind: "ok", hint: null })).toBe("02 Vorne passt ✓");
-    expect(checkResultMessage({ order: 1, title: "Vorne links (45°)" }, { kind: "retake", reason: TOO_SMALL })).toBe(
-      `01 Vorne links (45°): bitte neu aufnehmen – ${TOO_SMALL}`,
-    );
-    expect(checkResultMessage({ order: 3, title: "Vorne rechts (45°)" }, { kind: "ok", hint: UNCERTAIN.message })).toBe(
-      `03 Vorne rechts (45°): Geprüft – bitte Ergebnis ansehen – ${UNCERTAIN.message}`,
-    );
+  it("names the shot and its state with the one wording of every screen, the reason after it", () => {
+    expect(checkResultMessage({ order: 2, title: "Vorne" }, { kind: "ok", hint: null })).toEqual({
+      label: "02 Vorne · Geprüft – passt",
+      detail: null,
+    });
+    expect(checkResultMessage({ order: 1, title: "Vorne links (45°)" }, { kind: "retake", reason: TOO_SMALL })).toEqual({
+      label: "01 Vorne links (45°) · Bitte neu aufnehmen",
+      detail: TOO_SMALL,
+    });
+    expect(checkResultMessage({ order: 3, title: "Vorne rechts (45°)" }, { kind: "ok", hint: UNCERTAIN.message })).toEqual({
+      label: "03 Vorne rechts (45°) · Geprüft – bitte Ergebnis ansehen",
+      detail: UNCERTAIN.message,
+    });
     expect(checkResultMessage({ order: 2, title: "Vorne" }, { kind: "checking" })).toBeNull();
-    expect(checkResultMessage({ order: 7, title: "Hinten" }, { kind: "error", reason: "x", accessCode: true })).toBe(
-      "07 Hinten: nicht geprüft – der Zugangscode ist falsch. Bitte neu eingeben.",
-    );
+    expect(checkResultMessage({ order: 7, title: "Hinten" }, { kind: "error", reason: "x", accessCode: true })).toEqual({
+      label: "07 Hinten · Prüfung nicht möglich",
+      detail: "Der Zugangscode ist falsch – bitte neu eingeben.",
+    });
+    expect(checkResultMessage({ order: 7, title: "Hinten" }, { kind: "error", reason: "x" })).toEqual({
+      label: "07 Hinten · Prüfung nicht möglich",
+      detail: "Wird unter „Fotos bearbeiten“ nachgeholt.",
+    });
   });
 
   it("explains why the check is off (and how to switch it on in demo mode)", () => {
@@ -250,6 +263,26 @@ describe("wording", () => {
     expect(shotCheckLabel({ kind: "saved" })).toBe("Gespeichert");
     expect(shotCheckLabel({ kind: "retake", reason: "x" })).toBe("Bitte neu aufnehmen");
     expect(shotCheckLabel({ kind: "error", reason: "x" })).toBe("Prüfung nicht möglich");
+  });
+
+  it("puts the processor's hint or reason after the label with a colon", () => {
+    expect(shotCheckDetail({ kind: "ok", hint: null })).toBeNull();
+    expect(shotCheckDetail({ kind: "saved" })).toBeNull();
+    expect(shotCheckDescription({ kind: "none" })).toBeNull();
+    expect(shotCheckDescription({ kind: "ok", hint: null })).toBe("Geprüft – passt");
+    expect(shotCheckDescription({ kind: "ok", hint: UNCERTAIN.message })).toBe(
+      `Geprüft – bitte Ergebnis ansehen: ${UNCERTAIN.message}`,
+    );
+    expect(shotCheckDescription({ kind: "retake", reason: TOO_SMALL })).toBe(`Bitte neu aufnehmen: ${TOO_SMALL}`);
+    expect(shotCheckDescription({ kind: "error", reason: "Offline." })).toBe("Prüfung nicht möglich: Offline.");
+    expect(shotCheckDescription({ kind: "saved" })).toBe("Gespeichert");
+  });
+
+  it("sums up the results to look at with the same wording", () => {
+    expect(resultsToCheckMessage(1, "viewer")).toBe(
+      "1 Foto: Geprüft – bitte Ergebnis ansehen (Hinweis in der Großansicht).",
+    );
+    expect(resultsToCheckMessage(3, "list")).toBe("3 Fotos: Geprüft – bitte Ergebnis ansehen (Hinweise in der Liste).");
   });
 
   it("counts the photos left to retake in correct German", () => {

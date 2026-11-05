@@ -64,6 +64,41 @@ export function shotCheckLabel(state: ShotCheckState): string | null {
   }
 }
 
+/** The text that goes with the label: the processor's hint or reason (null: none). */
+export function shotCheckDetail(state: ShotCheckState): string | null {
+  switch (state.kind) {
+    case "ok":
+      return state.hint;
+    case "retake":
+    case "error":
+      return state.reason;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Label and detail as one text, e.g. "Bitte neu aufnehmen: <Grund>" or
+ * "Geprüft – passt" (null: nothing to show) – the same on every screen.
+ */
+export function shotCheckDescription(state: ShotCheckState): string | null {
+  const label = shotCheckLabel(state);
+  if (label === null) return null;
+  const detail = shotCheckDetail(state);
+  return detail ? `${label}: ${detail}` : label;
+}
+
+/**
+ * Summary of results the processor asks to look at, e.g. "1 Foto: Geprüft –
+ * bitte Ergebnis ansehen (Hinweis in der Großansicht)." – `where`: where the
+ * hints are shown.
+ */
+export function resultsToCheckMessage(count: number, where: "viewer" | "list"): string {
+  const photos = count === 1 ? "1 Foto" : `${count} Fotos`;
+  const hints = count === 1 ? "Hinweis" : "Hinweise";
+  return `${photos}: ${SHOT_CHECK_LABELS.hint} (${hints} ${where === "viewer" ? "in der Großansicht" : "in der Liste"}).`;
+}
+
 /**
  * Interior and detail shots are passed through, never checked (pure): a
  * captured one is just "saved" – only a refusal of the file itself (e.g. too
@@ -191,25 +226,49 @@ function shotNumber(order: number): string {
   return String(order).padStart(2, "0");
 }
 
+/** A message in the camera's check status line: a bold label and more text after a colon. */
+export interface CheckMessage {
+  label: string;
+  detail: string | null;
+}
+
 /**
- * Short message when a check of a shot finished (banner in the camera), e.g.
- * "02 Vorne passt ✓" / "01 Vorne links (45°): bitte neu aufnehmen – <Grund>".
- * null: nothing to report.
+ * Message when a check of a shot finished (camera), with the state's one
+ * wording, e.g. "02 Vorne · Geprüft – passt" or "01 Vorne links (45°) ·
+ * Bitte neu aufnehmen" + the reason. null: nothing to report.
  */
-export function checkResultMessage(shot: { order: number; title: string }, state: ShotCheckState): string | null {
+export function checkResultMessage(shot: { order: number; title: string }, state: ShotCheckState): CheckMessage | null {
   const name = `${shotNumber(shot.order)} ${shot.title}`;
   switch (state.kind) {
     case "ok":
-      return state.hint ? `${name}: ${SHOT_CHECK_LABELS.hint} – ${state.hint}` : `${name} passt ✓`;
     case "retake":
-      return `${name}: bitte neu aufnehmen – ${state.reason}`;
+      return { label: `${name} · ${shotCheckLabel(state)}`, detail: shotCheckDetail(state) };
     case "error":
-      return state.accessCode
-        ? `${name}: nicht geprüft – der Zugangscode ist falsch. Bitte neu eingeben.`
-        : `${name}: automatische Prüfung nicht möglich – wird unter „Fotos bearbeiten“ nachgeholt.`;
+      return {
+        label: `${name} · ${SHOT_CHECK_LABELS.error}`,
+        detail: state.accessCode
+          ? "Der Zugangscode ist falsch – bitte neu eingeben."
+          : "Wird unter „Fotos bearbeiten“ nachgeholt.",
+      };
     default:
       return null;
   }
+}
+
+/**
+ * Whether the capture of a shot taken at `takenAt` – or a newer one – was
+ * already rejected by its check (pure). A rejection of the photo that capture
+ * replaced does not count: that shot is being checked again.
+ */
+export function isCaptureRejected(
+  checks: Iterable<PhotoCheck>,
+  capture: { vehicleId: string; shotKey: string; takenAt: string },
+): boolean {
+  for (const check of checks) {
+    if (check.vehicleId !== capture.vehicleId || check.shotKey !== capture.shotKey || check.status !== "retake") continue;
+    if (check.takenAt !== "" && !isOlderCapture(check.takenAt, capture.takenAt)) return true;
+  }
+  return false;
 }
 
 /** "Noch 1 Foto neu aufnehmen" / "Noch 3 Fotos neu aufnehmen" (camera, after a retake). */

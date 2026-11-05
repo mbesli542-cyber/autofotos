@@ -552,7 +552,7 @@ describe("<PhotoViewer /> – hints of the processor on the processed version", 
     const check = within(dialog).getByText(/wurde entfernt – bitte das Ergebnis prüfen/);
     expect(check.closest("p")).toHaveClass("text-ae-warning");
     expect(within(dialog).getByText(/musste vergrößert werden/).closest("p")).toHaveClass("text-ae-subtle");
-    expect(within(dialog).getByText("Bearbeitet · bitte Ergebnis ansehen")).toBeInTheDocument();
+    expect(within(dialog).getByText("Bearbeitet · Geprüft – bitte Ergebnis ansehen")).toBeInTheDocument();
 
     view.unmount();
     render(viewer("original"));

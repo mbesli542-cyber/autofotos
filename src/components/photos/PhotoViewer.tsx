@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/Button";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { Spinner } from "@/components/ui/Spinner";
 import { getAppServices, getShotTemplate } from "@/lib/app-services";
+import { cn } from "@/lib/cn";
 import { AppError, toUserMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
@@ -294,9 +295,14 @@ export function PhotoViewer({
               </button>
             )}
             {shownVariant === "processed" && imageUrl && (
-              <span className="absolute top-3 left-3 rounded-md bg-ae-blue px-2 py-0.5 text-xs font-semibold text-white">
+              <span
+                className={cn(
+                  "absolute top-3 left-3 rounded-md px-2 py-0.5 text-xs font-semibold",
+                  needsResultCheck(warnings) ? "bg-ae-warning text-black" : "bg-ae-blue text-white",
+                )}
+              >
                 {treatment === "original_environment" ? "Bearbeitet · Originalumgebung" : "Bearbeitet"}
-                {needsResultCheck(warnings) ? " · bitte Ergebnis ansehen" : ""}
+                {needsResultCheck(warnings) ? ` · ${SHOT_CHECK_LABELS.hint}` : ""}
               </span>
             )}
           </div>
@@ -442,7 +448,7 @@ function CheckResult({ state, showHint }: { state: ShotCheckState | undefined; s
       <p className="mx-auto mb-3 flex max-w-xl items-start gap-2 rounded-lg bg-ae-danger/12 px-3 py-2 text-sm text-ae-danger">
         <RotateCcw className="mt-0.5 size-4 shrink-0" aria-hidden />
         <span>
-          <span className="font-semibold">Bitte neu aufnehmen:</span> {state.reason}
+          <span className="font-semibold">{SHOT_CHECK_LABELS.retake}:</span> {state.reason}
         </span>
       </p>
     );
@@ -481,7 +487,7 @@ function CheckResult({ state, showHint }: { state: ShotCheckState | undefined; s
     return (
       <p className="mb-3 flex items-center justify-center gap-1.5 text-xs text-ae-muted" role="status">
         <Spinner className="size-3.5" />
-        Wird automatisch geprüft…
+        {SHOT_CHECK_LABELS.checking}
       </p>
     );
   }

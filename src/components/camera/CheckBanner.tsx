@@ -1,15 +1,18 @@
 import { ChevronDown, CircleCheck, Info, RotateCcw, Save, TriangleAlert, X } from "lucide-react";
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/lib/cn";
-import { SHOT_CHECK_LABELS, type ShotCheckState } from "@/lib/processing/shot-check";
+import { shotCheckDetail, shotCheckLabel, type CheckMessage, type ShotCheckState } from "@/lib/processing/shot-check";
 
-export interface CheckBannerState {
+export interface CheckBannerState extends CheckMessage {
   /** Changes with every finished check (restarts the banner's timer). */
   id: string;
   shotKey: string;
-  /** hint: passed, but the processor asks to look at the result. */
-  kind: "ok" | "hint" | "retake" | "error";
-  text: string;
+  /**
+   * hint: passed, but the processor asks to look at the result.
+   * retakes_left: after a retake the camera moved on to the next rejected
+   * shot ("Noch N Fotos neu aufnehmen").
+   */
+  kind: "ok" | "hint" | "retake" | "error" | "retakes_left";
 }
 
 type Tone = "ok" | "hint" | "retake" | "error" | "saved" | "checking" | "neutral";
@@ -21,16 +24,29 @@ export interface CheckStatusContent {
   tone: Tone;
   /** The one-line label (bold). */
   label: string;
-  /** More text (shown on the line as far as it fits, in full when expanded). */
+  /** More text after a colon (shown on the line as far as it fits, in full when expanded). */
   detail: string | null;
   /** A rejected OTHER shot: "Jetzt wiederholen" jumps there. */
   retakeShotKey: string | null;
 }
 
+/** The tone of a shot's own check state. */
+function stateTone(state: ShotCheckState): Tone {
+  switch (state.kind) {
+    case "ok":
+      return state.hint ? "hint" : "ok";
+    case "none":
+      return "neutral";
+    default:
+      return state.kind;
+  }
+}
+
 /**
  * The content of the camera's check status line (pure): a banner of a
- * finished check while it is shown, else the current shot's own state once
- * it is captured. null: nothing to show.
+ * finished check (or of the retakes still to do) while it is shown, else the
+ * current shot's own state once it is captured – with the same wording as on
+ * every other screen (SHOT_CHECK_LABELS). null: nothing to show.
  */
 export function checkStatusContent(
   banner: CheckBannerState | null,
@@ -41,30 +57,21 @@ export function checkStatusContent(
   if (banner) {
     return {
       id: `banner:${banner.id}`,
-      tone: banner.kind,
-      label: banner.text,
-      detail: null,
+      tone: banner.kind === "retakes_left" ? "retake" : banner.kind,
+      label: banner.label,
+      detail: banner.detail,
       retakeShotKey: banner.kind === "retake" && banner.shotKey !== shot.key ? banner.shotKey : null,
     };
   }
   if (!captured) return null;
-  const id = `shot:${shot.key}:${state.kind}`;
-  switch (state.kind) {
-    case "checking":
-      return { id, tone: "checking", label: "Aufgenommen · wird geprüft…", detail: null, retakeShotKey: null };
-    case "ok":
-      return state.hint
-        ? { id, tone: "hint", label: SHOT_CHECK_LABELS.hint, detail: state.hint, retakeShotKey: null }
-        : { id, tone: "ok", label: SHOT_CHECK_LABELS.ok, detail: null, retakeShotKey: null };
-    case "saved":
-      return { id, tone: "saved", label: SHOT_CHECK_LABELS.saved, detail: null, retakeShotKey: null };
-    case "retake":
-      return { id, tone: "retake", label: "Bitte neu aufnehmen:", detail: state.reason, retakeShotKey: null };
-    case "error":
-      return { id, tone: "error", label: "Bereits aufgenommen · Prüfung nicht möglich", detail: state.reason, retakeShotKey: null };
-    default:
-      return { id, tone: "neutral", label: "Bereits aufgenommen", detail: null, retakeShotKey: null };
-  }
+  return {
+    id: `shot:${shot.key}:${state.kind}`,
+    tone: stateTone(state),
+    // Captured, but nothing checked (checks off, not checked yet).
+    label: shotCheckLabel(state) ?? "Bereits aufgenommen",
+    detail: shotCheckDetail(state),
+    retakeShotKey: null,
+  };
 }
 
 const TONE_CLASSES: Record<Tone, string> = {
@@ -101,7 +108,9 @@ const PANEL_ID = "camera-check-details";
  * line (truncated) with the result of a check that just finished or the
  * current shot's state. Tapping it opens the full text below the header
  * (`expanded`) – for a rejected other shot with "Jetzt wiederholen". The
- * current shot, the progress and the shutter stay free.
+ * current shot, the progress and the shutter stay free. The pill is 24 px
+ * high, its tap area 44 px (an invisible extension above and below that
+ * does not move the layout).
  */
 export function CheckStatusLine({
   content,
@@ -127,14 +136,21 @@ export function CheckStatusLine({
           aria-controls={expanded ? PANEL_ID : undefined}
           data-tone={content.tone}
           className={cn(
-            "flex h-6 max-w-full min-w-0 animate-fade-in items-center gap-1.5 rounded-full px-2.5 text-xs leading-none font-semibold backdrop-blur",
+            "relative flex h-6 max-w-full min-w-0 animate-fade-in items-center gap-1.5 rounded-full px-2.5 text-xs leading-none font-semibold backdrop-blur",
+            // 44 px tap area: 4 px above (the gap to the counts), 16 px below (header padding, top of the stage).
+            "after:absolute after:inset-x-0 after:-top-1 after:-bottom-4 after:content-['']",
             TONE_CLASSES[content.tone],
           )}
         >
           <ToneIcon tone={content.tone} />
           <span className="min-w-0 truncate">
             {content.label}
-            {content.detail && <span className="font-medium"> {content.detail}</span>}
+            {content.detail && (
+              <>
+                {": "}
+                <span className="font-medium">{content.detail}</span>
+              </>
+            )}
           </span>
           <ChevronDown className={cn("size-3.5 shrink-0 transition-transform", expanded && "rotate-180")} aria-hidden />
         </button>
@@ -169,13 +185,18 @@ export function CheckStatusDetails({
         <div className="min-w-0 flex-1">
           <p>
             {content.label}
-            {content.detail && <span className="font-medium"> {content.detail}</span>}
+            {content.detail && (
+              <>
+                {": "}
+                <span className="font-medium">{content.detail}</span>
+              </>
+            )}
           </p>
           {content.retakeShotKey && (
             <button
               type="button"
               onClick={() => onSelect(content.retakeShotKey as string)}
-              className="mt-1.5 underline underline-offset-2"
+              className="-mb-2 flex min-h-11 items-center underline underline-offset-2"
             >
               Jetzt wiederholen
             </button>
@@ -184,7 +205,7 @@ export function CheckStatusDetails({
         <button
           type="button"
           onClick={onClose}
-          className="-my-1 flex size-8 shrink-0 items-center justify-center rounded-lg"
+          className="-my-2 flex size-11 shrink-0 items-center justify-center rounded-lg"
           aria-label="Hinweis schließen"
         >
           <X className="size-3.5" aria-hidden />

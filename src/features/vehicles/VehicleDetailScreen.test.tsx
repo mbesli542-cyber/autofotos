@@ -207,7 +207,7 @@ describe("<VehicleDetailScreen />", () => {
   it("points the employee to the processed photos the processor asks to check", async () => {
     const vehicle = await processedVehicleWithExtra({ front: [REMOVED] });
     const view = render(page(vehicle.id, "processed"));
-    expect(await screen.findByText("Bitte ein bearbeitetes Foto prüfen – Hinweis in der Großansicht.")).toBeInTheDocument();
+    expect(await screen.findByText("1 Foto: Geprüft – bitte Ergebnis ansehen (Hinweis in der Großansicht).")).toBeInTheDocument();
     const card = screen.getByRole("button", { name: "02 Vorne – Geprüft – bitte Ergebnis ansehen" });
     expect(within(card).getByTitle("Geprüft – bitte Ergebnis ansehen")).toBeInTheDocument();
 
@@ -219,7 +219,7 @@ describe("<VehicleDetailScreen />", () => {
     // The originals view stays as it was.
     fireEvent.click(within(dialog).getByRole("button", { name: "Großansicht schließen", hidden: true }));
     fireEvent.click(screen.getByRole("radio", { name: "Original" }));
-    expect(screen.queryByText(/bearbeitetes Foto prüfen/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Hinweis in der Großansicht/)).not.toBeInTheDocument();
   });
 
   it("says inside the large view why a photo could not be deleted (a toast would be hidden behind it)", async () => {

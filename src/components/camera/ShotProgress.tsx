@@ -1,23 +1,13 @@
 import { Check, CloudOff, RotateCcw, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/cn";
 import type { PhotoSlot } from "@/lib/photos/photo-slots";
-import { SHOT_CHECK_LABELS, type ShotCheckState } from "@/lib/processing/shot-check";
+import { shotCheckDescription, type ShotCheckState } from "@/lib/processing/shot-check";
 
+/** The segment's state for screen readers – the same wording as everywhere (shotCheckDescription). */
 function describe(slot: PhotoSlot, check: ShotCheckState | undefined): string {
   if (slot.pending?.status === "failed") return "nicht gespeichert";
   if (!slot.photo && !slot.pending) return "offen";
-  switch (check?.kind) {
-    case "checking":
-      return "aufgenommen, wird geprüft";
-    case "ok":
-      return check.hint ? `${SHOT_CHECK_LABELS.hint}: ${check.hint}` : "geprüft, passt";
-    case "saved":
-      return "gespeichert";
-    case "retake":
-      return `bitte neu aufnehmen: ${check.reason}`;
-    default:
-      return "aufgenommen";
-  }
+  return (check && shotCheckDescription(check)) ?? "aufgenommen";
 }
 
 /**
@@ -27,7 +17,7 @@ function describe(slot: PhotoSlot, check: ShotCheckState | undefined): string {
  * pulsing while checked, green when it passed, amber when its result should
  * be looked at (processor hint), red when the photo must be retaken (tapping
  * it jumps to that shot). Interior and detail shots are never checked: they
- * stay blue ("gespeichert").
+ * stay blue ("Gespeichert").
  */
 export function ShotProgress({
   slots,

@@ -25,6 +25,7 @@ import {
   autoCheckOffMessage,
   checkResultMessage,
   getPhotoCheckState,
+  isCaptureRejected,
   isPassThroughCategory,
   passThroughState,
   retakesLeftMessage,
@@ -32,8 +33,8 @@ import {
 import {
   getAdjacentShotKey,
   getFirstMissingShotKey,
-  getNextRetakeShotKey,
   getNextShotKeyAfterCapture,
+  getRetakeContinuation,
 } from "@/lib/shots/shot-progress";
 import { getOrderedShots, getShot, type ShotDefinition, type ShotTemplate } from "@/lib/shots/shot-template";
 import { AutoCheckInfo } from "./AutoCheckInfo";
@@ -48,6 +49,8 @@ import { ShotProgress } from "./ShotProgress";
 interface PreviewState {
   url: string;
   shot: ShotDefinition;
+  /** Capture time (ISO) of the photo previewed. */
+  takenAt: string;
   warnings: CaptureQualityWarning[];
   nextKey: string | null;
 }
@@ -82,8 +85,8 @@ function leaveCamera(router: Router, href: string) {
   else router.replace(href);
 }
 
-/** How long the banner of a finished check stays (ms): a rejection longer than an OK. */
-const CHECK_BANNER_MS = { ok: 3_500, hint: 6_000, retake: 9_000, error: 6_000 } as const;
+/** How long a banner stays in the check status line (ms): a rejection longer than an OK. */
+const CHECK_BANNER_MS = { ok: 3_500, hint: 6_000, retake: 9_000, error: 6_000, retakes_left: 4_000 } as const;
 
 /**
  * The banner for a finished check of the camera's vehicle – null when the
@@ -97,11 +100,11 @@ function bannerFor(check: PhotoCheck, slots: readonly PhotoSlot[]): CheckBannerS
   // Interior and detail shots are never checked: nothing to report unless the file was refused.
   const checked = getPhotoCheckState(check);
   const state = isPassThroughCategory(slot.category) ? passThroughState(checked, true) : checked;
-  const text = checkResultMessage(slot, state);
-  if (!text || (state.kind !== "ok" && state.kind !== "retake" && state.kind !== "error")) return null;
+  const message = checkResultMessage(slot, state);
+  if (!message || (state.kind !== "ok" && state.kind !== "retake" && state.kind !== "error")) return null;
   // A result with a processor hint is not a plain "passt": amber, like its segment.
   const kind = state.kind === "ok" && state.hint ? "hint" : state.kind;
-  return { id: `${check.photoId}-${check.status}`, shotKey: slot.key, kind, text };
+  return { id: `${check.photoId}-${check.status}`, shotKey: slot.key, kind, ...message };
 }
 
 const UNKNOWN_SHOT_HINT = "Diese Aufnahme gibt es in der Kamera nicht. Es geht mit den Pflichtfotos weiter.";
@@ -194,8 +197,9 @@ export function CameraCapture({
     () => slots.filter((slot) => checkStates.get(slot.key)?.kind === "retake").map((slot) => slot.key),
     [slots, checkStates],
   );
-  /** The rejected shots as shown, for finishing a preview (see completePreview). */
+  /** The rejected shots and the checks as shown right now, for finishing a preview (see completePreview). */
   const retakeKeysRef = useRef(retakeKeys);
+  const checksRef = useRef(checkSnapshot.checks);
   const checkOffMessage = autoCheckOffMessage(checkSnapshot.availability);
 
   const completePreview = useCallback(
@@ -210,18 +214,33 @@ export function CameraCapture({
         return;
       }
       // No shot is missing: on to the next shot the check rejected – the camera
-      // is left only when none is red any more.
-      const retakes = retakeKeysRef.current.filter((key) => key !== state.shot.key);
-      const nextRetake = getNextRetakeShotKey(template, retakes, state.shot.key);
-      if (nextRetake) {
-        toast.show(retakesLeftMessage(retakes.length));
-        setSelectedKey(nextRetake);
+      // is left only when none is red any more. The shots red right now count,
+      // the current one only if the photo just taken was rejected already (not
+      // the one it replaced). Said in the header's status line, never over the
+      // framing guide.
+      const rejectedAgain = isCaptureRejected(checksRef.current.values(), {
+        vehicleId: vehicle.id,
+        shotKey: state.shot.key,
+        takenAt: state.takenAt,
+      });
+      const retakes = retakeKeysRef.current.filter((key) => key !== state.shot.key || rejectedAgain);
+      const next = getRetakeContinuation(template, retakes, state.shot.key);
+      if (next) {
+        setExpandedId(null);
+        setBanner({
+          id: `retakes-left:${next.key}:${next.left}`,
+          shotKey: next.key,
+          kind: "retakes_left",
+          label: retakesLeftMessage(next.left),
+          detail: null,
+        });
+        setSelectedKey(next.key);
         return;
       }
       toast.success("Alle Pflichtfotos aufgenommen. Bitte prüfen Sie die Fotos.");
       leaveCamera(router, reviewHref);
     },
-    [returnTo, exitHref, reviewHref, router, toast, template],
+    [returnTo, exitHref, reviewHref, router, toast, template, vehicle.id],
   );
 
   // Show the captured photo briefly, then advance automatically.
@@ -247,7 +266,8 @@ export function CameraCapture({
 
   useLayoutEffect(() => {
     retakeKeysRef.current = retakeKeys;
-  }, [retakeKeys]);
+    checksRef.current = checkSnapshot.checks;
+  }, [retakeKeys, checkSnapshot.checks]);
 
   // A finished automatic check of this vehicle shows a short banner (while the camera is shown).
   useEffect(
@@ -302,6 +322,9 @@ export function CameraCapture({
     // Keep this shot selected while it is saved and previewed (the background
     // upload may otherwise change the auto-selected "first missing" shot).
     setSelectedKey(target.key);
+    // The real capture time ("Aufgenommen am"); which photo of the shot is
+    // the current one follows src/lib/photos/capture-order.ts.
+    const takenAt = new Date().toISOString();
     try {
       // Persisted locally first – never lost if the upload fails.
       await uploads.enqueue({
@@ -310,9 +333,7 @@ export function CameraCapture({
         shotOrder: target.order,
         title: target.title,
         file,
-        // The real capture time ("Aufgenommen am"); which photo of the shot is
-        // the current one follows src/lib/photos/capture-order.ts.
-        takenAt: new Date().toISOString(),
+        takenAt,
       });
     } catch {
       toast.error("Foto konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.");
@@ -325,7 +346,7 @@ export function CameraCapture({
       if (nextKey && !returnTo) setSelectedKey(nextKey);
       return;
     }
-    setPreview({ url: URL.createObjectURL(file), shot: target, warnings: quality.warnings, nextKey });
+    setPreview({ url: URL.createObjectURL(file), shot: target, takenAt, warnings: quality.warnings, nextKey });
   }
 
   function openFilePicker() {

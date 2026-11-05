@@ -7,6 +7,7 @@ import {
   getMissingRequiredShots,
   getNextRetakeShotKey,
   getNextShotKeyAfterCapture,
+  getRetakeContinuation,
   getShotProgress,
   isShotSetComplete,
   sortPhotosByShotOrder,
@@ -106,5 +107,23 @@ describe("getNextRetakeShotKey", () => {
     expect(getNextRetakeShotKey(T, ["front"], "front")).toBeNull();
     expect(getNextRetakeShotKey(T, [], "front")).toBeNull();
     expect(getNextRetakeShotKey(T, new Set(["front", "rear"]), "front")).toBe("rear");
+  });
+});
+
+describe("getRetakeContinuation", () => {
+  it("goes on to the next red shot and counts every red shot still to retake", () => {
+    // Shot 01 (green) was retaken, 02 and 05 are red.
+    expect(getRetakeContinuation(T, ["front", "left_side"], "front_left_45")).toEqual({ key: "front", left: 2 });
+    // 02 retaken – its new photo is being checked, so it is not red: one left.
+    expect(getRetakeContinuation(T, ["left_side"], "front")).toEqual({ key: "left_side", left: 1 });
+  });
+
+  it("counts the current shot when its new photo was already rejected, and stays there when it is the only red one", () => {
+    expect(getRetakeContinuation(T, ["left_side", "rear"], "left_side")).toEqual({ key: "rear", left: 2 });
+    expect(getRetakeContinuation(T, ["left_side"], "left_side")).toEqual({ key: "left_side", left: 1 });
+  });
+
+  it("leaves the camera when no shot is red", () => {
+    expect(getRetakeContinuation(T, [], "front")).toBeNull();
   });
 });

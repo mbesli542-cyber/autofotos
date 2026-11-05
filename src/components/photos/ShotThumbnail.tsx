@@ -95,14 +95,14 @@ export function ShotThumbnail({
       ) : check?.kind === "retake" ? (
         <span
           className="absolute right-1.5 bottom-1.5 flex size-6 items-center justify-center rounded-full bg-ae-danger text-white shadow"
-          title="Bitte neu aufnehmen"
+          title={SHOT_CHECK_LABELS.retake}
         >
           <RotateCcw className="size-3.5" strokeWidth={3} aria-hidden />
         </span>
       ) : check?.kind === "checking" ? (
         <span
           className="absolute right-1.5 bottom-1.5 flex size-6 items-center justify-center rounded-full bg-ae-blue text-white shadow"
-          title="Wird geprüft"
+          title={SHOT_CHECK_LABELS.checking}
         >
           <Spinner className="size-3.5" />
         </span>

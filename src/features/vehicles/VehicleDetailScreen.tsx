@@ -23,6 +23,7 @@ import { getAppServices, getShotTemplate } from "@/lib/app-services";
 import { cn } from "@/lib/cn";
 import { vehicleDisplayName } from "@/lib/format";
 import { buildPhotoSlots, type PhotoSlot } from "@/lib/photos/photo-slots";
+import { resultsToCheckMessage } from "@/lib/processing/shot-check";
 import { getShotProgress } from "@/lib/shots/shot-progress";
 import { canProcessVehicle } from "@/lib/vehicles/status";
 import { deletePhotoAndSyncStatus } from "@/lib/workflow/vehicle-workflow";
@@ -240,9 +241,7 @@ export function VehicleDetailScreen({
           {toCheck > 0 && (
             <p className="mb-3 flex items-start gap-1.5 text-sm text-ae-warning">
               <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-              {toCheck === 1
-                ? "Bitte ein bearbeitetes Foto prüfen – Hinweis in der Großansicht."
-                : `Bitte ${toCheck} bearbeitete Fotos prüfen – Hinweise in der Großansicht.`}
+              {resultsToCheckMessage(toCheck, "viewer")}
             </p>
           )}
           <PhotoGrid
