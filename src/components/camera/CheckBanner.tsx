@@ -1,4 +1,4 @@
-import { ChevronDown, CircleCheck, Info, RotateCcw, Save, TriangleAlert, X } from "lucide-react";
+import { ChevronDown, CircleCheck, Info, Lightbulb, RotateCcw, Save, TriangleAlert, X } from "lucide-react";
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/lib/cn";
 import { shotCheckDetail, shotCheckLabel, type CheckMessage, type ShotCheckState } from "@/lib/processing/shot-check";
@@ -17,12 +17,13 @@ export interface CheckBannerState extends CheckMessage {
   kind: "ok" | "hint" | "retake" | "error" | "retakes_left" | "storage_full";
 }
 
-type Tone = "ok" | "hint" | "retake" | "error" | "saved" | "checking" | "neutral";
+/** tip: the current shot's photo hint (shot template `tip`), before it is captured. */
+type Tone = "ok" | "hint" | "retake" | "error" | "saved" | "checking" | "neutral" | "tip";
 
 /** The status line's content asking to turn the phone (exterior shot, portrait picture). */
 export const ROTATE_STATUS_ID = "rotate";
 
-/** What the status line shows: the finished check (banner) or the current shot's state. */
+/** What the status line shows: the finished check (banner), the current shot's state or its photo hint. */
 export interface CheckStatusContent {
   /** Changes when the content changes (an expanded line closes then). */
   id: string;
@@ -47,17 +48,22 @@ function stateTone(state: ShotCheckState): Tone {
   }
 }
 
+/** Label of the status line with the shot's photo hint. */
+export const SHOT_TIP_LABEL = "Tipp";
+
 /**
  * The content of the camera's check status line (pure): a banner of a
  * finished check (or of the retakes still to do, or of a full storage) while
  * it is shown, else – briefly, `rotate` – the request to turn the phone for
  * an exterior shot taken in portrait, else the current shot's own state once
  * it is captured – with the same wording as on every other screen
- * (SHOT_CHECK_LABELS). null: nothing to show.
+ * (SHOT_CHECK_LABELS) –, else the shot's photo hint ("Tipp: …", shot
+ * template). The hint is here, not in the instruction box, so nothing but
+ * the short instruction lies on the viewfinder. null: nothing to show.
  */
 export function checkStatusContent(
   banner: CheckBannerState | null,
-  shot: { key: string },
+  shot: { key: string; tip?: string | null },
   state: ShotCheckState,
   captured: boolean,
   rotate = false,
@@ -74,7 +80,11 @@ export function checkStatusContent(
   if (rotate) {
     return { id: ROTATE_STATUS_ID, tone: "hint", label: ROTATE_PROMPT.label, detail: ROTATE_PROMPT.detail, retakeShotKey: null };
   }
-  if (!captured) return null;
+  if (!captured) {
+    return shot.tip
+      ? { id: `tip:${shot.key}`, tone: "tip", label: SHOT_TIP_LABEL, detail: shot.tip, retakeShotKey: null }
+      : null;
+  }
   return {
     id: `shot:${shot.key}:${state.kind}`,
     tone: stateTone(state),
@@ -93,6 +103,7 @@ const TONE_CLASSES: Record<Tone, string> = {
   saved: "bg-white/12 text-white",
   checking: "bg-white/12 text-white",
   neutral: "bg-white/12 text-white",
+  tip: "bg-white/12 text-white",
 };
 
 function ToneIcon({ tone }: { tone: Tone }) {
@@ -107,6 +118,8 @@ function ToneIcon({ tone }: { tone: Tone }) {
       return <RotateCcw className="size-3.5 shrink-0" aria-hidden />;
     case "saved":
       return <Save className="size-3.5 shrink-0 text-ae-blue" aria-hidden />;
+    case "tip":
+      return <Lightbulb className="size-3.5 shrink-0 text-ae-warning" aria-hidden />;
     default:
       return <Info className="size-3.5 shrink-0" aria-hidden />;
   }
@@ -116,8 +129,8 @@ const PANEL_ID = "camera-check-details";
 
 /**
  * The automatic check in the camera header, never on the framing guide: ONE
- * line (truncated) with the result of a check that just finished or the
- * current shot's state. Tapping it opens the full text below the header
+ * line (truncated) with the result of a check that just finished, the
+ * current shot's state or its photo hint. Tapping it opens the full text below the header
  * (`expanded`) – for a rejected other shot with "Jetzt wiederholen". The
  * current shot, the progress and the shutter stay free. The pill is 24 px
  * high, its tap area 44 px (an invisible extension above and below that

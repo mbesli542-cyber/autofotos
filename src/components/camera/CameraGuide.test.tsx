@@ -108,6 +108,7 @@ const rotatePrompt = () => screen.queryByRole("button", { name: ROTATE });
 
 beforeEach(() => {
   window.localStorage.clear();
+  window.history.replaceState(null, "");
   stream.width = 4000;
   stream.height = 3000;
   queue.items = [];
@@ -135,6 +136,8 @@ describe("'Tipps für perfekte Fotos'", () => {
     expect(screen.queryByRole("dialog", { name: TIPS_TITLE })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: TIPS_TITLE }));
     expect(screen.getByRole("dialog", { name: TIPS_TITLE })).toBeInTheDocument();
+    // Opened from the camera: the current shot's hint comes first.
+    expect(screen.getByText("Für dieses Foto (Vorne links (45°))")).toBeInTheDocument();
     expect(screen.queryByLabelText(/nicht mehr automatisch zeigen/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Tipps schließen" }));
     expect(screen.queryByRole("dialog", { name: TIPS_TITLE })).not.toBeInTheDocument();
@@ -157,10 +160,31 @@ describe("'Tipps für perfekte Fotos'", () => {
     expect(screen.queryByRole("dialog", { name: TIPS_TITLE })).not.toBeInTheDocument();
   });
 
-  it("shows the shot's photo hint under the instruction", () => {
+  it("shows the shot's photo hint in the header's status line – never on the viewfinder", () => {
     render(camera({ vehicle: vehicle("veh-hint"), photos: [photo("veh-hint", 0)] }));
     // Shot 02 "Vorne" is next.
-    expect(screen.getByText("Kennzeichenhalter mit Händlerwerbung und Aufkleber vorher abnehmen.")).toBeInTheDocument();
+    const hint = screen.getByText("Kennzeichenhalter mit Händlerwerbung und Aufkleber vorher abnehmen.");
+    expect(hint.closest("header")).not.toBeNull();
+    // The instruction box over the viewfinder holds only the instruction.
+    const instruction = screen.getByText(T.shots[1]?.instruction ?? "");
+    expect(instruction.closest("header")).toBeNull();
+    expect(instruction).not.toHaveTextContent(/Kennzeichenhalter/);
+    // A tap opens its full text below the header.
+    fireEvent.click(screen.getByRole("button", { name: /^Tipp: Kennzeichenhalter/ }));
+    expect(document.getElementById("camera-check-details")).toHaveTextContent(
+      "Tipp: Kennzeichenhalter mit Händlerwerbung und Aufkleber vorher abnehmen.",
+    );
+  });
+
+  it("keeps the cockpit's long hint out of the narrow portrait viewfinder", () => {
+    stream.width = 2160;
+    stream.height = 3840;
+    render(camera({ vehicle: vehicle("veh-cockpit"), photos: [photo("veh-cockpit", 0)], initialShotKey: "cockpit" }));
+    const tip = screen.getByText("Lenkrad gerade, Innenraum aufgeräumt – keine persönlichen Gegenstände.");
+    expect(tip.closest("header")).not.toBeNull();
+    const viewfinder = screen.getByLabelText("Live-Kamerabild").parentElement as HTMLElement;
+    expect(viewfinder).not.toHaveTextContent(/Lenkrad/);
+    expect(viewfinder).toHaveTextContent("Fotografieren Sie das Cockpit möglichst symmetrisch.");
   });
 });
 

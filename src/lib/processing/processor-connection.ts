@@ -28,6 +28,8 @@ export const PROCESSING_OFFLINE_MESSAGE =
 /** First sentence of the "unreachable" texts (also the camera's "Prüfung aus" hint). */
 export const PROCESSOR_UNREACHABLE_SENTENCE = "Der Showroom-Rechner ist gerade nicht erreichbar.";
 export const PROCESSOR_UNREACHABLE_MESSAGE = `${PROCESSOR_UNREACHABLE_SENTENCE} Bitte später erneut versuchen.`;
+/** "Fotos bearbeiten" while the jobs of a run wait for the processor to answer again. */
+export const PROCESSOR_WAITING_MESSAGE = `${PROCESSOR_UNREACHABLE_SENTENCE} Die Bearbeitung geht automatisch weiter, sobald er wieder antwortet – bitte die App geöffnet lassen.`;
 
 export interface ProcessorConnectionInput {
   phase: "loading" | "ready" | "error";

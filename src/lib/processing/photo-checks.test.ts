@@ -251,6 +251,25 @@ describe("PhotoChecks", () => {
     expect(reloaded.knownOutcome(photo, CHECK_PRESET)).toBeNull();
   });
 
+  it("marks a rejection of a photo that had a result ('Erneut prüfen') – also after a reload", async () => {
+    vi.mocked(processPhoto).mockRejectedValueOnce(new ProcessingJobFailedError("vehicle_cropped", "Angeschnitten."));
+    const checks = started();
+    const processed = {
+      ...savedPhoto("p_again", "front"),
+      processedStoragePath: "veh_1/autoexperten_standard/front/p_again.jpg",
+      processedPreset: CHECK_PRESET,
+      updatedAt: "2026-11-03T10:02:00.000Z",
+      urls: { original: "blob:p_again", thumbnail: "", processed: "blob:p_again_processed" },
+    };
+    await expect(checks.process(processed, CHECK_PRESET, { accessCode: null })).rejects.toBeInstanceOf(ProcessingJobFailedError);
+    expect(checks.getSnapshot().checks.get("p_again")).toMatchObject({ status: "retake", afterResult: processed.updatedAt });
+    expect(started().getSnapshot().checks.get("p_again")).toMatchObject({
+      status: "retake",
+      restored: true,
+      afterResult: processed.updatedAt,
+    });
+  });
+
   it("sends nothing without a connected processor or without the stored access code – the capture waits", async () => {
     status = { ...CONNECTED, connected: false, showroomSource: null };
     const offline = started();
@@ -619,6 +638,21 @@ describe("knownOutcomeOf", () => {
   it("ignores a rejection when asked to (Erneut prüfen) or when it was read back from the device", () => {
     expect(knownOutcomeOf(photo, CHECK_PRESET, rejected, { ignoreFailures: true })).toBeNull();
     expect(knownOutcomeOf(photo, CHECK_PRESET, { ...rejected, restored: true })).toBeNull();
+  });
+
+  it("treats a rejection that came after the photo's unchanged result like any rejection ('Erneut prüfen')", () => {
+    const processed = { ...photo, processedStoragePath: "x.jpg", processedPreset: CHECK_PRESET, updatedAt: "2026-11-03T10:02:00.000Z" };
+    const after = { ...rejected, afterResult: processed.updatedAt };
+    // This visit's verdict: not sent again by a new run – the shot is red on every screen of this device.
+    expect(knownOutcomeOf(processed, CHECK_PRESET, after)).toEqual({ status: "failed", error: TOO_SMALL, errorCode: "vehicle_too_small" });
+    // Read back from the device, or asked again: processed again (the gate may have changed).
+    expect(knownOutcomeOf(processed, CHECK_PRESET, { ...after, restored: true })).toBeNull();
+    expect(knownOutcomeOf(processed, CHECK_PRESET, after, { ignoreFailures: true })).toBeNull();
+    // A result saved since then is the outcome again.
+    expect(knownOutcomeOf({ ...processed, updatedAt: "2026-11-03T11:00:00.000Z" }, CHECK_PRESET, after)).toEqual({
+      status: "complete",
+      warnings: [],
+    });
   });
 
   it("processes everything else", () => {

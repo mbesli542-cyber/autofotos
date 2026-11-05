@@ -18,9 +18,9 @@ export interface ShotDefinition {
   /** German instruction shown in the camera. */
   instruction: string;
   /**
-   * Short German photo hint shown under the instruction (only where it helps,
-   * e.g. space behind the car, plate frames) – the general rules are in
-   * src/lib/shots/shooting-guide.ts.
+   * Short German photo hint (only where it helps, e.g. space behind the car,
+   * plate frames), shown in the camera header's status line until the shot
+   * is captured – the general rules are in src/lib/shots/shooting-guide.ts.
    */
   tip?: string;
   category: ShotCategory;

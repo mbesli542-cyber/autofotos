@@ -15,6 +15,7 @@ const LABELS: Record<PhotoRunStatus, string> = {
   preparing: "Wird hochgeladen",
   queued: "In Warteschlange",
   processing: "In Bearbeitung",
+  unreachable: "Wartet auf den Showroom-Rechner",
   saving: "Wird gespeichert",
   complete: "Fertig",
   failed: "Fehlgeschlagen",
@@ -40,6 +41,7 @@ function StatusIcon({ status, check }: { status: PhotoRunStatus; check: boolean 
   if (status === "complete" && check) return <TriangleAlert className="size-4 text-ae-warning" aria-hidden />;
   if (status === "complete") return <Check className="size-4 text-ae-success" strokeWidth={3} aria-hidden />;
   if (status === "failed") return <TriangleAlert className="size-4 text-ae-danger" aria-hidden />;
+  if (status === "unreachable") return <Clock className="size-4 text-ae-warning" aria-hidden />;
   if (status === "waiting" || status === "queued") return <Clock className="size-4 text-ae-subtle" aria-hidden />;
   return <Spinner className="size-4 text-ae-blue" />;
 }

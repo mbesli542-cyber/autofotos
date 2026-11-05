@@ -304,12 +304,16 @@ describe("waitForProcessingJob", () => {
       .mockResolvedValueOnce(answer("complete"));
     const seen: string[] = [];
 
-    const pending = waitForProcessingJob(JOB_ID, { onUpdate: (update) => seen.push(update.status) });
+    const pending = waitForProcessingJob(JOB_ID, {
+      onUpdate: (update) => seen.push(update.status),
+      onUnreachable: () => seen.push("unreachable"),
+    });
     await vi.runAllTimersAsync();
 
     await expect(pending).resolves.toMatchObject({ status: "complete" });
     expect(fetchMock).toHaveBeenCalledTimes(6);
-    expect(seen).toEqual(["processing", "complete"]);
+    // Said once per series of failed polls; the next answer sets the job's status again.
+    expect(seen).toEqual(["processing", "unreachable", "complete"]);
   });
 
   it.each([

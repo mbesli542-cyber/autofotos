@@ -101,9 +101,11 @@ describe("<CameraScreen />", () => {
     expect(heading()).toHaveTextContent("Cockpit");
     expect(screen.getByRole("button", { name: "Foto aufnehmen" })).toBeEnabled();
 
-    // Later "Foto wiederholen" for 03 again (a new navigation): the camera opens at 03.
+    // Later "Foto wiederholen" for 03 again (a new navigation – a new history entry with the
+    // router's own state only): the camera opens at 03.
     view.rerender(page("hidden"));
     router.bfcacheId = "_b_2_";
+    window.history.pushState(null, "");
     view.rerender(page("visible"));
     await wait(50);
     expect(heading()).toHaveTextContent("Vorne rechts (45°)");

@@ -94,7 +94,7 @@ import {
 import { hasRetakeWarning, storedRejection, warningsToCheck, getWarningKind } from "./processing-warnings";
 import { needsRetake, retakeFallbackMessage } from "./quality-gate";
 import { isPlaceholderPhoto } from "./run-blockers";
-import { ACCESS_CODE_INVALID_CODE } from "./shot-check";
+import { ACCESS_CODE_INVALID_CODE, rejectsSavedResult } from "./shot-check";
 import { getShotTreatment } from "./shot-treatment";
 import { canStartProcessing, type ProcessingStatus } from "./types";
 
@@ -150,6 +150,13 @@ export interface PhotoCheck {
   warnings: readonly ProcessingWarning[];
   /** A rejection read back from this device's storage: shown, never a reason to skip processing. */
   restored?: boolean;
+  /**
+   * A rejection of a photo that already had a saved result ("Erneut prüfen"):
+   * the photo's `updatedAt` when it was sent. While the photo still has that
+   * result (`updatedAt` unchanged), this newer verdict wins over it on this
+   * device (shot-check.ts rejectsSavedResult); a result saved later wins again.
+   */
+  afterResult?: string;
 }
 
 /** The newest saved capture of a shot (`vehicleId/shotKey`) known in this tab. */
@@ -209,7 +216,7 @@ interface SharedJob {
 /** A rejection or a failed check kept on this device (`status` missing: a rejection kept before failures were). */
 type StoredOutcome = Pick<
   PhotoCheck,
-  "photoId" | "vehicleId" | "shotKey" | "shotOrder" | "title" | "takenAt" | "preset" | "message" | "errorCode"
+  "photoId" | "vehicleId" | "shotKey" | "shotOrder" | "title" | "takenAt" | "preset" | "message" | "errorCode" | "afterResult"
 > & { status?: "retake" | "error" };
 
 /** Whether the outcome of a check is kept on this device (pure): a rejection by its code, or a failed check. */
@@ -316,15 +323,21 @@ export function unavailableReason(status: ProcessingStatus | null): "no_processo
  * processor's rejection of exactly this photo in this visit
  * (`check`: the photo's check; a rejection restored from the device's
  * storage does not count – the quality gate may have changed since).
- * null → it has to be processed.
+ * A rejection that came after the photo's saved result ("Erneut prüfen",
+ * rejectsSavedResult) wins over that result, as on every screen of this
+ * device. null → it has to be processed.
  */
 export function knownOutcomeOf(
-  photo: Pick<VehiclePhotoWithUrls, "id" | "processedStoragePath" | "processedPreset" | "processingWarnings">,
+  photo: Pick<
+    VehiclePhotoWithUrls,
+    "id" | "processedStoragePath" | "processedPreset" | "processingWarnings" | "updatedAt"
+  >,
   preset: ProcessingPresetId,
   check: PhotoCheck | undefined,
   options: KnownOutcomeOptions = {},
 ): KnownOutcome | null {
-  if (photo.processedStoragePath && photo.processedPreset === preset) {
+  const rejectedAfter = check !== undefined && check.photoId === photo.id && rejectsSavedResult(check, photo);
+  if (photo.processedStoragePath && photo.processedPreset === preset && !rejectedAfter) {
     return { status: "complete", warnings: [...photo.processingWarnings] };
   }
   // Its result was saved in this visit (the photo list on screen may not show it yet).
@@ -680,7 +693,15 @@ export class PhotoChecks {
     this.checkControllers.get(photoId)?.abort();
     this.checkControllers.set(photoId, new AbortController());
     if (!this.queue.includes(photoId)) this.queue.push(photoId);
-    this.putCheck({ ...check, status: "waiting", message: null, errorCode: null, warnings: [], restored: false });
+    this.putCheck({
+      ...check,
+      status: "waiting",
+      message: null,
+      errorCode: null,
+      warnings: [],
+      restored: false,
+      afterResult: undefined,
+    });
   }
 
   /** Starts waiting checks while slots are free and checks are on. */
@@ -909,6 +930,8 @@ export class PhotoChecks {
             message: toUserMessage(error, retakeFallbackMessage(error.errorCode) ?? GENERIC_FAILURE),
             errorCode: error.errorCode,
             warnings: [],
+            // Sent again although it had a result ("Erneut prüfen"): this newer verdict wins over it.
+            afterResult: photo.processedStoragePath ? photo.updatedAt : undefined,
           });
           return;
         }
@@ -984,7 +1007,10 @@ export class PhotoChecks {
     });
   }
 
-  private settle(photoId: string, patch: Pick<PhotoCheck, "status" | "message" | "errorCode" | "warnings">): void {
+  private settle(
+    photoId: string,
+    patch: Pick<PhotoCheck, "status" | "message" | "errorCode" | "warnings"> & Pick<Partial<PhotoCheck>, "afterResult">,
+  ): void {
     const check = this.snapshot.checks.get(photoId);
     if (!check) return;
     const settled = { ...check, ...patch };
@@ -1051,7 +1077,7 @@ export class PhotoChecks {
     const rejections: StoredOutcome[] = [...this.snapshot.checks.values()]
       .filter(isKeptOutcome)
       .slice(-MAX_STORED)
-      .map(({ photoId, vehicleId, shotKey, shotOrder, title, takenAt, preset, status, message, errorCode }) => ({
+      .map(({ photoId, vehicleId, shotKey, shotOrder, title, takenAt, preset, status, message, errorCode, afterResult }) => ({
         photoId,
         vehicleId,
         shotKey,
@@ -1062,6 +1088,7 @@ export class PhotoChecks {
         status: status === "error" ? "error" : "retake",
         message,
         errorCode,
+        ...(afterResult ? { afterResult } : {}),
       }));
     try {
       if (rejections.length > 0) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(rejections));
@@ -1110,6 +1137,7 @@ export class PhotoChecks {
         errorCode,
         warnings: [],
         restored: true,
+        ...(!failed && typeof entry.afterResult === "string" ? { afterResult: entry.afterResult } : {}),
       });
     }
     this.set({ ...this.snapshot, checks });

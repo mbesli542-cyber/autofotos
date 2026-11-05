@@ -15,6 +15,7 @@ import { cameraReturnHref, isEntryForPage, type CameraReturnTarget } from "@/lib
 import { captureStill } from "@/lib/camera/capture";
 import { CAMERA_CONFIG } from "@/lib/camera/config";
 import { checkPhotoFile, PHOTO_FILE_ACCEPT } from "@/lib/camera/photo-file";
+import { cn } from "@/lib/cn";
 import { noopQualityChecker, type CaptureQualityWarning } from "@/lib/camera/quality";
 import type { Vehicle, VehiclePhotoWithUrls } from "@/lib/domain/types";
 import { storageFullMessage, summarizeFailedUploads } from "@/lib/offline/upload-status";
@@ -99,6 +100,47 @@ function leaveCamera(router: Router, href: string) {
   else router.replace(href);
 }
 
+/**
+ * A chip next to the counts in the header: 24 px high, its tap area 44 px (an invisible
+ * extension 4 px up and 16 px down – into the header padding and the top of the stage, never
+ * onto the progress or the buttons above).
+ */
+const CHIP_CLASS =
+  "relative flex h-6 items-center gap-1 rounded-full px-2 after:absolute after:-inset-x-1 after:-top-1 after:-bottom-4 after:content-[''] short:ml-3";
+
+/**
+ * The shot the camera shows is kept with its history entry (`history.state`,
+ * next to the router's own state): a reload or a tab the phone discarded opens
+ * the camera at that shot again – e.g. the next rejected shot during a retake
+ * run – not at the shot of the link it was opened with (?shot=). A new visit
+ * is a new history entry and starts at the requested or first open shot.
+ */
+const SHOT_STATE_KEY = "aeCameraShot";
+
+function rememberedShot(vehicleId: string, template: ShotTemplate): string | null {
+  try {
+    const value: unknown = (window.history.state as Record<string, unknown> | null)?.[SHOT_STATE_KEY];
+    if (!value || typeof value !== "object") return null;
+    const { vehicleId: forVehicle, shotKey } = value as { vehicleId?: unknown; shotKey?: unknown };
+    if (forVehicle !== vehicleId || typeof shotKey !== "string") return null;
+    return getOrderedShots(template).some((s) => s.required && s.key === shotKey) ? shotKey : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberShot(vehicleId: string, shotKey: string | null): void {
+  try {
+    const state = { ...((window.history.state as Record<string, unknown> | null) ?? {}) };
+    if (shotKey) state[SHOT_STATE_KEY] = { vehicleId, shotKey };
+    else delete state[SHOT_STATE_KEY];
+    // Same URL: the router's own state is kept, nothing navigates.
+    window.history.replaceState(state, "");
+  } catch {
+    // History not writable (rate limit, sandbox): a reload starts at the link's shot.
+  }
+}
+
 /** How long a banner stays in the check status line (ms): a rejection longer than an OK. */
 const CHECK_BANNER_MS = {
   ok: 3_500,
@@ -175,7 +217,8 @@ export function CameraCapture({
   const camera = useCameraStream(videoRef);
   const pending = usePendingUploads(vehicle.id);
 
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  /** The shot chosen (or moved to) in this camera – restored after a reload (rememberedShot). */
+  const [selectedKey, setSelectedKey] = useState<string | null>(() => rememberedShot(vehicle.id, template));
   const [busy, setBusy] = useState(false);
   const [flashKey, setFlashKey] = useState(0);
   const [preview, setPreview] = useState<PreviewState | null>(null);
@@ -240,6 +283,16 @@ export function CameraCapture({
   const retakeKeysRef = useRef(retakeKeys);
   const checksRef = useRef(checkSnapshot.checks);
   const checkOffMessage = autoCheckOffMessage(checkSnapshot.availability);
+  /**
+   * Several chips next to the counts (uploads, retakes, checks off): each shows only its icon and
+   * number (as in landscape, the full text is its label) and the counts get shorter, so the counts
+   * and the chips stay ONE row in portrait – the viewfinder keeps its size.
+   */
+  const chipCount =
+    (failedCount > 0 || refusedCount > 0 || savingCount > 0 ? 1 : 0) + (retakeKeys.length > 0 ? 1 : 0) + (checkOffMessage ? 1 : 0);
+  const compactChips = chipCount >= 2;
+  /** The text after a chip's icon and number: hidden when compact (portrait) and in short viewports. */
+  const chipText = compactChips ? "sr-only" : "short:hidden";
 
   const completePreview = useCallback(
     (state: PreviewState) => {
@@ -336,6 +389,12 @@ export function CameraCapture({
       if (timer) clearTimeout(timer);
     };
   }, [portraitExteriorNow, rotateDone, rotateOpen]);
+
+  // The shot shown is kept with the camera's history entry (see rememberedShot) – only while
+  // the camera is shown (a hidden route never writes into another page's entry).
+  useEffect(() => {
+    rememberShot(vehicle.id, selectedKey);
+  }, [vehicle.id, selectedKey]);
 
   // Shown by itself once per device – also when the camera is left without closing the tips.
   useEffect(() => {
@@ -495,7 +554,7 @@ export function CameraCapture({
   const currentCheck = checkStates.get(shot.key) ?? { kind: "none" as const };
   /**
    * The check status line in the header: a check that just finished, else (briefly) the request
-   * to turn the phone, else the current shot's state.
+   * to turn the phone, else the current shot's state – or its photo hint while it is not captured.
    */
   const statusContent = preview
     ? null
@@ -514,10 +573,12 @@ export function CameraCapture({
     <div className="fixed inset-0 z-50 flex flex-col bg-black text-white">
       {/*
         Top: step + title + progress + the check status line. Short viewports
-        (landscape) put the status next to the progress. The check status never
-        sits on the framing guide: its full text opens below the header on tap.
+        (landscape) put the status next to the progress – the progress keeps at
+        least 25rem (its segments stay tappable), the status line truncates. The
+        check status never sits on the framing guide: its full text opens below
+        the header on tap.
       */}
-      <header className="pt-safe relative z-30 shrink-0 px-3 pb-2 short:grid short:grid-cols-[minmax(0,1fr)_auto] short:items-center short:pb-1">
+      <header className="pt-safe relative z-30 shrink-0 px-3 pb-2 short:grid short:grid-cols-[minmax(min(25rem,60%),1fr)_auto] short:items-center short:pb-1">
         <div className="flex h-14 items-center gap-2 short:col-span-2 short:h-10">
           <Link
             href={exitHref}
@@ -550,9 +611,11 @@ export function CameraCapture({
           </Link>
         </div>
         <ShotProgress slots={slots} currentKey={shot.key} onSelect={selectShot} checks={checkStates} />
-        <div className="mt-1.5 flex min-h-5 flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-white/60 short:mt-0 short:min-h-0 short:flex-nowrap">
+        <div className="mt-1.5 flex min-h-6 flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-white/60 short:mt-0 short:min-h-0 short:flex-nowrap">
           <span className="short:hidden">
-            {capturedCount} von {shots.length} aufgenommen · noch {remainingCount}
+            {compactChips
+              ? `${capturedCount} von ${shots.length} · noch ${remainingCount}`
+              : `${capturedCount} von ${shots.length} aufgenommen · noch ${remainingCount}`}
           </span>
           {failedCount > 0 && failed.storageFull > 0 ? (
             // Full storage: retrying only helps after vehicles were deleted – the status line and the label say so.
@@ -563,12 +626,12 @@ export function CameraCapture({
                 getAppServices().uploads.retryAll();
               }}
               aria-label={`${failedCount} nicht gespeichert · Speicher voll – bitte Fahrzeuge löschen, dann erneut versuchen`}
-              className="flex items-center gap-1 rounded-full bg-ae-danger/25 px-2 py-0.5 font-semibold text-ae-danger short:ml-3"
+              className={cn(CHIP_CLASS, "bg-ae-danger/25 font-semibold text-ae-danger")}
             >
               <HardDrive className="size-3" aria-hidden />
               <span>
                 {failedCount}
-                <span className="short:hidden"> nicht gespeichert · Speicher voll</span>
+                <span className={chipText}> nicht gespeichert · Speicher voll</span>
               </span>
             </button>
           ) : failedCount > 0 ? (
@@ -576,32 +639,32 @@ export function CameraCapture({
               type="button"
               onClick={() => getAppServices().uploads.retryAll()}
               aria-label={`${failedCount} nicht gespeichert · Erneut versuchen`}
-              className="flex items-center gap-1 rounded-full bg-ae-warning/20 px-2 py-0.5 font-semibold text-ae-warning short:ml-3"
+              className={cn(CHIP_CLASS, "bg-ae-warning/20 font-semibold text-ae-warning")}
             >
               <CloudOff className="size-3" aria-hidden />
               <span>
                 {failedCount}
-                {/* Short viewports: icon and count only, so the progress keeps its width. */}
-                <span className="short:hidden"> nicht gespeichert · Erneut versuchen</span>
+                {/* Short viewports and several chips: icon and count only, so the progress keeps its width. */}
+                <span className={chipText}> nicht gespeichert · Erneut versuchen</span>
               </span>
             </button>
           ) : refusedCount > 0 ? (
             <Link
               href={reviewHref}
               aria-label={`${refusedCount} nicht speicherbar · in „Fotos überprüfen“ verwerfen`}
-              className="flex items-center gap-1 rounded-full bg-ae-warning/20 px-2 py-0.5 font-semibold text-ae-warning short:ml-3"
+              className={cn(CHIP_CLASS, "bg-ae-warning/20 font-semibold text-ae-warning")}
             >
               <CloudOff className="size-3" aria-hidden />
               <span>
                 {refusedCount}
                 {/* Not longer than the retry action – the full hint is the label. */}
-                <span className="short:hidden"> nicht speicherbar · bitte verwerfen</span>
+                <span className={chipText}> nicht speicherbar · bitte verwerfen</span>
               </span>
             </Link>
           ) : savingCount > 0 ? (
-            <span className="flex items-center gap-1 text-white/70 short:ml-3" role="status">
+            <span className="flex h-6 items-center gap-1 text-white/70 short:ml-3" role="status">
               <Spinner className="size-3" />
-              <span className="short:sr-only">Foto wird gespeichert…</span>
+              <span className={compactChips ? "sr-only" : "short:sr-only"}>Foto wird gespeichert…</span>
             </span>
           ) : null}
           {retakeKeys.length > 0 && (
@@ -609,12 +672,12 @@ export function CameraCapture({
               type="button"
               onClick={() => selectShot(retakeKeys[0] as string)}
               aria-label={`${retakeKeys.length === 1 ? "1 Foto" : `${retakeKeys.length} Fotos`} neu aufnehmen · zum ersten springen`}
-              className="flex items-center gap-1 rounded-full bg-ae-danger px-2 py-0.5 font-semibold text-white short:ml-3"
+              className={cn(CHIP_CLASS, "bg-ae-danger font-semibold text-white")}
             >
               <RotateCcw className="size-3" aria-hidden />
               <span>
                 {retakeKeys.length}
-                <span className="short:hidden"> neu aufnehmen</span>
+                <span className={chipText}> neu aufnehmen</span>
               </span>
             </button>
           )}
@@ -624,10 +687,11 @@ export function CameraCapture({
               onClick={() => setShowCheckInfo((shown) => !shown)}
               aria-label="Automatische Prüfung aus · Details"
               aria-expanded={showCheckInfo}
-              className="flex items-center gap-1 rounded-full bg-white/10 px-2 py-0.5 text-white/70 short:ml-3"
+              className={cn(CHIP_CLASS, "bg-white/10 font-medium text-white/75")}
             >
               <ShieldOff className="size-3" aria-hidden />
-              <span className="short:hidden">Prüfung aus</span>
+              {/* Also in short viewports: the only way into the access code and the reason the checks are off. */}
+              <span>Prüfung aus</span>
             </button>
           )}
           {/* Portrait: a line of its own (its height kept, so the viewfinder never jumps); short: inline. */}
@@ -681,13 +745,8 @@ export function CameraCapture({
                 </div>
               )}
 
-              {/* While the phone should be turned, that is the hint – the instruction box stays short. */}
-              <InstructionPanel
-                instruction={shot.instruction}
-                tip={shot.tip}
-                rotate={askToRotate}
-                onShowTips={() => setTips("manual")}
-              />
+              {/* Only the short instruction lies on the viewfinder – the photo hint is in the header's status line. */}
+              <InstructionPanel instruction={shot.instruction} rotate={askToRotate} onShowTips={() => setTips("manual")} />
 
               {camera.state.status === "starting" && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-white/80" role="status">
@@ -732,7 +791,12 @@ export function CameraCapture({
         </div>
       </div>
 
-      {tips && <ShootingTipsSheet onClose={() => setTips(null)} />}
+      {tips && (
+        <ShootingTipsSheet
+          onClose={() => setTips(null)}
+          shotTip={tips === "manual" && shot.tip ? { title: shot.title, tip: shot.tip } : null}
+        />
+      )}
 
       {showCheckInfo && checkOffMessage && (
         <AutoCheckInfo

@@ -257,7 +257,8 @@ export function fetchProcessingJob(jobId: string, options: ProcessingRequestOpti
  * while the job still waits in the processor's queue (other photos first)
  * the generous `queuedTimeoutMs` applies. A failed poll (no connection, 5xx)
  * does not stop the job on the processor: it is repeated with back-off as
- * long as the last answer is at most `timeoutMs` old.
+ * long as the last answer is at most `timeoutMs` old – `onUnreachable` says
+ * so after the first failed poll of a series (the next answer calls `onUpdate`).
  */
 export async function waitForProcessingJob(
   jobId: string,
@@ -266,9 +267,18 @@ export async function waitForProcessingJob(
     timeoutMs?: number;
     queuedTimeoutMs?: number;
     onUpdate?: (job: ProcessingJob) => void;
+    /** A poll failed (no connection, 5xx): the job is asked again with back-off. */
+    onUnreachable?: () => void;
   } = {},
 ): Promise<ProcessingJob> {
-  const { intervalMs = 1_000, timeoutMs = 5 * 60_000, queuedTimeoutMs = 30 * 60_000, signal, onUpdate } = options;
+  const {
+    intervalMs = 1_000,
+    timeoutMs = 5 * 60_000,
+    queuedTimeoutMs = 30 * 60_000,
+    signal,
+    onUpdate,
+    onUnreachable,
+  } = options;
   let deadline = Date.now() + queuedTimeoutMs;
   let processing = false;
   let lastAnswerAt = Date.now();
@@ -288,6 +298,7 @@ export async function waitForProcessingJob(
       if (signal?.aborted || !isTransientError(error)) throw error;
       if (Date.now() - lastAnswerAt > timeoutMs || Date.now() > deadline) throw error;
       failedPolls += 1;
+      if (failedPolls === 1) onUnreachable?.();
     }
     if (Date.now() > deadline) throw new AppError("unknown", { userMessage: SLOW_JOB_MESSAGE });
     const backoff = POLL_ERROR_DELAYS_MS[Math.min(failedPolls, POLL_ERROR_DELAYS_MS.length) - 1];

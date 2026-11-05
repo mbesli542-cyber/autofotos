@@ -190,6 +190,26 @@ describe("<ProcessingScreen />", () => {
     }
   });
 
+  it("says when the Showroom-Rechner does not answer during a run – and that it goes on by itself", async () => {
+    const vehicleId = await createCompleteVehicle("Unreachable");
+    const jobs = gate();
+    vi.mocked(processPhoto).mockImplementation(async (photo, preset, deps) => {
+      deps.onStep?.("queued");
+      deps.onStep?.("unreachable");
+      await jobs.opened;
+      deps.onStep?.("processing", 0.5);
+      return saveResult(photo, preset, deps);
+    });
+    renderScreen(vehicleId);
+    fireEvent.click(await startButton());
+    const notice = await screen.findByText(/Der Showroom-Rechner ist gerade nicht erreichbar\. Die Bearbeitung geht automatisch weiter/);
+    expect(notice).toHaveAttribute("role", "status");
+    expect(screen.getAllByText("Wartet auf den Showroom-Rechner").length).toBeGreaterThan(0);
+    await act(async () => jobs.open());
+    await screen.findByText("Bearbeitung abgeschlossen");
+    expect(screen.queryByText(/Die Bearbeitung geht automatisch weiter/)).not.toBeInTheDocument();
+  });
+
   it("waits until new photos of the vehicle are saved before processing", async () => {
     const vehicleId = await createCompleteVehicle("Upload");
     const { backend, uploads } = getAppServices();

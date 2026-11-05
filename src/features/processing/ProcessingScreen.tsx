@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleCheck, Images, KeyRound, ShieldCheck, TriangleAlert, WandSparkles } from "lucide-react";
+import { CircleCheck, CloudOff, Images, KeyRound, ShieldCheck, TriangleAlert, WandSparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { PageContainer, StickyActions } from "@/components/layout/PageContainer";
@@ -38,7 +38,7 @@ import {
 } from "@/lib/processing/presets";
 import { knownOutcomeOf } from "@/lib/processing/photo-checks";
 import { needsResultCheck } from "@/lib/processing/processing-warnings";
-import { getProcessorConnection } from "@/lib/processing/processor-connection";
+import { getProcessorConnection, PROCESSOR_WAITING_MESSAGE } from "@/lib/processing/processor-connection";
 import { getRetakeStatus } from "@/lib/processing/quality-gate";
 import { PROCESSING_BLOCKER_MESSAGES, getProcessingBlocker } from "@/lib/processing/run-blockers";
 import { resultsToCheckMessage } from "@/lib/processing/shot-check";
@@ -79,6 +79,8 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
   /** Photos already processed with the chosen style or rejected (e.g. checked right after the capture). */
   const alreadyKnown = photos.filter((photo) => knownOutcomeOf(photo, preset, checks.checks.get(photo.id)) !== null).length;
   const finished = run.items.filter((item) => item.status === "complete" || item.status === "failed").length;
+  /** Jobs accepted, but the processor does not answer right now: they are asked again by themselves. */
+  const waitingForProcessor = run.phase === "running" && run.items.some((item) => item.status === "unreachable");
   /** Shots a new photo would fix (quality gate etc.) or replaced meanwhile, by shot key. */
   const retakes = useMemo(
     () =>
@@ -358,6 +360,12 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
                   </span>
                 </div>
                 <ProgressBar value={finished} max={run.items.length} label="Bearbeitungsfortschritt" />
+                {waitingForProcessor && (
+                  <p className="mt-2 flex items-start gap-1.5 text-sm font-medium text-ae-warning" role="status">
+                    <CloudOff className="mt-0.5 size-4 shrink-0" aria-hidden />
+                    {PROCESSOR_WAITING_MESSAGE}
+                  </p>
+                )}
                 <p className="mt-2 text-xs text-ae-subtle">
                   Bitte lassen Sie die App geöffnet, bis die Bearbeitung abgeschlossen ist. Wird die Seite neu
                   geladen, geht es automatisch weiter.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ROTATE_PROMPT } from "@/lib/shots/shooting-guide";
-import { checkStatusContent, ROTATE_STATUS_ID, type CheckBannerState } from "./CheckBanner";
+import { checkStatusContent, ROTATE_STATUS_ID, SHOT_TIP_LABEL, type CheckBannerState } from "./CheckBanner";
 
 const SHOT = { key: "front" };
 const REJECTED = { kind: "retake" as const, reason: "Das Fahrzeug ist angeschnitten." };
@@ -28,5 +28,20 @@ describe("checkStatusContent (the camera header's one status line)", () => {
       detail: REJECTED.reason,
     });
     expect(checkStatusContent(null, SHOT, { kind: "none" }, false, false)).toBeNull();
+  });
+
+  it("shows the shot's photo hint until the shot is captured – in the header, not in the viewfinder", () => {
+    const shot = { key: "cockpit", tip: "Lenkrad gerade, Innenraum aufgeräumt – keine persönlichen Gegenstände." };
+    expect(checkStatusContent(null, shot, { kind: "none" }, false, false)).toEqual({
+      id: "tip:cockpit",
+      tone: "tip",
+      label: SHOT_TIP_LABEL,
+      detail: shot.tip,
+      retakeShotKey: null,
+    });
+    // The request to turn the phone and a finished check come first; a captured shot shows its state.
+    expect(checkStatusContent(null, shot, { kind: "none" }, false, true)?.id).toBe(ROTATE_STATUS_ID);
+    expect(checkStatusContent(null, shot, { kind: "saved" }, true, false)).toMatchObject({ label: "Gespeichert" });
+    expect(checkStatusContent(null, { key: "rear_seats", tip: null }, { kind: "none" }, false, false)).toBeNull();
   });
 });

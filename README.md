@@ -483,26 +483,35 @@ never caches API calls or Supabase requests.
   that shot – red segments are shots to retake), "N von 15 aufgenommen ·
   noch N", chips for failed uploads ("N nicht gespeichert · Erneut
   versuchen", or "· Speicher voll" when the device's storage refused it),
-  refused files, shots to retake and "Prüfung aus", and ONE check status line:
-  a check that just finished, "Noch N Fotos neu aufnehmen" after a retake,
-  "Speicher voll – Foto nicht gespeichert", briefly "Bitte Smartphone quer
-  halten", else the current shot's state (tap = full text below the header,
-  with "Jetzt wiederholen" for another red shot). After a retake with no
-  shot missing the camera goes to the next red shot; it leaves for "Fotos
-  überprüfen" only when none is red.
+  refused files, shots to retake and "Prüfung aus" – with several chips each
+  shows only its icon and count (and the counts read "N von 15 · noch N"),
+  so counts and chips stay one row; every chip has a 44 px tap area – and
+  ONE check status line: a check that just finished, "Noch N Fotos neu
+  aufnehmen" after a retake, "Speicher voll – Foto nicht gespeichert",
+  briefly "Bitte Smartphone quer halten", else the current shot's state or,
+  before it is captured, its "Tipp" (tap = full text below the header, with
+  "Jetzt wiederholen" for another red shot). After a retake with no shot
+  missing the camera goes to the next red shot; it leaves for "Fotos
+  überprüfen" only when none is red. The shot shown is kept with the
+  camera's history entry (`history.state`): a reload or a tab the phone
+  discarded reopens the camera at that shot, not at the shot of the link it
+  was opened with.
 - **Landscape (short screens):** the title line shows `n / 15 · noch N`, the
-  chips show only their icon and count, the check status line sits next to
-  the progress, saving shows a spinner.
+  chips show only their icon and count ("Prüfung aus" keeps its word), the
+  check status line sits next to the progress (the progress keeps at least
+  25rem, the line truncates), saving shows a spinner.
 - **Nothing on the framing guide:** every message about photos and checks is
   in the header. "Bitte Smartphone quer halten" (an exterior shot while the
   picture is portrait) shows in the status line for 3.5 s – once while
   exterior shots follow each other in portrait; its full text names the
   iPhone and Android rotation settings – and the instruction box then says
-  "Smartphone quer halten". The instruction box carries the shot's short
-  `tip` (fades out after a few seconds in landscape) and the light bulb that
-  opens "Tipps für perfekte Fotos" – a sheet that also opens by itself once
+  "Smartphone quer halten". The instruction box carries only the
+  instruction and the light bulb that opens "Tipps für perfekte Fotos" (with
+  the current shot's hint first) – a sheet that also opens by itself once
   per device (again after a sign-out) when the camera opens for a vehicle
-  without photos.
+  without photos. The shot's short `tip` is in the header's status line, so
+  the box stays short and never reaches the framing guide, also in the
+  narrow portrait viewfinder of a small phone.
   Other short messages (toasts, e.g. a failed capture) appear in the middle
   of the viewfinder while the camera is open; elsewhere they appear at the
   top.
@@ -752,6 +761,13 @@ at most 2400 px – typically ≈ 0.75–1.4 MB, streamed through
   submitted are polled instead of sent again. The page holds a screen wake
   lock while it runs (`src/lib/device/screen-wake-lock.ts`). "Abmelden" and
   "Fahrzeug löschen" forget stored runs and kept jobs.
+- **Processor gone during a run:** while submitted jobs get no answer (dealer
+  PC asleep or restarting, connection lost) their rows say "Wartet auf den
+  Showroom-Rechner" and the run card "Der Showroom-Rechner ist gerade nicht
+  erreichbar. Die Bearbeitung geht automatisch weiter, sobald er wieder
+  antwortet – bitte die App geöffnet lassen." – the jobs are polled again
+  with back-off (a job the restarted processor no longer knows is sent once
+  more).
 - **Per photo:** temporary failures (connection, busy processor) offer
   "Erneut versuchen". A rejected photo offers "Foto neu aufnehmen"; a photo
   retaken during or after the run offers "Neues Foto bearbeiten" (the row is
@@ -831,7 +847,11 @@ One wording on every screen (`SHOT_CHECK_LABELS` in `shot-check.ts`).
   and the export: a check in progress, then a result (saved by this tab's
   check, else saved with the photo), then the rejection kept with the photo,
   then the outcome kept on this device. A rejection never hides a saved
-  result, and a check that could not run never hides what was saved.
+  result – except on the device where "Erneut prüfen" sent a photo with a
+  result again and the processor now refuses it: that newer verdict wins
+  (also after a reload) as long as the result is unchanged (the photo's
+  `updatedAt`); a result saved later wins again. A check that could not run
+  never hides what was saved.
 - **Forgotten:** "Fahrzeug löschen" stops the vehicle's checks and forgets
   its outcomes and kept jobs; "Abmelden" and "Alle Daten auf diesem Gerät
   löschen" forget all of them (a rejection stays saved with its photo).

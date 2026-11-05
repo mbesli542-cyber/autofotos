@@ -191,24 +191,48 @@ function savedResult(check: Pick<PhotoCheck, "status" | "errorCode">): boolean {
 }
 
 /**
+ * Whether `check` rejected `photo` AFTER its saved result was made – the
+ * photo was sent again ("Erneut prüfen") and the processor now refuses it –
+ * and that result is still the photo's (its `updatedAt` unchanged: a result
+ * saved later, on any device, wins again). Pure; device-local: the rejection
+ * is not written over a saved result (recordPhotoRejection is conditional).
+ */
+export function rejectsSavedResult(
+  check: Pick<PhotoCheck, "status" | "errorCode" | "afterResult">,
+  photo: Pick<VehiclePhoto, "processedStoragePath" | "updatedAt">,
+): boolean {
+  return (
+    check.status === "retake" &&
+    check.errorCode !== null &&
+    photo.processedStoragePath !== null &&
+    check.afterResult !== undefined &&
+    check.afterResult === photo.updatedAt
+  );
+}
+
+/**
  * Whether the check of the shot's shown photo tells more than what is saved
  * with the photo – ONE rule for which knowledge wins, on every screen, in
  * the vehicle lists and in the export:
  * 1. a check in progress (the photo is being processed right now);
- * 2. a result: saved by the photo's check in this tab (the newest – the
+ * 2. a rejection on this device that came after the photo's saved result
+ *    and that result is unchanged ("Erneut prüfen" refused it:
+ *    rejectsSavedResult) – the newest verdict, also after a reload;
+ * 3. a result: saved by the photo's check in this tab (the newest – the
  *    photo list on screen may not show it yet), else saved with the photo;
- * 3. the processor's rejection kept with the photo (`rejected:<code>`,
+ * 4. the processor's rejection kept with the photo (`rejected:<code>`,
  *    known on every device);
- * 4. the outcome of the photo's check kept on this device (a rejection, or
+ * 5. the outcome of the photo's check kept on this device (a rejection, or
  *    "Prüfung nicht möglich") – only while nothing is saved with the photo.
- * A rejection never hides a saved result: a photo with a showroom result is
- * not red because of a rejection that saved nothing (its result is what the
- * export uses), and a check that could not run never hides what was saved.
+ * Otherwise a rejection never hides a saved result: a photo with a showroom
+ * result is not red because of a rejection of an earlier state (its result
+ * is what the export uses), and a check that could not run never hides what
+ * was saved.
  */
 function checkWinsOverSaved(check: PhotoCheck, state: ShotCheckState, photo: VehiclePhoto): boolean {
   if (state.kind === "checking") return true;
   if (savedResult(check)) return true;
-  return state.kind === "retake" && photo.processedStoragePath === null;
+  return state.kind === "retake" && (photo.processedStoragePath === null || rejectsSavedResult(check, photo));
 }
 
 function checkedShotState(

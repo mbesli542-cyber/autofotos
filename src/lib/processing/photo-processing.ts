@@ -34,7 +34,13 @@ import { parseProcessingWarnings } from "./processing-warnings";
 import { needsRetake, retakeFallbackMessage } from "./quality-gate";
 import type { ProcessingJob, ProcessingJobStatus } from "./types";
 
-export type PhotoStep = "preparing" | ProcessingJobStatus | "saving";
+/**
+ * The steps of one processing as runs show them; "unreachable": the job was
+ * accepted, but the processor does not answer right now (PC asleep,
+ * restarting, connection gone) – it is asked again by itself (the next answer
+ * sets its status again).
+ */
+export type PhotoStep = "preparing" | ProcessingJobStatus | "unreachable" | "saving";
 
 export interface PhotoProcessingDeps {
   mode: BackendMode;
@@ -149,7 +155,8 @@ async function finish(
   const api = deps.api ?? client;
   const options = { accessCode: deps.accessCode ?? null, signal: deps.signal };
   const onUpdate = (job: ProcessingJob) => deps.onStep?.(job.status, job.progress);
-  const job = await api.waitForProcessingJob(jobId, { ...options, onUpdate });
+  const onUnreachable = () => deps.onStep?.("unreachable");
+  const job = await api.waitForProcessingJob(jobId, { ...options, onUpdate, onUnreachable });
   await ensureCompleted(job, photo, deps.data);
 
   if (deps.mode === "supabase") {

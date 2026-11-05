@@ -41,10 +41,18 @@ export function ShootingTipsList({ className }: { className?: string }) {
 /**
  * "Tipps für perfekte Fotos" over the camera, as a modal native <dialog>
  * (focus stays inside, Esc closes): opens by itself once per device for a new
- * vehicle and from the instruction box. One tap closes it – "Verstanden", the
+ * vehicle and from the instruction box (then with the current shot's hint
+ * first, `shotTip`). One tap closes it – "Verstanden", the
  * X, Esc or a tap outside (the sheet never fills the whole screen).
  */
-export function ShootingTipsSheet({ onClose }: { onClose: () => void }) {
+export function ShootingTipsSheet({
+  onClose,
+  shotTip = null,
+}: {
+  onClose: () => void;
+  /** The current shot's photo hint (shot template `tip`), shown first. */
+  shotTip?: { title: string; tip: string } | null;
+}) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
 
@@ -96,6 +104,12 @@ export function ShootingTipsSheet({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+          {shotTip && (
+            <p className="mb-3 rounded-xl border border-ae-blue/30 bg-ae-blue-soft px-3 py-2 text-sm leading-snug">
+              <span className="block font-semibold text-ae-text">Für dieses Foto ({shotTip.title})</span>
+              <span className="text-ae-muted">{shotTip.tip}</span>
+            </p>
+          )}
           <ShootingTipsList className="short:grid short:grid-cols-2 short:gap-x-4" />
         </div>
         <div className="flex border-t border-ae-border px-4 py-3 short:justify-end">

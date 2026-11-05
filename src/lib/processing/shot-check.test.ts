@@ -9,6 +9,7 @@ import {
   getShotCheckState,
   getShotCheckStates,
   passThroughState,
+  rejectsSavedResult,
   resultsToCheckMessage,
   retakesLeftMessage,
   shotCheckDescription,
@@ -182,6 +183,30 @@ describe("getShotCheckState", () => {
       kind: "retake",
       reason: "Angeschnitten.",
     });
+  });
+
+  it("lets a newer rejection of an unchanged result win on this device ('Erneut prüfen' refused it)", () => {
+    const resultAt = "2026-11-03T10:02:00.000Z";
+    const processed = photo("p1", undefined, {
+      processedStoragePath: "x.jpg",
+      processedPreset: "autoexperten_standard",
+      updatedAt: resultAt,
+    });
+    const refused = (patch: Partial<PhotoCheck> = {}) =>
+      check("p1", { status: "retake", message: "Angeschnitten.", errorCode: "vehicle_cropped", afterResult: resultAt, ...patch });
+    // Sent again although it had a result, and the processor refuses it now: red – also after a reload.
+    expect(getShotCheckState(slot(processed), [refused()], "on")).toEqual({ kind: "retake", reason: "Angeschnitten." });
+    expect(getShotCheckState(slot(processed), [refused({ restored: true })], "unreachable")).toEqual({
+      kind: "retake",
+      reason: "Angeschnitten.",
+    });
+    expect(rejectsSavedResult(refused(), processed)).toBe(true);
+    // A result saved later (on any device) wins again; a rejection of an earlier state never hides a result.
+    const reprocessed = { ...processed, updatedAt: "2026-11-03T11:00:00.000Z" };
+    expect(getShotCheckState(slot(reprocessed), [refused({ restored: true })], "on")).toEqual({ kind: "ok", hint: null });
+    expect(getShotCheckState(slot(processed), [refused({ afterResult: undefined })], "on")).toEqual({ kind: "ok", hint: null });
+    // A result whose hint asks for a retake is a result, not a rejection of one.
+    expect(rejectsSavedResult(refused({ errorCode: null }), processed)).toBe(false);
   });
 
   it("never shows the result of a replaced photo still on the list – also with the checks off", () => {

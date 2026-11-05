@@ -169,6 +169,7 @@ let objectUrls = 0;
 
 beforeEach(() => {
   Reflect.deleteProperty(window, "navigation");
+  window.history.replaceState(null, "");
   router.push.mockReset();
   router.replace.mockReset();
   router.back.mockReset();
@@ -247,6 +248,35 @@ describe("<CameraCapture /> requested shot", () => {
     const takenAt = Date.parse(retake?.takenAt ?? "");
     expect(takenAt).toBeGreaterThanOrEqual(before);
     expect(takenAt).toBeLessThanOrEqual(Date.now());
+  });
+});
+
+describe("<CameraCapture /> after a reload", () => {
+  const heading = () => screen.getByRole("heading", { level: 1 });
+
+  it("opens at the shot it showed, not at the shot of the link it was opened with", () => {
+    const first = render(camera({ photos: photosOf(15), initialShotKey: "front" }));
+    expect(heading()).toHaveTextContent("Vorne");
+    // The camera moves on (next rejected shot, a tapped segment): kept with its history entry.
+    fireEvent.click(screen.getByRole("button", { name: /^7\. Hinten –/ }));
+    expect(heading()).toHaveTextContent("Hinten");
+    expect(window.history.state).toMatchObject({ aeCameraShot: { vehicleId: VEHICLE.id, shotKey: "rear" } });
+    first.unmount();
+
+    // Reload / discarded tab: same entry, same URL (?shot=front).
+    render(camera({ photos: photosOf(15), initialShotKey: "front" }));
+    expect(heading()).toHaveTextContent("Hinten");
+  });
+
+  it("ignores what another vehicle's camera or an unknown shot left in the entry", () => {
+    window.history.replaceState({ aeCameraShot: { vehicleId: "veh_other", shotKey: "rear" } }, "");
+    const view = render(camera({ photos: photosOf(3), initialShotKey: "front" }));
+    expect(heading()).toHaveTextContent("Vorne");
+    view.unmount();
+    window.history.replaceState({ aeCameraShot: { vehicleId: VEHICLE.id, shotKey: "extra_01" } }, "");
+    render(camera({ photos: photosOf(3) }));
+    // The guided order applies: the first open shot.
+    expect(heading()).toHaveTextContent("Linke Fahrzeugseite");
   });
 });
 
@@ -484,6 +514,40 @@ describe("<CameraCapture /> header", () => {
     expect(within(retry).getByText("nicht gespeichert · Erneut versuchen")).toHaveClass("short:hidden");
     fireEvent.click(retry);
     expect(uploads.retryAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the counts and several chips on one row (icon and number), 'Prüfung aus' also in landscape", () => {
+    const checkVehicle = vi.spyOn(photoChecks, "checkVehicle").mockResolvedValue();
+    try {
+      checks.snapshot = { availability: "offline", checks: new Map(), captures: new Map() };
+      queue.items = [
+        {
+          id: "u_failed",
+          vehicleId: VEHICLE.id,
+          shotKey: "front",
+          shotOrder: 2,
+          title: "Vorne",
+          takenAt: "2026-10-28T10:05:00.000Z",
+          status: "failed",
+          thumbnailUrl: null,
+          error: "Foto konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
+          retryable: true,
+        },
+      ];
+      const view = render(camera({ photos: photosOf(1) }));
+      const header = view.container.querySelector("header");
+      if (!header) throw new Error("no header");
+      // Two chips: the counts get shorter and each chip shows its icon and number – its label says it in full.
+      expect(within(header).getByText("2 von 15 · noch 13")).toHaveClass("short:hidden");
+      const retry = within(header).getByRole("button", { name: "1 nicht gespeichert · Erneut versuchen" });
+      expect(within(retry).getByText("nicht gespeichert · Erneut versuchen")).toHaveClass("sr-only");
+      // The chip that explains the check is off keeps its word, also in short viewports, with a 44 px tap area.
+      const off = within(header).getByRole("button", { name: "Automatische Prüfung aus · Details" });
+      expect(within(off).getByText("Prüfung aus")).not.toHaveClass("short:hidden");
+      expect(off).toHaveClass("h-6", "after:-top-1", "after:-bottom-4");
+    } finally {
+      checkVehicle.mockRestore();
+    }
   });
 
   it("offers no retry for a file the server refused for good – it points to 'Verwerfen' instead", () => {
