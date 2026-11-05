@@ -35,6 +35,7 @@ export async function loadVehicleSummaries(
     capturedRequiredCount: countCapturedRequired(template, getCapturedShotKeys(photos)),
     requiredCount,
     thumbnailUrl: thumbnails.get(vehicle.id) ?? null,
+    photos,
   }));
 }
 

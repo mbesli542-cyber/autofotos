@@ -2,7 +2,7 @@
  * Tabs "Kamera" and "Bearbeiten" with the real app services (demo backend in
  * memory, including the demo vehicles).
  */
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { getAppServices } from "@/lib/app-services";
@@ -56,6 +56,32 @@ async function fullyCapturedVehicle(model: string, { completed }: { completed: b
 }
 
 describe("<VehicleHubScreen hub='processing' />", () => {
+  it("marks a vehicle with a rejected shot 'Neu aufnehmen' – the others not", async () => {
+    const rejected = await fullyCapturedVehicle("Fabia", { completed: true });
+    const fine = await fullyCapturedVehicle("Scala", { completed: true });
+    const { data } = getAppServices().backend;
+    const front = (await data.listPhotos(rejected.id)).find((photo) => photo.shotKey === "front");
+    if (!front) throw new Error("photo missing");
+    await data.saveProcessedPhoto({
+      photo: front,
+      preset: "autoexperten_standard",
+      file: new Blob(["result"], { type: "image/jpeg" }),
+      warnings: [{ code: "plate_mirrored", message: "Das Foto zeigt die andere Fahrzeugseite." }],
+    });
+    render(<VehicleHubScreen hub="processing" />);
+
+    const card = (vehicleId: string) => {
+      const link = screen
+        .getAllByRole("link")
+        .find((entry) => entry.getAttribute("href") === `/fahrzeuge/${vehicleId}/bearbeiten`);
+      if (!link) throw new Error("card missing");
+      return link;
+    };
+    await screen.findAllByRole("link");
+    await waitFor(() => expect(within(card(rejected.id)).getByText("Neu aufnehmen")).toBeInTheDocument());
+    expect(within(card(fine.id)).queryByText("Neu aufnehmen")).toBeNull();
+  });
+
   it("lists fully captured vehicles that still need 'Aufnahmen abschließen'", async () => {
     const open = await fullyCapturedVehicle("Octavia", { completed: false });
     const done = await fullyCapturedVehicle("Superb", { completed: true });

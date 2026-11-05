@@ -1,3 +1,4 @@
+import { RotateCcw } from "lucide-react";
 import type { VehicleStatus } from "@/lib/domain/types";
 import { cn } from "@/lib/cn";
 import { VEHICLE_STATUS_LABELS } from "@/lib/vehicles/status";
@@ -43,6 +44,39 @@ export function StatusBadge({
     >
       <span className="size-1.5 rounded-full bg-current" aria-hidden />
       {VEHICLE_STATUS_LABELS[status]}
+    </span>
+  );
+}
+
+/**
+ * "Neu aufnehmen" chip: `count` shots of the vehicle were rejected by the
+ * automatic check or a processing (src/lib/processing/retake-summary.ts).
+ */
+export function RetakeBadge({
+  count,
+  onImage = false,
+  className,
+}: {
+  count: number;
+  onImage?: boolean;
+  className?: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-ae-danger/40 px-2.5 py-0.5 text-xs font-semibold text-ae-danger",
+        onImage ? "bg-ae-bg shadow-[0_1px_4px_rgb(0_0_0/0.35)]" : "bg-ae-danger/12",
+        className,
+      )}
+    >
+      <RotateCcw className="size-3" aria-hidden />
+      Neu aufnehmen
+      {count > 1 && (
+        <span className="tabular-nums" aria-hidden>
+          · {count}
+        </span>
+      )}
+      <span className="sr-only">{count === 1 ? "(1 Foto)" : `(${count} Fotos)`}</span>
     </span>
   );
 }
