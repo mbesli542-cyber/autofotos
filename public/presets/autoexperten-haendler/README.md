@@ -138,7 +138,11 @@ limit the under-car shadow and the removed-reflection band to the car's fitted f
 (`footprintReach` 0.3 m: no bar beside the ends; one continuous factor across the floor line –
 a first version applied it only above the line and left a hard 10–33 % step on the floor beside
 the bumper corners of 10 of the 12 photos, incl. the dark smudge left of the S63's bumper and the
-arcs at the CR-V's and A4's rear corners) and keep the car's own reflection near the
+arcs at the CR-V's and A4's rear corners; under a face – the bumper facing the camera of a 3/4
+view, front/rear views – the footprint does not limit them: the floor seen right below such a
+bumper lies under its overhang even where the footprint projected through the plate misses it,
+which had left the floor under the rising bumper corners of the A4, RS4, CR-V, C-Crosser and S63
+almost as light as the open floor, the overhang looking lifted) and keep the car's own reflection near the
 car (`reflection.fade` ≤ 0.6, strength 1.2–1.5 of the measured Fresnel reflectance, capped at
 0.25–0.3): dark paint darker, chrome and light paint lighter, blurred like the plate's gloss.
 

@@ -270,7 +270,9 @@ in floor metres, `minFloorLight` ≥ 0.02; optional `tint` – per-channel darke
 warm floor's hue; optional `footprintReach` – 0 = off (default) or 0.05–2 m: the under-car
 shadow fades out that far outside the fitted footprint, one continuous factor above and in
 front of the floor line (no dark bar below a rising bumper tip, no dark tail beside the ends,
-no step where the line is crossed)), `reflection` (`enabled`, `strength` ≤ 1.5 ×
+no step where the line is crossed) – not under a face (the bumper facing the camera in a 3/4
+view, front/rear views), whose floor band lies under the overhang even where the footprint
+projected through the plate misses it), `reflection` (`enabled`, `strength` ≤ 1.5 ×
 the plate's measured reflectance, `maxReflectance`/`defaultReflectance` ≤ 0.3,
 `fade` 0.2–2 × car height, `blurRate` ≤ 0.2, optional `footprintReach` like the shadow's
 for the band under the car where the plate's own reflection is removed),
@@ -401,6 +403,22 @@ median) ≤ 1.7°, saturation −8 … +7 %, near-neutral paint colour ≤ 1.1 �
 white A5: a* within +0.3), black paint ≤ +4 L*, no new clipping, no pixel of the
 car darker than photographed (at most −0.3 L* from the white balance on coloured
 pixels).
+
+Two limits that stay on purpose (the paint guard decides – the dealer may decide otherwise,
+see CLAUDE.md "No generative image AI in processing"):
+
+- **A colour cast on light paint is only partly removed.** A white car photographed in snow
+  light (the Passat: paint C* ≈ 17, hue ≈ 263°) is classed as chromatic paint – the guard cannot
+  tell a cast on white from a light blue-grey paint – so its hue/saturation limits hold the
+  colour-temperature correction back (Passat: 42 % of the plan, gains 1.015/0.998/0.975): a
+  slightly cool white car on the warm floor, true to the photo. Correcting such casts further
+  would need the guard to treat light, low-chroma paint as near-neutral (ΔE limit only).
+- **Brightened dark blue paint reads a little greyer, not bluer.** The exposure keeps every
+  pixel's R:G:B ratio; the warm colour-temperature step towards the studio then takes back the
+  blue that the lift would add (S63 navy: L* 18 → 21, a*b* unchanged, C*/(L*+16) −5…−8 %, hue
+  −1.4°, within the limits). The rich, bright navy of the dealer's AI-relit references needs
+  relighting, which is not allowed.
+
 (`processor/tests/test_light.py` covers the guards, incl. grey-blue, sage,
 plum-grey, champagne, dark navy and dark green paint, a magenta studio wall and
 navy paint as its own "white" reference).
@@ -762,6 +780,16 @@ Let's-Encrypt certificate in front of it (`Caddyfile`). The DNS record of
 Update: `git pull && PROCESSOR_DOMAIN=processor.example.com docker compose up -d --build`
 (a changed `requirements.txt`, e.g. the move to Pillow 13, rebuilds the pip
 layer by itself).
+
+**A new look under the same preset id** (e.g. the switch to the dealer's studio): the
+preset and its plates ship in this image, so the look changes when the processor is
+updated – the app keeps working unchanged (same id `autoexperten_standard`). A processed
+version only records the preset id, not the look: photos processed before the update
+still count as processed with that style, "Fotos bearbeiten" skips them, and a vehicle
+processed partly before and partly after shows two different showrooms in "Bearbeitet"
+and in the export. After the update, open "Fotos bearbeiten" for every vehicle processed
+before it and start "Bereits geprüfte Fotos erneut bearbeiten" (originals are untouched;
+each new result replaces the earlier processed version).
 
 Then set in Vercel (Project → Settings → Environment Variables) and redeploy:
 

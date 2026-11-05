@@ -1,7 +1,7 @@
 """AutoExperten Standard showroom – one physical 3D room, one camera per exterior shot.
 
 The room is modelled after the approved showroom design
-(public/presets/autoexperten-standard-reference.jpg): white brand wall with warm
+(processor/showroom3d/autoexperten-standard-reference.jpg): white brand wall with warm
 wall-wash spots and floor up-lights, walnut slat panels with vertical blue LED
 strips, olive trees in black planters, black ceiling tracks and a lacquered oak
 plank floor. Only deterministic 3D rendering (Blender Cycles) with CC0 assets

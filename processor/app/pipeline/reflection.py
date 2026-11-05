@@ -17,7 +17,9 @@ before the car is composited) does exactly that, in linear light:
   car's ends (rays hit the wall there) that band only fades out, like the
   underbody shadow – no hard-topped strip cut out of the plate's reflection; with
   ``reflection.footprintReach`` that band also fades out where the floor it shows (or
-  mirrors) lies outside the car's fitted footprint (below a rising bumper tip);
+  mirrors) lies outside the car's fitted footprint (below a rising bumper tip) – except
+  under a face (the camera-facing bumper of a 3/4 view, a front/rear view), whose floor
+  band lies under its overhang;
 - the mirrored ORIGINAL vehicle pixels (nothing regenerated) are added as a
   colour-neutral specular term with the floor's reflectance measured on the
   plate (reflection / mirrored wall radiance, plates.json ``reflectance``) ×
@@ -173,7 +175,9 @@ def apply_reflection(
         seen = np.minimum(centre, 2.0 * axis[None, :] - centre)
         fx, fy = frame.to_floor(np.broadcast_to(cols[None, :] + 0.5, band.shape), np.broadcast_to(seen, band.shape))
         sd = fp.sdf(fx, fy, FOOTPRINT_CORNER * model.pose.reference_scale)
-        band = band * footprint_limit(sd, cfg.footprint_reach * model.pose.reference_scale)
+        # (under a face – the camera-facing bumper – the floor seen is under its overhang:
+        # no fade there, as in the grounding)
+        band = band * model.footprint_fade(footprint_limit(sd, cfg.footprint_reach * model.pose.reference_scale), sel)
     mirrored[..., 3] = np.maximum(mirrored[..., 3], band)
 
     # gloss: blur grows with the distance from the floor line

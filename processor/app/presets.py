@@ -108,7 +108,8 @@ class ShadowConfig:
     #: 0 = off. Otherwise the under-car shadow above the floor line (the floor seen under the
     #: body and beside the silhouette's ends) fades out with the floor distance (m) outside the
     #: fitted footprint: below a rising bumper tip the photo shows floor behind or beside the
-    #: car, not under it – no tall dark bar at the car's ends.
+    #: car, not under it – no tall dark bar at the car's ends. Not under a face (the bumper facing
+    #: the camera, front/rear views: grounding.face_weight) – its floor band is under the overhang.
     footprint_reach: float = 0.0
 
 

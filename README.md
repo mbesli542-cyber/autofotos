@@ -1020,6 +1020,14 @@ lettering – through the plate's wall homography (`processor/app/showroom/wall_
 layout in the JSON `branding` section as fractions of the brand wall) – never
 AI-generated, never over the vehicle; the vehicle roof stays below them.
 
+**Updating the look:** the preset and its plates ship with the processor, so a new
+look (like the switch to the dealer's studio) arrives with the processor update –
+the app needs no change (same preset id). A processed version stores only the
+preset id, not the look: results from before the update still count as processed,
+"Fotos bearbeiten" skips them and a vehicle can end up with two showrooms in one
+listing. After such an update run "Bereits geprüfte Fotos erneut bearbeiten" for
+every vehicle processed before it (`processor/README.md` → Deploy).
+
 **No silent fallback:** without a complete, valid plate set every exterior job
 fails with "AutoExperten Showroom-Master fehlt." and nothing is saved; there
 is no procedural stand-in background.

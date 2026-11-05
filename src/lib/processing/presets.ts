@@ -124,7 +124,8 @@ export const PROCESSING_PRESETS: Record<ProcessingPresetId, ProcessingPreset> = 
       plateSet: "/presets/autoexperten-haendler/plates.json",
       // Placement, shadow and output numbers: see this JSON (used by processor/).
       processingConfig: "/presets/autoexperten-standard.json",
-      referenceImage: "/presets/autoexperten-standard-reference.jpg",
+      // The dealer's own studio (his showroom image, lettering removed) – the look.
+      referenceImage: "/presets/autoexperten-haendler/plate.jpg",
     },
     adjustments: { lighting: true, color: true, contrast: true, preserveVehicleColor: true },
     preserveOriginalVehiclePixels: true,

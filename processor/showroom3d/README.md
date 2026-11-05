@@ -7,7 +7,7 @@ no longer in `public/presets/` (git history 990d9f7; `render_plates.py` + `postp
 re-render them into a folder of the same format).
 
 The background of the earlier look was ONE physical 3D room, built after the
-approved design (`public/presets/autoexperten-standard-reference.jpg`):
+approved design (`autoexperten-standard-reference.jpg` in this folder; earlier `public/presets/`):
 warm-white brand wall with wall-wash spots and floor up-lights, walnut slat
 panels with vertical AutoExperten-blue LED strips, olive trees in black
 planters, black ceiling tracks, lacquered oak plank floor.

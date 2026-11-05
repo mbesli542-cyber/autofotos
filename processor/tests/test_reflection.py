@@ -211,3 +211,26 @@ def test_the_footprint_reach_keeps_the_removal_to_the_floor_under_the_car(scene)
     # the mirror image of the body between the tyres (under it the floor IS under the car) is unchanged
     mid = slice(int(placement.left + 0.35 * placement.width), int(placement.left + 0.65 * placement.width))
     assert np.allclose(limited[bottom + 5 : bottom + 120, mid], default[bottom + 5 : bottom + 120, mid], atol=1e-6)
+
+
+def test_under_a_face_the_footprint_reach_keeps_the_removal(scene):
+    """reflection.footprintReach does not apply under a face (front/rear view, the bumper facing the
+    camera): the floor band under its rising corners is under the overhang – the plate's own
+    reflection stays removed there (no LED streak running up under the bumper)."""
+    preset, showroom, placement, background = scene
+    rgb = np.zeros((H, W, 3), np.float32)
+    alpha = np.zeros((H, W), np.float32)
+    left, right = int(placement.left), int(placement.left + placement.width)
+    bottom = int(placement.ground_y)
+    for x in range(left, right):  # the lower edge rises 60 px towards both corners
+        f = abs((x - left) / max(right - left, 1) - 0.5) * 2.0
+        alpha[int(placement.top) : bottom - int(round(60 * max(0.0, (f - 0.5) / 0.5))), x] = 1.0
+    model = build_ground_model(alpha, placement, [], showroom)
+    kw = dict(info=None, model=model, background_linear=background)
+    default = apply_reflection(background, rgb, alpha, [], showroom, placement, preset.reflection, **kw)
+    cfg = dataclasses.replace(preset.reflection, footprint_reach=0.3)
+    limited = apply_reflection(background, rgb, alpha, [], showroom, placement, cfg, **kw)
+    assert np.abs(limited[:, left:right] - default[:, left:right]).max() < 1e-3
+    unfaced = dict(kw, model=dataclasses.replace(model, face=None))
+    old = apply_reflection(background, rgb, alpha, [], showroom, placement, cfg, **unfaced)
+    assert (old - limited)[:, left:right].max() > 0.005  # the fade alone kept the streak under the corners

@@ -119,7 +119,7 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
   is `variants/autoexperten-haendler.json` ("Schatten mittel"; `-leicht` /
   `-kraeftig` are the alternatives) with the standard name. The earlier Blender
   room (`processor/showroom3d/render_plates.py`, modelled after
-  `public/presets/autoexperten-standard-reference.jpg`) is tooling only – its
+  `processor/showroom3d/autoexperten-standard-reference.jpg`) is tooling only – its
   eight plates are no longer shipped (they are in the git history, 990d9f7).
 - **Quality gate instead of bad results.** Photos that would give a bad
   listing image (too small, cropped, wrong perspective, unclear mask/tyres,
@@ -231,8 +231,16 @@ dev only (404 in production unless `ENABLE_DEV_TOOLS=true`): `/dev/processing-te
   Pillow parses a file (size, chunk/segment floods); animated PNG/WebP are
   refused; single-scan sequential JPEGs of 80–320 MP are decoded at 1/2, other
   photos above 80 MP fail with `image_too_large` (a retake code in the app).
-  New preset fields are validated in `app/presets.py` (never defaulted); a new
+  New preset fields are validated in `app/presets.py` (an invalid value is an
+  error, never replaced by a default; a missing field keeps its code default –
+  for the dealer-look fields such as `shadow.tint`, `footprintReach` or
+  `vehicleAdjustments.studioLight` that is the earlier look – so the shipped
+  preset and every variant write all fields out); a new
   debug image must be listed in `DEBUG_FILE_NAMES` (`app/pipeline/debug.py`).
+- A new look under the same preset id (plates/preset ship with the processor):
+  processed versions record only the preset id, so earlier results still count
+  as processed – after the processor update run "Bereits geprüfte Fotos erneut
+  bearbeiten" for vehicles processed before it (`processor/README.md` → Deploy).
 - Database: apply new migrations before deploying the app version that needs
   them; a new migration must pass `migrations.test.ts` (no SECURITY DEFINER
   beyond the membership helpers, policies only `to authenticated`, no grants to

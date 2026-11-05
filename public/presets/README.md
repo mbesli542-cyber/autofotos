@@ -8,11 +8,14 @@ Assets of the AutoExperten showroom processing (used by the processor in
 | `autoexperten-standard.json` | Preset "AutoExperten Standard" – **the dealer's own studio** with "Schatten mittel" (identical to `variants/autoexperten-haendler.json` except name and description): plate set, **branding layout** (wall space), output size (2400 × 1800), placement limits, shadow, reflection, vehicle adjustments incl. the studio light match (`vehicleAdjustments.studioLight`, the dealer's decision), quality gate. Validated strictly by the processor (`processor/app/presets.py`, ranges in `processor/README.md` → Presets and assets): an invalid value is a configuration error (`presetError` in `/health`), never replaced by a default. |
 | `autoexperten-haendler/` | The **showroom plates**: the dealer's own showroom image (made with an image AI, his lettering removed, upscaled once) as ONE fixed studio plate for all eight shots (`plate.jpg`, per-shot `<shot>-shadow.png`, one `reflection.png`, `plates.json`, `branding.json`). Provenance, studio camera, shadow strengths and recipe: its `README.md`. |
 | `variants/` | The same look in the three shadow strengths (`autoexperten-haendler.json` = "mittel" = shipped, `-leicht`, `-kraeftig`) – complete presets. See `variants/README.md`. |
-| `autoexperten-standard-reference.jpg` | Showroom design supplied by AutoExperten earlier (1448 × 1086) – the model of the earlier Blender room (`processor/showroom3d/render_plates.py`; the app's preset spec names it as look reference). Its lettering is generated, **not** the official logo, so it is never used as a background. |
 
 The eight plates of the earlier Blender room (`autoexperten-standard/<shot>.jpg`,
 `-shadow.png`, `-reflection.png`, `plates.json`, ≈ 23 MB) are no longer shipped – no preset
 uses them; `render_plates.py` re-renders them, or take them from the git history (990d9f7).
+The design it was modelled after (supplied by AutoExperten earlier, 1448 × 1086, generated
+lettering – never a background) moved to `processor/showroom3d/autoexperten-standard-reference.jpg`
+(tooling only); the app's preset spec names the dealer's plate as look reference
+(`referenceImage: /presets/autoexperten-haendler/plate.jpg`).
 
 ## How a listing photo is built
 

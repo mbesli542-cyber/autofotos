@@ -21,6 +21,7 @@ from app.pipeline.grounding import (
     clean_ground_fringe,
     draw_ground_model,
     end_fade,
+    face_weight,
     fit_pose,
     floor_line_model,
     ground_line_without_contacts,
@@ -484,6 +485,49 @@ def test_the_footprint_reach_ends_the_under_car_shadow_beside_a_rising_bumper(sc
     ok = floor[1:] & floor[:-1] & ends[None, :] & below_junction
     assert ok.sum() > 1000
     assert not np.any(ok & (step > 0.03) & (step > 3.0 * nearby))
+
+
+def test_faces_are_the_columns_whose_floor_line_follows_no_side_line():
+    """Face = the floor line is the outline + clearance: beyond the tyre facing the camera in a 3/4
+    view, everywhere without a side pair; 0 between and beyond the tyres of a side view; blended
+    (no vertical seam) and faded out beyond the silhouette's ends."""
+    cols = np.arange(0, 400, dtype=np.float64) + 0.5
+    near, far = GroundContact(150.0, 360.0, 40.0), GroundContact(300.0, 330.0, 40.0)  # steep: 3/4 view
+    face = face_weight(cols, [(near, far)], 400.0)
+    assert face[:100].min() > 0.99 and face[200:].max() < 0.01  # the facing end vs sill + far end
+    assert np.all(np.abs(np.diff(face)) < 0.1)  # blended over FACE_BLEND × the width
+    side = face_weight(cols, [(GroundContact(150.0, 360.0), GroundContact(300.0, 358.0))], 400.0)
+    assert side.max() == 0.0  # side view: the side line runs on beyond both tyres
+    assert face_weight(cols, [], 400.0).min() == 1.0  # front/rear view, implausible contacts
+    edge = np.where((cols > 50) & (cols < 350), 300.0, np.nan)
+    ended = face_weight(cols, [], 400.0, edge)
+    assert ended[100:300].min() == 1.0 and ended[0] < 0.05 and ended[399] < 0.05
+
+
+def test_under_a_face_the_footprint_reach_keeps_the_under_car_shadow(scene):
+    """The floor seen between the outline and the floor line of a face (the bumper facing the camera,
+    a front/rear view) lies under its overhang – even where its rising tip leaves the footprint
+    projected through the plate (photo camera ≠ plate camera): shadow.footprintReach does not
+    lighten it there (the overhang looked lifted); beside the corners it still applies."""
+    preset, showroom, placement, _, _, background = scene
+    alpha = np.zeros((H, W), np.float32)
+    left, right = int(placement.left), int(placement.left + placement.width)
+    bottom = int(placement.ground_y)
+    for x in range(left, right):  # the lower edge rises 60 px towards both corners
+        f = abs((x - left) / max(right - left, 1) - 0.5) * 2.0
+        alpha[int(placement.top) : bottom - int(round(60 * max(0.0, (f - 0.5) / 0.5))), x] = 1.0
+    model = build_ground_model(alpha, placement, [], showroom)
+    assert model.face is not None and model.face[left - model.window.x0 : right - model.window.x0].min() == 1.0
+    default = apply_grounding(background, alpha, placement, [], showroom, preset, model=model)
+    limited = apply_grounding(
+        background, alpha, placement, [], showroom, _with_shadow(preset, footprint_reach=0.3), model=model
+    )
+    assert np.abs(limited[:, left:right] - default[:, left:right]).max() < 1e-3
+    unfaced = dataclasses.replace(model, face=None)  # the fade alone lightened the rising corners
+    old = apply_grounding(
+        background, alpha, placement, [], showroom, _with_shadow(preset, footprint_reach=0.3), model=unfaced
+    )
+    assert (_darkening(default, background) - _darkening(old, background))[:, left:right].max() > 0.2
 
 
 def test_the_footprint_limit_is_one_inside_and_fades_outside():

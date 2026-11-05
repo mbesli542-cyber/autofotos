@@ -48,7 +48,10 @@ Deep shadows are darkened per channel by ``shadow.tint`` – by default slightly
 keeps the floor's own hue (a warm wood floor). With ``shadow.footprintReach`` the under-car
 term fades out outside the fitted footprint, continuously across the floor line (no tall dark
 bar below a rising bumper tip, where the photo shows floor behind or beside the car, and no
-dark tail beside the car's ends).
+dark tail beside the car's ends) – but not under a face (the bumper facing the camera in a 3/4
+view, front/rear views: the floor line is the outline + clearance there, the floor seen above it
+lies under the overhang even where the projected footprint – plate camera ≠ photo camera –
+misses it; otherwise that overhang looked lifted).
 
 :func:`clean_ground_fringe` removes light ground/snow remnants of the cut-out at
 the tyre bottoms and along the lower outline (they are not vehicle pixels; a
@@ -116,6 +119,12 @@ MIN_WHEELBASE_RATIO = 0.5
 #: A side line steeper than this (dy/dx) is a 3/4 view: its lower contact is the end facing
 #: the camera, whose face recedes – there the outline + BODY_CLEARANCE is the floor line.
 SIDE_VIEW_SLOPE = 0.12
+#: Face columns (the floor line is the outline + clearance, no side line – the end facing the
+#: camera, front/rear views): the floor seen between the outline and the floor line lies under
+#: the face's overhang, so the footprint fade (shadow/reflection.footprintReach) does not apply
+#: there. The face weight blends over this fraction of the vehicle width (no vertical seam where
+#: a side line ends at the facing tyre).
+FACE_BLEND = 0.03
 #: The lower outline is smoothed over this fraction of the vehicle width for the floor line,
 #: the underbody shadow sideways over this one.
 OUTLINE_SMOOTH = 0.012
@@ -723,6 +732,53 @@ def smooth_outline(edge: np.ndarray, vehicle_width: float) -> np.ndarray:
     return smooth
 
 
+def side_line_spans(cols: np.ndarray, sides: Sequence[tuple[GroundContact, GroundContact]]):
+    """Per same-side tyre pair: (columns whose floor line follows its side line, the side line's
+    rows) – between the two contacts and beyond them along that side, except beyond the end
+    facing the camera of a 3/4 view (a receding face, see :func:`floor_line_model`)."""
+    spans = []
+    for a, b in sides:
+        slope = (b.y - a.y) / max(b.x - a.x, 1.0)
+        side_line = a.y + slope * (cols - a.x)
+        along = (cols >= a.x) & (cols <= b.x)
+        facing = None  # the end facing the camera (3/4 views): its overhang is a receding face
+        if abs(slope) > SIDE_VIEW_SLOPE:
+            facing = a if a.y > b.y else b
+        if facing is not a:
+            along |= cols < a.x
+        if facing is not b:
+            along |= cols > b.x
+        spans.append((along, side_line))
+    return spans
+
+
+def face_weight(
+    cols: np.ndarray,
+    sides: Sequence[tuple[GroundContact, GroundContact]],
+    vehicle_width: float,
+    edge: np.ndarray | None = None,
+) -> np.ndarray:
+    """Per column 0..1: 1 where the floor line is the outline + clearance (a face: the end facing
+    the camera in 3/4 views, front/rear views, no plausible side pair), 0 where it follows a side
+    line – smoothed over FACE_BLEND × the vehicle width. With the lower outline `edge` (NaN = no
+    car) it fades out beyond the silhouette's ends over the same width: beside the car's corners
+    the footprint fade applies as everywhere else."""
+    face = np.ones(len(cols), np.float64)
+    for along, _ in side_line_spans(cols, sides):
+        face[along] = 0.0
+    sigma = max(1.0, FACE_BLEND * vehicle_width)
+    if len(face) > 1 and face.min() < face.max():
+        face = cv2.GaussianBlur(face.reshape(1, -1), (0, 0), sigmaX=sigma, borderType=cv2.BORDER_REPLICATE).ravel()
+    if edge is not None:
+        idx = np.flatnonzero(np.isfinite(edge))
+        if len(idx):
+            beyond = np.maximum(np.maximum(cols[idx[0]] - cols, cols - cols[idx[-1]]), 0.0)
+            face = face * np.exp(-((beyond / sigma) ** 2))
+        else:
+            face = np.zeros_like(face)
+    return np.clip(face, 0.0, 1.0)
+
+
 def floor_line_model(
     edge: np.ndarray,
     cols: np.ndarray,
@@ -755,17 +811,7 @@ def floor_line_model(
     weight_total = np.zeros_like(line)
     target_sum = np.zeros_like(line)
     lo, hi = edge + MIN_CLEARANCE * px_per_m, edge + MAX_CLEARANCE * px_per_m
-    for a, b in sides:
-        slope = (b.y - a.y) / max(b.x - a.x, 1.0)
-        side_line = a.y + slope * (cols - a.x)
-        along = (cols >= a.x) & (cols <= b.x)
-        facing = None  # the end facing the camera (3/4 views): its overhang is a receding face
-        if abs(slope) > SIDE_VIEW_SLOPE:
-            facing = a if a.y > b.y else b
-        if facing is not a:
-            along |= cols < a.x
-        if facing is not b:
-            along |= cols > b.x
+    for along, side_line in side_line_spans(cols, sides):
         floor = np.clip(side_line, lo, hi)
         target_sum += np.where(along & has, floor, 0.0)
         weight_total += along & has
@@ -810,6 +856,20 @@ class GroundModel:
     #: Matched wheelbase pairs / the proxy's wheelbase (:func:`wheelbase_ratios`); a ratio below
     #: MIN_WHEELBASE_RATIO marks the contacts as implausible (no side line through them).
     wheelbase_ratios: list[float] = field(default_factory=list)
+    #: Per window column 0..1: face columns (:func:`face_weight`) – there the footprint fade of
+    #: the under-car terms does not apply (None: everywhere).
+    face: np.ndarray | None = None
+
+    def footprint_fade(self, limit: np.ndarray, columns: slice | None = None) -> np.ndarray:
+        """`limit` (rows × window columns, or the `columns` slice of them) with the footprint fade
+        lifted in face columns: the floor seen under a face (the camera-facing bumper of a 3/4
+        view, a front/rear view) lies under its overhang, even where the projected footprint –
+        plate camera ≠ photo camera – misses it. One factor per column for all rows (no step at
+        the floor line)."""
+        if self.face is None:
+            return limit
+        face = self.face if columns is None else self.face[columns]
+        return (limit + face[None, :] * (1.0 - limit)).astype(np.float32)
 
     @property
     def contacts_plausible(self) -> bool:
@@ -896,6 +956,7 @@ def build_ground_model(
     sides = contact_sides(meta, visible) if all(r >= MIN_WHEELBASE_RATIO for r in ratios) else []
     line = floor_line_model(edge, cols, across_px, tyres, sides, vw,
                             LIP_CLEARANCE if not visible else BODY_CLEARANCE)  # fmt: skip
+    face = face_weight(cols, sides, vw, edge)
 
     hidden: list[tuple[float, float]] = []
     extent = lower_body_extent(vehicle_alpha_out, placement)
@@ -910,8 +971,9 @@ def build_ground_model(
             back = HIDDEN_AXLE_OFFSET * pose.reference_scale
             hidden.append((fx - back * tx, fy - back * ty))
     return GroundModel(
-        frame, pose, footprint, window, cols, edge, line, near, tyres, hidden, visible, vehicle_alpha_out, ratios
-    )
+        frame, pose, footprint, window, cols, edge, line, near, tyres, hidden, visible, vehicle_alpha_out, ratios,
+        face,
+    )  # fmt: skip
 
 
 # --------------------------------------------------------------------------- matte clean-up
@@ -1161,8 +1223,9 @@ def apply_grounding(
     if cfg.footprint_reach > 0.0:
         # the floor seen under a rising bumper tip (or beside the ends) lies behind/beside the car
         # once it is outside the footprint – the under-car term fades out there, above and in front
-        # of the floor line alike (one continuous factor: no step where the line is crossed)
-        under = under * footprint_limit(sd, cfg.footprint_reach * pose.reference_scale)
+        # of the floor line alike (one continuous factor: no step where the line is crossed) –
+        # except under a face (its overhang), :meth:`GroundModel.footprint_fade`
+        under = under * model.footprint_fade(footprint_limit(sd, cfg.footprint_reach * pose.reference_scale))
     under = cv2.GaussianBlur(under.astype(np.float32), (0, 0), sigmaX=max(0.8, UNDERBODY_SMOOTH * vw), sigmaY=0.1)
     keep = 1.0 - under
 
