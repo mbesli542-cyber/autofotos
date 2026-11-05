@@ -127,18 +127,87 @@ class ReflectionConfig:
     blur_rate: float = 0.04
 
 
+#: Ranges of vehicleAdjustments.studioLight (the dealer's decision, 2026-11-05: the car may get a
+#: Lightroom-like GLOBAL light correction towards the studio). Values outside are configuration
+#: errors; app/pipeline/light.py clamps to the same maxima again. The paint guard limits can only
+#: be made stricter: hue <= 3 degrees, saturation <= ±10 %, black paint lifted by <= 5 L*, …
+STUDIO_LIGHT_RANGES: dict[str, tuple[float, float]] = {
+    "exposure_strength": (0.0, 1.0),
+    "key_target": (0.5, 1.5),
+    "max_exposure_ev": (0.0, 1.0),
+    "contrast": (0.0, 0.3),
+    "shadows": (0.0, 0.5),
+    "highlight_slope": (0.6, 1.0),
+    "white_limit": (0.9, 0.995),
+    "white_balance_strength": (0.0, 1.0),
+    "max_white_balance": (0.0, 0.08),
+    "max_hue_shift_deg": (0.0, 3.0),
+    "max_saturation_change": (0.0, 0.10),
+    "max_neutral_chroma_shift": (0.0, 4.0),
+    "max_black_lift": (0.0, 5.0),
+    "max_paint_lightness_shift": (0.0, 10.0),
+    "max_new_clipped": (0.0, 0.003),
+}
+
+
+@dataclass(frozen=True)
+class StudioLightConfig:
+    """Global light match of the VEHICLE layer to the studio plate (app/pipeline/light.py).
+
+    Off unless a preset sets ``vehicleAdjustments.studioLight`` – then with EVERY field written
+    out (nothing silently defaulted). Exposure towards the studio's key light, a contrast
+    S-curve with a highlight ceiling, an optional shadow lift and a white balance towards the
+    studio's measured neutral – all global, ratio-preserving tone/colour mappings of the
+    original pixels, scaled back automatically by the paint guard.
+    """
+
+    enabled: bool = False
+    #: Fraction (log2 space) of the exposure difference between the car's median luminance and
+    #: ``key_target`` × the studio's key light near the car that is applied.
+    exposure_strength: float = 0.0
+    key_target: float = 1.0
+    #: Exposure lift at most (EV). The car is never darkened.
+    max_exposure_ev: float = 0.0
+    #: Contrast around the car's own median luminance (log-space slope − 1); fades out in deep shadows.
+    contrast: float = 0.0
+    #: Lift of the shadow tones (EV at 1/6 of the median; 0 at the median and at the black point).
+    shadows: float = 0.0
+    #: Highlights: a lifted pixel's brightest channel keeps at least this share of its distance
+    #: to ``white_limit`` (1 = highlights not lifted at all; no flat white, nothing new clips).
+    highlight_slope: float = 0.8
+    white_limit: float = 0.985
+    #: Fraction of the white balance towards the studio's measured neutral applied …
+    white_balance_strength: float = 0.0
+    #: … at most this much per channel (relative gain, luminance kept).
+    max_white_balance: float = 0.0
+    #: Paint guard (measured on the paint: large uniform body areas, before vs after).
+    max_hue_shift_deg: float = 2.5
+    max_saturation_change: float = 0.10
+    #: Near-neutral paint (white, silver, grey, black): chroma change at most (CIELAB units).
+    max_neutral_chroma_shift: float = 3.0
+    #: Tone class of the paint: black / very dark paint (median L* <= 25) is lifted at most
+    #: ``max_black_lift`` (median AND 10th percentile L*), paint from L* 45 at most
+    #: ``max_paint_lightness_shift``, linear in between (no step at a class boundary).
+    max_black_lift: float = 4.0
+    max_paint_lightness_shift: float = 8.0
+    #: Vehicle pixels that newly reach full white (chrome, headlights, white paint).
+    max_new_clipped: float = 0.002
+
+
 @dataclass(frozen=True)
 class VehicleAdjustments:
     """Configured maxima for corrections on the VEHICLE layer.
 
     These are additionally clamped by hard limits in app/pipeline/light.py –
-    configuration can never make vehicle corrections aggressive.
+    configuration can never make vehicle corrections aggressive. ``studio_light`` (off by
+    default) replaces the conservative correction with the guarded studio light match.
     """
 
     exposure_ev_limit: float = 0.25
     contrast_limit: float = 0.0
     white_balance_limit: float = 0.02
     light_wrap: float = 0.10
+    studio_light: StudioLightConfig = field(default_factory=StudioLightConfig)
 
 
 @dataclass(frozen=True)
@@ -283,6 +352,11 @@ EXTERIOR_SHOTS = frozenset(
 #: "extra" stands for every extra_NN photo). Interior shots never do (cockpit, seats).
 DETAIL_BACKDROP_SHOTS = frozenset({"wheel_detail", "special_detail", "extra"})
 EXTRA_SHOT_PREFIX = "extra_"
+
+
+def _snake_to_camel(name: str) -> str:
+    head, *rest = name.split("_")
+    return head + "".join(part.capitalize() for part in rest)
 
 
 def _camel_to_snake(name: str) -> str:
@@ -624,6 +698,38 @@ def _parse_reflection(data) -> ReflectionConfig:
     return reflection
 
 
+def _parse_studio_light(data) -> StudioLightConfig:
+    owner = "vehicleAdjustments.studioLight"
+    if not isinstance(data, dict):
+        raise PresetConfigError(f"{owner} must be an object")
+    # every field written out: a light correction of the vehicle never hides behind a default
+    required = {_snake_to_camel(f.name) for f in fields(StudioLightConfig)}
+    missing = sorted(required - set(data))
+    if missing:
+        raise PresetConfigError(f"{owner} needs every field, missing: {', '.join(missing)}")
+    config = _merge(StudioLightConfig(), data, owner)
+    for name, (low, high) in STUDIO_LIGHT_RANGES.items():
+        value = getattr(config, name)
+        if not low <= value <= high:
+            raise PresetConfigError(f"{owner}.{_snake_to_camel(name)} must be {low}..{high}, got {value}")
+    return config
+
+
+def _parse_vehicle_adjustments(data) -> VehicleAdjustments:
+    if data is None:
+        return VehicleAdjustments()
+    if not isinstance(data, dict):
+        raise PresetConfigError("vehicleAdjustments must be an object")
+    flat = {k: v for k, v in data.items() if k != "studioLight"}
+    for key in flat:
+        if _camel_to_snake(key) == "studio_light":
+            raise PresetConfigError(f"Unknown preset field '{key}' in vehicleAdjustments")
+    adjustments = _build(VehicleAdjustments, flat, "vehicleAdjustments")
+    if "studioLight" in data:
+        adjustments = replace(adjustments, studio_light=_parse_studio_light(data["studioLight"]))
+    return adjustments
+
+
 def parse_preset(data: dict) -> Preset:
     if not isinstance(data, dict):
         raise PresetConfigError("preset must be a JSON object")
@@ -695,7 +801,7 @@ def parse_preset(data: dict) -> Preset:
         shot_placement=shots,
         shadow=_parse_shadow(data.get("shadow")),
         reflection=_parse_reflection(data.get("reflection")),
-        adjustments=_build(VehicleAdjustments, data.get("vehicleAdjustments"), "vehicleAdjustments"),
+        adjustments=_parse_vehicle_adjustments(data.get("vehicleAdjustments")),
         quality=_parse_quality(data.get("quality")),
         detail_backdrop=_parse_detail_backdrop(data.get("detailBackdrop")),
     )

@@ -303,6 +303,26 @@ VARIANT_DESCRIPTION = (
 )
 VARIANT_SHADOW = {"edgeOpacity": 0.7, "underbodyFalloff": 0.25, "ambientOpacity": 0.6}
 VARIANT_REFLECTION = {"strength": 1.0}
+#: The dealer's decision (2026-11-05): the car gets the guarded global studio light match
+#: (app/pipeline/light.py, vehicleAdjustments.studioLight) – every field written out.
+VARIANT_STUDIO_LIGHT = {
+    "enabled": True,
+    "exposureStrength": 0.5,
+    "keyTarget": 1.0,
+    "maxExposureEv": 0.8,
+    "contrast": 0.2,
+    "shadows": 0.0,
+    "highlightSlope": 0.75,
+    "whiteLimit": 0.985,
+    "whiteBalanceStrength": 0.6,
+    "maxWhiteBalance": 0.06,
+    "maxHueShiftDeg": 2.5,
+    "maxSaturationChange": 0.1,
+    "maxNeutralChromaShift": 3.0,
+    "maxBlackLift": 4.0,
+    "maxPaintLightnessShift": 6.0,
+    "maxNewClipped": 0.002
+}
 
 
 def write_variant(standard: Path, target: Path, plates: str, layout: dict, room: dict) -> dict:
@@ -343,6 +363,7 @@ def write_variant(standard: Path, target: Path, plates: str, layout: dict, room:
         branding[name]["text"] = ""
     data["shadow"].update(VARIANT_SHADOW)
     data["reflection"].update(VARIANT_REFLECTION)
+    data["vehicleAdjustments"]["studioLight"] = dict(VARIANT_STUDIO_LIGHT)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return data

@@ -12,7 +12,8 @@ Exterior shots:
     → vehicle geometry (tyre contacts, near end, perspective)
     → plate selection (the shot's 3D-showroom plate; mirrored 3/4 plate if the
       photo shows the other side) → placement v2 on the plate → quality gate
-    → cut-out of the ORIGINAL vehicle pixels → conservative light matching
+    → cut-out of the ORIGINAL vehicle pixels → light matching (conservative; or, with the
+      preset's vehicleAdjustments.studioLight, the guarded global studio light match)
     → scale/place → branded plate → grounding (tyre contact + underbody + calibrated
       ambient shadow) → floor reflection
     → light wrap → composite → JPEG export
@@ -51,7 +52,13 @@ from .grounding import (
     ground_contacts,
 )
 from .harmonize import decontaminate_edges, light_wrap
-from .light import effective_limits, estimate_correction, guarded_correction
+from .light import (
+    effective_limits,
+    estimate_correction,
+    guarded_correction,
+    measure_studio,
+    studio_light_correction,
+)
 from .mask import QualityWarning, assess_mask, clean_mask, mask_bbox
 from .matting import model_alpha, refine_edges
 from .quality import (
@@ -342,9 +349,20 @@ def process_photo(
         debug.rgba("vehicle-transparent.png", linear_to_u8(clean_rgb), layer.alpha)
     timer.mark("cutout")
 
-    # conservative light matching (measured on the original, applied to the vehicle layer only)
-    correction_plan = estimate_correction(decoded.rgb, alpha, preset.adjustments)
-    corrected_rgb, correction = guarded_correction(clean_rgb, layer.alpha, correction_plan)
+    # light matching of the vehicle layer: the conservative correction (measured on the original),
+    # or – vehicleAdjustments.studioLight (the dealer's decision) – the guarded global light match
+    # towards the studio's light measured on the plate around the car's spot
+    if preset.adjustments.studio_light.enabled:
+        studio = measure_studio(
+            np.asarray(showroom.rgb), (placement.left, placement.top, placement.width, placement.height)
+        )
+        corrected_rgb, adjustments_meta = studio_light_correction(
+            clean_rgb, layer.alpha, studio, preset.adjustments.studio_light
+        )
+    else:
+        correction_plan = estimate_correction(decoded.rgb, alpha, preset.adjustments)
+        corrected_rgb, correction = guarded_correction(clean_rgb, layer.alpha, correction_plan)
+        adjustments_meta = correction.as_dict()
     layer = type(layer)(rgb=corrected_rgb, alpha=layer.alpha, offset_x=layer.offset_x, offset_y=layer.offset_y)
     timer.mark("light")
 
@@ -457,7 +475,7 @@ def process_photo(
         },
         "grounding": grounding,
         "reflection": reflection,
-        "adjustments": correction.as_dict(),
+        "adjustments": adjustments_meta,
         "showroomSource": SHOWROOM_PLATES,
         "showroomPlaceholder": False,
         "branding": {"boxes": [list(b) for b in showroom.branding.boxes], "bottom": showroom.branding.bottom},

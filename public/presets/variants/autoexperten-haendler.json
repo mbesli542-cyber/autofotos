@@ -111,7 +111,25 @@
     "exposureEvLimit": 0.25,
     "contrastLimit": 0.0,
     "whiteBalanceLimit": 0.02,
-    "lightWrap": 0.1
+    "lightWrap": 0.1,
+    "studioLight": {
+      "enabled": true,
+      "exposureStrength": 0.5,
+      "keyTarget": 1.0,
+      "maxExposureEv": 0.8,
+      "contrast": 0.2,
+      "shadows": 0.0,
+      "highlightSlope": 0.75,
+      "whiteLimit": 0.985,
+      "whiteBalanceStrength": 0.6,
+      "maxWhiteBalance": 0.06,
+      "maxHueShiftDeg": 2.5,
+      "maxSaturationChange": 0.1,
+      "maxNeutralChromaShift": 3.0,
+      "maxBlackLift": 4.0,
+      "maxPaintLightnessShift": 6.0,
+      "maxNewClipped": 0.002
+    }
   },
   "quality": {
     "minSourceLongEdge": 1600,

@@ -422,8 +422,13 @@ def test_the_dealer_variant_is_a_complete_valid_preset():
     preset = parse_preset(HAENDLER)
     assert HAENDLER["id"] == STANDARD["id"]  # copied over the standard file, it replaces it
     assert HAENDLER["background"]["plates"] == "autoexperten-haendler/plates.json"
-    for section in ("output", "vehicleAdjustments", "quality"):
+    for section in ("output", "quality"):
         assert HAENDLER[section] == STANDARD[section], section
+    # the conservative limits as shipped + the studio light match (the dealer's decision: the car
+    # gets a guarded global light correction towards his bright studio; tests/test_light.py)
+    adjustments = {k: v for k, v in HAENDLER["vehicleAdjustments"].items() if k != "studioLight"}
+    assert adjustments == STANDARD["vehicleAdjustments"]
+    assert preset.adjustments.studio_light.enabled
     # stronger underbody shadow, everything else of the grounding as shipped
     assert (preset.shadow.edge_opacity, preset.shadow.underbody_falloff, preset.shadow.ambient_opacity) == (0.7, 0.25, 0.6)
     changed = {"edgeOpacity", "underbodyFalloff", "ambientOpacity"}
@@ -553,6 +558,10 @@ def test_the_pipeline_composites_a_car_onto_the_dealer_plate(fake_segmenter, thr
     )  # fmt: skip
     meta = result.metadata
     assert meta["plateUsed"] == "front_left_45"
+    # the car got the studio light match, measured on this plate and checked by the paint guard
+    adjustments = meta["adjustments"]
+    assert adjustments["mode"] == "studioLight" and adjustments["guard"]["passed"]
+    assert 0.3 < adjustments["studio"]["key"] < 0.8 and adjustments["applied"]["exposureEv"] >= 0.0
     out = _decode(result.jpeg)
     assert out.shape == (1800, 2400, 3)
     assert meta["reflection"]["platePass"] is True
