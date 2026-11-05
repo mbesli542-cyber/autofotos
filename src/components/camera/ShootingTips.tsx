@@ -1,7 +1,7 @@
 "use client";
 
 import { Camera, Droplets, Lightbulb, MoveHorizontal, Scan, Smartphone, Tag, Warehouse, X, type LucideIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef } from "react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import { SHOOTING_TIPS, type ShootingTipIcon } from "@/lib/shots/shooting-guide";
@@ -39,34 +39,45 @@ export function ShootingTipsList({ className }: { className?: string }) {
 }
 
 /**
- * "Tipps für perfekte Fotos" over the camera: opens by itself once for a new
- * vehicle and from the instruction box. One tap closes it; `onClose` gets
- * whether it should still open by itself for the next new vehicle.
+ * "Tipps für perfekte Fotos" over the camera, as a modal native <dialog>
+ * (focus stays inside, Esc closes): opens by itself once per device for a new
+ * vehicle and from the instruction box. One tap closes it – "Verstanden", the
+ * X, Esc or a tap outside (the sheet never fills the whole screen).
  */
-export function ShootingTipsSheet({
-  showAutoChoice,
-  onClose,
-}: {
-  /** Opened by itself: offers "nicht mehr automatisch zeigen". */
-  showAutoChoice: boolean;
-  onClose: (autoShow: boolean) => void;
-}) {
+export function ShootingTipsSheet({ onClose }: { onClose: () => void }) {
+  const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
-  const [autoShow, setAutoShow] = useState(true);
-  const close = () => onClose(autoShow);
+
+  // The primary action gets the focus: Enter closes the tips.
+  useEffect(() => {
+    const dialog = ref.current;
+    if (!dialog) return;
+    if (!dialog.open) {
+      if (typeof dialog.showModal === "function") dialog.showModal();
+      else dialog.setAttribute("open", ""); // no modal API (older browsers, jsdom)
+    }
+    dialog.querySelector<HTMLElement>("[data-initial-focus]")?.focus();
+  }, []);
+
+  // Closed when the camera route gets hidden (routes stay mounted): a modal
+  // left open would block the page that is shown.
+  useLayoutEffect(() => () => ref.current?.close?.(), []);
+
   return (
-    <div
-      className="fixed inset-0 z-[60] flex animate-fade-in items-end justify-center bg-black/65 sm:items-center sm:p-4 short:items-center short:p-2"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) close();
+    <dialog
+      ref={ref}
+      aria-labelledby={titleId}
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
       }}
+      onClick={(event) => {
+        // The panel fills the dialog's box: a click on the dialog itself is on the backdrop.
+        if (event.target === event.currentTarget) onClose();
+      }}
+      className="m-0 mt-auto max-h-none w-full max-w-none bg-transparent p-0 text-ae-text backdrop:bg-black/65 sm:m-auto sm:max-w-lg short:m-auto short:max-w-2xl"
     >
-      <div
-        className="pb-safe flex max-h-full w-full max-w-lg flex-col rounded-t-2xl border border-white/10 bg-ae-surface text-ae-text shadow-xl sm:rounded-2xl short:max-w-2xl short:rounded-2xl"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-      >
+      <div className="pb-safe flex max-h-[calc(100dvh-3.5rem)] animate-slide-up flex-col rounded-t-2xl border border-white/10 bg-ae-surface shadow-xl sm:rounded-2xl short:max-h-[calc(100dvh-1rem)] short:rounded-2xl">
         <div className="flex items-start gap-2 px-4 pt-4">
           <Lightbulb className="mt-0.5 size-5 shrink-0 text-ae-blue" aria-hidden />
           <div className="min-w-0 flex-1">
@@ -77,7 +88,7 @@ export function ShootingTipsSheet({
           </div>
           <button
             type="button"
-            onClick={close}
+            onClick={onClose}
             className="-mt-1.5 -mr-1.5 flex size-11 items-center justify-center rounded-lg text-ae-muted hover:bg-white/10"
             aria-label="Tipps schließen"
           >
@@ -87,23 +98,12 @@ export function ShootingTipsSheet({
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <ShootingTipsList className="short:grid short:grid-cols-2 short:gap-x-4" />
         </div>
-        <div className="flex flex-col gap-2 border-t border-ae-border px-4 py-3 short:flex-row-reverse short:items-center">
-          <Button size="lg" fullWidth className="short:h-11 short:w-auto short:min-w-56" onClick={close}>
+        <div className="flex border-t border-ae-border px-4 py-3 short:justify-end">
+          <Button size="lg" fullWidth className="short:h-11 short:w-auto short:min-w-56" onClick={onClose} data-initial-focus="">
             Verstanden – los geht’s
           </Button>
-          {showAutoChoice && (
-            <label className="flex min-h-11 flex-1 cursor-pointer items-center gap-3 text-sm text-ae-muted">
-              <input
-                type="checkbox"
-                className="size-4 shrink-0 accent-ae-blue"
-                checked={!autoShow}
-                onChange={(event) => setAutoShow(!event.target.checked)}
-              />
-              Bei neuen Fahrzeugen nicht mehr automatisch zeigen
-            </label>
-          )}
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }

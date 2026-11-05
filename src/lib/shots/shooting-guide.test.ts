@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SHOOTING_TIPS_PREFS,
-  markShootingTipsSeen,
   parseShootingTipsPrefs,
   SHOOTING_TIPS,
   shouldShowShootingTips,
@@ -32,37 +31,20 @@ describe("shot template hints", () => {
 });
 
 describe("when the tips open by themselves", () => {
-  it("opens once per new vehicle", () => {
-    expect(shouldShowShootingTips(DEFAULT_SHOOTING_TIPS_PREFS, "veh-1", true)).toBe(true);
+  it("opens once per device – for a new vehicle only", () => {
+    expect(shouldShowShootingTips(DEFAULT_SHOOTING_TIPS_PREFS, true)).toBe(true);
     // A vehicle with photos is not new.
-    expect(shouldShowShootingTips(DEFAULT_SHOOTING_TIPS_PREFS, "veh-1", false)).toBe(false);
-    const seen = markShootingTipsSeen(DEFAULT_SHOOTING_TIPS_PREFS, "veh-1");
-    expect(shouldShowShootingTips(seen, "veh-1", true)).toBe(false);
-    expect(shouldShowShootingTips(seen, "veh-2", true)).toBe(true);
+    expect(shouldShowShootingTips(DEFAULT_SHOOTING_TIPS_PREFS, false)).toBe(false);
+    // Shown once: daily use costs no extra tap (the light bulb and "Mehr" still show the tips).
+    expect(shouldShowShootingTips({ autoShown: true }, true)).toBe(false);
   });
 
-  it("never opens by itself again after 'nicht mehr automatisch zeigen'", () => {
-    const off = markShootingTipsSeen(DEFAULT_SHOOTING_TIPS_PREFS, "veh-1", false);
-    expect(shouldShowShootingTips(off, "veh-2", true)).toBe(false);
-    // Marking another vehicle keeps the choice.
-    expect(markShootingTipsSeen(off, "veh-3").autoShow).toBe(false);
-  });
-
-  it("remembers the last 50 vehicles only", () => {
-    let prefs = DEFAULT_SHOOTING_TIPS_PREFS;
-    for (let i = 0; i < 60; i += 1) prefs = markShootingTipsSeen(prefs, `veh-${i}`);
-    expect(prefs.seenVehicleIds).toHaveLength(50);
-    expect(prefs.seenVehicleIds.at(-1)).toBe("veh-59");
-    expect(prefs.seenVehicleIds).not.toContain("veh-0");
-  });
-
-  it("reads stored choices defensively", () => {
+  it("reads the stored state defensively (also the earlier opt-out)", () => {
     expect(parseShootingTipsPrefs(null)).toEqual(DEFAULT_SHOOTING_TIPS_PREFS);
     expect(parseShootingTipsPrefs("{not json")).toEqual(DEFAULT_SHOOTING_TIPS_PREFS);
-    expect(parseShootingTipsPrefs('{"autoShow":false,"seenVehicleIds":["a",3]}')).toEqual({
-      autoShow: false,
-      seenVehicleIds: ["a"],
-    });
     expect(parseShootingTipsPrefs("null")).toEqual(DEFAULT_SHOOTING_TIPS_PREFS);
+    expect(parseShootingTipsPrefs('{"autoShown":true}')).toEqual({ autoShown: true });
+    expect(parseShootingTipsPrefs('{"autoShow":false,"seenVehicleIds":[]}')).toEqual({ autoShown: true });
+    expect(parseShootingTipsPrefs('{"autoShown":"yes"}')).toEqual({ autoShown: false });
   });
 });

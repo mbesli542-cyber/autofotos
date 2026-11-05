@@ -1,17 +1,23 @@
 /**
- * Shooting guide in the guided camera: "Tipps für perfekte Fotos" (once per
- * new vehicle, re-openable from the instruction box) and the prompt to turn
- * the phone for exterior shots in portrait.
+ * Shooting guide in the guided camera: "Tipps für perfekte Fotos" (by itself
+ * once per device for a new vehicle, re-openable from the instruction box),
+ * the prompt to turn the phone for exterior shots in portrait – and what the
+ * camera says when the device's storage is full.
  */
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps, ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "@/components/ui/Toast";
 import type { Vehicle, VehiclePhotoWithUrls } from "@/lib/domain/types";
+import { USER_ERROR_MESSAGES } from "@/lib/errors";
+import type { UploadItem } from "@/lib/offline/upload-queue";
+import { UNSAVED_PHOTOS_LOST_HINT } from "@/lib/offline/upload-status";
 import { AUTOEXPERTEN_STANDARD_TEMPLATE as T } from "@/lib/shots/shot-template";
 import { CameraCapture } from "./CameraCapture";
+import { ROTATE_PROMPT_MS } from "./RotatePhonePrompt";
 
 const stream = vi.hoisted(() => ({ width: 4000, height: 3000 }));
+const queue = vi.hoisted(() => ({ items: [] as unknown[] }));
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }) }));
 vi.mock("next/link", () => ({
@@ -25,7 +31,7 @@ vi.mock("@/lib/app-services", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/app-services")>()),
   getAppServices: () => ({ uploads: { enqueue: vi.fn(), retryAll: vi.fn() } }),
 }));
-vi.mock("@/hooks/use-upload-queue", () => ({ usePendingUploads: () => [] }));
+vi.mock("@/hooks/use-upload-queue", () => ({ usePendingUploads: () => queue.items }));
 vi.mock("@/hooks/use-photo-checks", async () => {
   const { getShotCheckStates } = await import("@/lib/processing/shot-check");
   const snapshot = { availability: "unknown", checks: new Map(), captures: new Map() } as const;
@@ -96,26 +102,34 @@ function camera(props: Partial<ComponentProps<typeof CameraCapture>> & { vehicle
 
 const TIPS_TITLE = "Tipps für perfekte Fotos";
 const ROTATE = "Bitte Smartphone quer halten";
+const ROTATE_LINE = "Smartphone quer halten";
 
 beforeEach(() => {
   window.localStorage.clear();
   stream.width = 4000;
   stream.height = 3000;
+  queue.items = [];
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("'Tipps für perfekte Fotos'", () => {
-  it("opens once when the camera opens for a new vehicle and can be re-opened from the instruction box", () => {
+  it("opens by itself once per device for a new vehicle and can be re-opened from the instruction box", () => {
     const view = render(camera({ vehicle: vehicle("veh-new") }));
     expect(screen.getByRole("dialog", { name: TIPS_TITLE })).toBeInTheDocument();
     expect(screen.getByText("2–3 m frei hinter dem Auto")).toBeInTheDocument();
+    // The primary action has the focus: Enter closes the tips.
+    expect(screen.getByRole("button", { name: "Verstanden – los geht’s" })).toHaveFocus();
     fireEvent.click(screen.getByRole("button", { name: "Verstanden – los geht’s" }));
     expect(screen.queryByRole("dialog", { name: TIPS_TITLE })).not.toBeInTheDocument();
     // The shutter is one tap away again.
     expect(screen.getByRole("button", { name: "Foto aufnehmen" })).toBeEnabled();
     view.unmount();
 
-    // The next visit of the same vehicle: no sheet – the light bulb opens it.
-    render(camera({ vehicle: vehicle("veh-new") }));
+    // The next new vehicle on this device: no extra tap – the light bulb opens the tips.
+    render(camera({ vehicle: vehicle("veh-next") }));
     expect(screen.queryByRole("dialog", { name: TIPS_TITLE })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: TIPS_TITLE }));
     expect(screen.getByRole("dialog", { name: TIPS_TITLE })).toBeInTheDocument();
@@ -124,17 +138,20 @@ describe("'Tipps für perfekte Fotos'", () => {
     expect(screen.queryByRole("dialog", { name: TIPS_TITLE })).not.toBeInTheDocument();
   });
 
-  it("does not open by itself for a vehicle that already has photos", () => {
-    render(camera({ vehicle: vehicle("veh-started"), photos: [photo("veh-started", 0)] }));
+  it("closes with Esc and with a tap outside the sheet", () => {
+    render(camera({ vehicle: vehicle("veh-esc"), photos: [photo("veh-esc", 0)] }));
+    fireEvent.click(screen.getByRole("button", { name: TIPS_TITLE }));
+    // Esc on a modal <dialog> fires "cancel".
+    fireEvent(screen.getByRole("dialog", { name: TIPS_TITLE }), new Event("cancel", { cancelable: true }));
+    expect(screen.queryByRole("dialog", { name: TIPS_TITLE })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: TIPS_TITLE }));
+    fireEvent.click(screen.getByRole("dialog", { name: TIPS_TITLE })); // the backdrop
     expect(screen.queryByRole("dialog", { name: TIPS_TITLE })).not.toBeInTheDocument();
   });
 
-  it("stops opening by itself after 'Bei neuen Fahrzeugen nicht mehr automatisch zeigen'", () => {
-    const view = render(camera({ vehicle: vehicle("veh-a") }));
-    fireEvent.click(screen.getByLabelText("Bei neuen Fahrzeugen nicht mehr automatisch zeigen"));
-    fireEvent.click(screen.getByRole("button", { name: "Verstanden – los geht’s" }));
-    view.unmount();
-    render(camera({ vehicle: vehicle("veh-b") }));
+  it("does not open by itself for a vehicle that already has photos", () => {
+    render(camera({ vehicle: vehicle("veh-started"), photos: [photo("veh-started", 0)] }));
     expect(screen.queryByRole("dialog", { name: TIPS_TITLE })).not.toBeInTheDocument();
   });
 
@@ -146,22 +163,80 @@ describe("'Tipps für perfekte Fotos'", () => {
 });
 
 describe("turn the phone for exterior shots", () => {
-  it("asks clearly to hold the phone in landscape for an exterior shot in portrait – the shutter still works", () => {
+  it("asks clearly to hold the phone in landscape – briefly large, then in the instruction box; the shutter works", () => {
+    vi.useFakeTimers();
     stream.width = 3000;
     stream.height = 4000;
     render(camera({ vehicle: vehicle("veh-portrait"), photos: [photo("veh-portrait", 0)] }));
     expect(screen.getByText(ROTATE)).toBeInTheDocument();
+    expect(screen.getByText(ROTATE_LINE)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Foto aufnehmen" })).toBeEnabled();
+    // It does not cover the car for long: the instruction box keeps saying it.
+    act(() => {
+      vi.advanceTimersByTime(ROTATE_PROMPT_MS);
+    });
+    expect(screen.queryByText(ROTATE)).not.toBeInTheDocument();
+    expect(screen.getByText(ROTATE_LINE)).toBeInTheDocument();
+    // Not before every shot: the next exterior shot keeps the compact line only.
+    fireEvent.click(screen.getByRole("button", { name: "Weiter" }));
+    expect(screen.queryByText(ROTATE)).not.toBeInTheDocument();
+    expect(screen.getByText(ROTATE_LINE)).toBeInTheDocument();
+  });
+
+  it("can be tapped away at once and names the setting on iPhone and Android", () => {
+    stream.width = 3000;
+    stream.height = 4000;
+    render(camera({ vehicle: vehicle("veh-tap"), photos: [photo("veh-tap", 0)] }));
+    expect(screen.getByText(/Ausrichtungssperre aus · Android: „Automatisch drehen“ an/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Bitte Smartphone quer halten/ }));
+    expect(screen.queryByText(ROTATE)).not.toBeInTheDocument();
+    expect(screen.getByText(ROTATE_LINE)).toBeInTheDocument();
   });
 
   it("does not ask in landscape or for interior shots", () => {
     const view = render(camera({ vehicle: vehicle("veh-landscape"), photos: [photo("veh-landscape", 0)] }));
     expect(screen.queryByText(ROTATE)).not.toBeInTheDocument();
+    expect(screen.queryByText(ROTATE_LINE)).not.toBeInTheDocument();
     view.unmount();
 
     stream.width = 3000;
     stream.height = 4000;
     render(camera({ vehicle: vehicle("veh-interior"), photos: [photo("veh-interior", 0)], initialShotKey: "cockpit" }));
     expect(screen.queryByText(ROTATE)).not.toBeInTheDocument();
+    expect(screen.queryByText(ROTATE_LINE)).not.toBeInTheDocument();
+  });
+});
+
+describe("full device storage", () => {
+  function refused(id: string, shotKey: string): UploadItem {
+    const shot = T.shots.find((entry) => entry.key === shotKey);
+    return {
+      id,
+      vehicleId: "veh-full",
+      shotKey,
+      shotOrder: shot?.order ?? 0,
+      title: shot?.title ?? shotKey,
+      takenAt: "2026-11-05T10:05:00.000Z",
+      status: "failed",
+      thumbnailUrl: null,
+      error: USER_ERROR_MESSAGES.storage_full,
+      retryable: true,
+      unpersisted: true,
+      storageFull: true,
+    };
+  }
+
+  it("says the storage is full (not just 'Erneut versuchen') and that unsaved photos are lost when the app closes", () => {
+    const props = { vehicle: vehicle("veh-full"), photos: [photo("veh-full", 0)] };
+    const view = render(camera(props));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    queue.items = [refused("u_front", "front")];
+    view.rerender(camera(props));
+    expect(
+      screen.getByRole("button", { name: "1 nicht gespeichert · Speicher voll – bitte Fahrzeuge löschen, dann erneut versuchen" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Erneut versuchen$/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(`${USER_ERROR_MESSAGES.storage_full} ${UNSAVED_PHOTOS_LOST_HINT}`);
   });
 });

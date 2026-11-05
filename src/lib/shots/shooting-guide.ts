@@ -2,9 +2,9 @@
  * "Tipps für perfekte Fotos" – how the photo is taken is the biggest quality
  * lever: the showroom processing keeps every vehicle pixel (reflections,
  * dirt, plate frames stay), and it rejects photos with other objects behind
- * the car or a cropped car. Shown once when the guided camera opens for a
- * new vehicle (re-openable there and on "Mehr"); per-shot hints live in the
- * shot template (`tip`).
+ * the car or a cropped car. Shown by itself once per device, when the guided
+ * camera opens for a new vehicle (re-openable there and on "Mehr"); per-shot
+ * hints live in the shot template (`tip`).
  */
 
 export type ShootingTipIcon = "hall" | "clean" | "space" | "frame" | "plate" | "landscape" | "original";
@@ -66,44 +66,35 @@ export const SHOOTING_TIPS: readonly ShootingTip[] = [
 /* ------------------------------------------------------------------------ */
 
 export interface ShootingTipsPrefs {
-  /** false: "Bei neuen Fahrzeugen nicht mehr automatisch zeigen". */
-  autoShow: boolean;
-  /** Vehicles the tips were already shown for (newest last). */
-  seenVehicleIds: readonly string[];
+  /**
+   * The sheet already opened by itself on this device. It does that ONCE –
+   * afterwards only the light bulb in the camera and "Mehr" show it, so daily
+   * use costs no extra tap.
+   */
+  autoShown: boolean;
 }
 
-export const DEFAULT_SHOOTING_TIPS_PREFS: ShootingTipsPrefs = { autoShow: true, seenVehicleIds: [] };
-
-/** Vehicles remembered (the oldest are forgotten first). */
-const MAX_SEEN = 50;
+export const DEFAULT_SHOOTING_TIPS_PREFS: ShootingTipsPrefs = { autoShown: false };
 
 const STORAGE_KEY = "ae-photo.shooting-tips.v1";
 
-/** Opens by itself when the camera opens for a vehicle without any photo – once per vehicle. */
-export function shouldShowShootingTips(prefs: ShootingTipsPrefs, vehicleId: string, isNewVehicle: boolean): boolean {
-  return isNewVehicle && prefs.autoShow && !prefs.seenVehicleIds.includes(vehicleId);
-}
-
-/** The tips were shown for `vehicleId` (`autoShow`: the employee's choice in the sheet). */
-export function markShootingTipsSeen(prefs: ShootingTipsPrefs, vehicleId: string, autoShow = prefs.autoShow): ShootingTipsPrefs {
-  const seen = [...prefs.seenVehicleIds.filter((id) => id !== vehicleId), vehicleId].slice(-MAX_SEEN);
-  return { autoShow, seenVehicleIds: seen };
+/** Opens by itself when the camera opens for a vehicle without any photo – once per device. */
+export function shouldShowShootingTips(prefs: ShootingTipsPrefs, isNewVehicle: boolean): boolean {
+  return isNewVehicle && !prefs.autoShown;
 }
 
 export function parseShootingTipsPrefs(raw: string | null): ShootingTipsPrefs {
   if (!raw) return DEFAULT_SHOOTING_TIPS_PREFS;
   try {
-    const value = JSON.parse(raw) as Partial<Record<keyof ShootingTipsPrefs, unknown>> | null;
-    const seen = Array.isArray(value?.seenVehicleIds)
-      ? value.seenVehicleIds.filter((id): id is string => typeof id === "string").slice(-MAX_SEEN)
-      : [];
-    return { autoShow: value?.autoShow !== false, seenVehicleIds: seen };
+    const value = JSON.parse(raw) as { autoShown?: unknown; autoShow?: unknown } | null;
+    // `autoShow: false`: the earlier "nicht mehr automatisch zeigen" choice.
+    return { autoShown: value?.autoShown === true || value?.autoShow === false };
   } catch {
     return DEFAULT_SHOOTING_TIPS_PREFS;
   }
 }
 
-/** This device's choice (defaults when storage is blocked). */
+/** This device's state (defaults when storage is blocked). */
 export function readShootingTipsPrefs(): ShootingTipsPrefs {
   try {
     return parseShootingTipsPrefs(window.localStorage.getItem(STORAGE_KEY));

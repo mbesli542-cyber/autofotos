@@ -162,8 +162,8 @@ export function MoreScreen() {
             )}
             {storage?.persisted === false && (
               <p className="mt-2 text-xs text-ae-subtle">
-                Tipp: Fügen Sie die App zum Home-Bildschirm hinzu – dann löscht der Browser die Daten nicht von
-                selbst.
+                Tipp: Fügen Sie die App zum Home-Bildschirm hinzu – dann löscht der Browser die Daten seltener
+                von selbst.
               </p>
             )}
             <p className="mt-2 text-xs text-ae-subtle">

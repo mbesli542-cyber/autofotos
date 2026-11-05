@@ -31,6 +31,7 @@
   --animate-fade-in: fade-in 180ms ease-out;
   --animate-slide-up: slide-up 220ms ease-out;
   --animate-turn-phone: turn-phone 2.4s ease-in-out infinite;
+  --animate-tip-out: tip-out 6s ease-in forwards;
 
   @keyframes flash {
     0% { opacity: 0.85; }
@@ -49,6 +50,11 @@
     0%, 15% { transform: rotate(0deg); }
     45%, 80% { transform: rotate(90deg); }
     100% { transform: rotate(0deg); }
+  }
+  /* Shot hint in short viewports (landscape): readable after a shot change, then out of the viewfinder. */
+  @keyframes tip-out {
+    0%, 85% { opacity: 1; max-height: 3em; }
+    100% { opacity: 0; max-height: 0; margin-top: 0; }
   }
 }
 
