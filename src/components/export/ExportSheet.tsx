@@ -183,8 +183,10 @@ export function ExportSheet({
   /** Sharing failed on this phone: the ZIP is the way out. */
   const zipInstead = phase.kind === "failed" && phase.offerZip;
   // Whether this browser can share the files – known before they are loaded
-  // (their names and types), confirmed with the loaded files.
+  // (their names and types), confirmed with the loaded files. Only asked
+  // while the sheet is open.
   const canShare =
+    open &&
     touch &&
     selected.length > 0 &&
     (ready
@@ -276,7 +278,7 @@ export function ExportSheet({
         close();
       }}
       aria-labelledby="export-title"
-      className="m-0 mt-auto max-h-[92dvh] w-full max-w-none rounded-t-2xl border border-b-0 border-ae-border bg-ae-surface p-0 text-ae-text shadow-[var(--shadow-card)] sm:m-auto sm:w-[min(92vw,520px)] sm:rounded-2xl sm:border-b short:max-h-dvh short:rounded-none"
+      className="m-0 mt-auto max-h-[92dvh] w-full max-w-none rounded-t-2xl border border-b-0 border-ae-border bg-ae-surface p-0 text-ae-text shadow-[var(--shadow-card)] sm:m-auto sm:w-[min(92vw,520px)] sm:rounded-2xl sm:border-b short:m-auto short:w-[min(96vw,760px)] short:max-h-dvh short:rounded-none"
     >
       {open && (
         <div className="flex max-h-[inherit] flex-col">
