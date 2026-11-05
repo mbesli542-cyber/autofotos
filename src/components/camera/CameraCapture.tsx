@@ -101,9 +101,10 @@ function leaveCamera(router: Router, href: string) {
 }
 
 /**
- * A chip next to the counts in the header: 24 px high, its tap area 44 px (an invisible
+ * A chip next to the counts in the header: 24 px high, its tap area 44 px high (an invisible
  * extension 4 px up and 16 px down – into the header padding and the top of the stage, never
- * onto the progress or the buttons above).
+ * onto the progress or the buttons above; in portrait the status line right below keeps its
+ * own taps).
  */
 const CHIP_CLASS =
   "relative flex h-6 items-center gap-1 rounded-full px-2 after:absolute after:-inset-x-1 after:-top-1 after:-bottom-4 after:content-[''] short:ml-3";
@@ -745,8 +746,6 @@ export function CameraCapture({
                 </div>
               )}
 
-              {/* Only the short instruction lies on the viewfinder – the photo hint is in the header's status line. */}
-              <InstructionPanel instruction={shot.instruction} rotate={askToRotate} onShowTips={() => setTips("manual")} />
 
               {camera.state.status === "starting" && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-white/80" role="status">
@@ -770,6 +769,19 @@ export function CameraCapture({
                 />
               )}
             </div>
+            {/*
+              Only the short instruction lies on the viewfinder – the photo hint is in the header's status
+              line. At the viewfinder's bottom edge, but as wide as the stage: in a narrow portrait
+              viewfinder (9:16 on a small phone) the text keeps few lines and stays below the framing guide.
+            */}
+            {!preview && camera.state.status !== "error" && (
+              <InstructionPanel
+                instruction={shot.instruction}
+                rotate={askToRotate}
+                onShowTips={() => setTips("manual")}
+                style={{ bottom: `calc((100cqh - min(100cqh, 100cqw / ${ratio})) / 2 + 0.75rem)` }}
+              />
+            )}
           </div>
         </div>
 

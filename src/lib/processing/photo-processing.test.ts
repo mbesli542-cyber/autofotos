@@ -99,6 +99,29 @@ describe("processPhoto – demo upload adapter", () => {
     expect(ctx.api.submitPhotoProcessing).not.toHaveBeenCalled();
   });
 
+  it("reports only steps on the way – never 'complete' or 'failed' before the outcome is saved", async () => {
+    const steps: string[] = [];
+    const finished = job({ result: { kind: "file", width: 3200, height: 2400, bytes: 8 } });
+    const ctx = setup("demo", finished);
+    const polls = (...updates: ProcessingJob[]) =>
+      (async (_jobId: string, options?: { onUpdate?: (update: ProcessingJob) => void }) => {
+        for (const update of updates) options?.onUpdate?.(update);
+        return updates.at(-1);
+      }) as never;
+    ctx.api.waitForProcessingJob.mockImplementation(polls(job({ status: "processing", progress: 0.5 }), finished));
+    await processPhoto(PHOTO, "autoexperten_standard", { ...ctx.deps, onStep: (step) => steps.push(step) });
+    expect(steps).toEqual(["preparing", "queued", "processing", "saving"]);
+
+    const rejected = job({ status: "failed", errorCode: "vehicle_cropped", error: "Angeschnitten." });
+    const refused = setup("demo", rejected);
+    refused.api.waitForProcessingJob.mockImplementation(polls(rejected));
+    const seen: string[] = [];
+    await expect(
+      processPhoto(PHOTO, "autoexperten_standard", { ...refused.deps, onStep: (step) => seen.push(step) }),
+    ).rejects.toThrow("Angeschnitten.");
+    expect(seen).toEqual(["preparing", "queued"]);
+  });
+
   it("saves the processor's hints with the result and returns them", async () => {
     const ctx = setup(
       "demo",

@@ -182,9 +182,14 @@ describe("'Tipps für perfekte Fotos'", () => {
     render(camera({ vehicle: vehicle("veh-cockpit"), photos: [photo("veh-cockpit", 0)], initialShotKey: "cockpit" }));
     const tip = screen.getByText("Lenkrad gerade, Innenraum aufgeräumt – keine persönlichen Gegenstände.");
     expect(tip.closest("header")).not.toBeNull();
-    const viewfinder = screen.getByLabelText("Live-Kamerabild").parentElement as HTMLElement;
-    expect(viewfinder).not.toHaveTextContent(/Lenkrad/);
-    expect(viewfinder).toHaveTextContent("Fotografieren Sie das Cockpit möglichst symmetrisch.");
+    // The instruction box sits at the viewfinder's bottom edge, as wide as the stage (not clipped to the viewfinder).
+    const stage = (screen.getByLabelText("Live-Kamerabild").parentElement as HTMLElement).parentElement as HTMLElement;
+    expect(stage).not.toHaveTextContent(/Lenkrad/);
+    const box = screen.getByText("Fotografieren Sie das Cockpit möglichst symmetrisch.").closest("div.absolute") as HTMLElement;
+    expect(box.parentElement).toBe(stage);
+    // Its bottom edge follows the viewfinder's (container units of the stage).
+    expect(box.style.bottom).toMatch(/100cqh/);
+    expect(box.closest('[aria-label="Live-Kamerabild"]')).toBeNull();
   });
 });
 

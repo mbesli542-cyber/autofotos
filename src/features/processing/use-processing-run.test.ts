@@ -629,6 +629,38 @@ describe("useProcessingRun after a reload", () => {
     expect(readStoredRun("veh_keep")).toBeNull();
   });
 
+  it("keeps the reason of a rejected row and the hints of a finished row for a reload", async () => {
+    const jobs = gate();
+    vi.mocked(processPhoto).mockImplementation(async (target, _preset, deps) => {
+      deps.onStep?.("queued");
+      deps.onStep?.("processing", 0.6);
+      if (target.id === "p_r1") throw new ProcessingJobFailedError("vehicle_too_small", TOO_SMALL);
+      if (target.id === "p_r2") {
+        deps.onStep?.("saving");
+        return { warnings: [MIRRORED] };
+      }
+      await jobs.opened;
+      return DONE;
+    });
+    const photos = [photo("p_r1", "front_left_45", 1, "veh_reason"), photo("p_r2", "front", 2, "veh_reason"), photo("p_r3", "front_right_45", 3, "veh_reason")];
+    const { result } = renderHook(() => useProcessingRun("veh_reason"));
+    let running: Promise<RunResult> | undefined;
+    act(() => {
+      running = result.current.start(photos, "autoexperten_standard", null);
+    });
+    await vi.waitFor(() =>
+      expect(readStoredRun("veh_reason")?.items.map((item) => item.status)).toEqual(["failed", "complete", "open"]),
+    );
+    expect(readStoredRun("veh_reason")?.items.slice(0, 2)).toMatchObject([
+      { status: "failed", errorCode: "vehicle_too_small", error: TOO_SMALL },
+      { status: "complete", warnings: [MIRRORED] },
+    ]);
+    await act(async () => {
+      jobs.open();
+      await running;
+    });
+  });
+
   it("continues the run: finished rows stay, the others are processed with the shot's current photo", async () => {
     const done = photo("p_c1", "front_left_45", 1, "veh_cont");
     const replaced = photo("p_c2_old", "front", 2, "veh_cont");

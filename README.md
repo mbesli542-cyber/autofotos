@@ -485,7 +485,8 @@ never caches API calls or Supabase requests.
   versuchen", or "· Speicher voll" when the device's storage refused it),
   refused files, shots to retake and "Prüfung aus" – with several chips each
   shows only its icon and count (and the counts read "N von 15 · noch N"),
-  so counts and chips stay one row; every chip has a 44 px tap area – and
+  so counts and chips stay one row; every chip is 24 px high with a 44 px
+  tap area where the status line does not lie below it – and
   ONE check status line: a check that just finished, "Noch N Fotos neu
   aufnehmen" after a retake, "Speicher voll – Foto nicht gespeichert",
   briefly "Bitte Smartphone quer halten", else the current shot's state or,
@@ -762,8 +763,8 @@ at most 2400 px – typically ≈ 0.75–1.4 MB, streamed through
   lock while it runs (`src/lib/device/screen-wake-lock.ts`). "Abmelden" and
   "Fahrzeug löschen" forget stored runs and kept jobs.
 - **Processor gone during a run:** while submitted jobs get no answer (dealer
-  PC asleep or restarting, connection lost) their rows say "Wartet auf den
-  Showroom-Rechner" and the run card "Der Showroom-Rechner ist gerade nicht
+  PC asleep or restarting, connection lost) their rows say "Wartet auf
+  Rechner" and the run card "Der Showroom-Rechner ist gerade nicht
   erreichbar. Die Bearbeitung geht automatisch weiter, sobald er wieder
   antwortet – bitte die App geöffnet lassen." – the jobs are polled again
   with back-off (a job the restarted processor no longer knows is sent once

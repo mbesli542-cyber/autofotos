@@ -204,7 +204,7 @@ describe("<ProcessingScreen />", () => {
     fireEvent.click(await startButton());
     const notice = await screen.findByText(/Der Showroom-Rechner ist gerade nicht erreichbar\. Die Bearbeitung geht automatisch weiter/);
     expect(notice).toHaveAttribute("role", "status");
-    expect(screen.getAllByText("Wartet auf den Showroom-Rechner").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Wartet auf Rechner").length).toBeGreaterThan(0);
     await act(async () => jobs.open());
     await screen.findByText("Bearbeitung abgeschlossen");
     expect(screen.queryByText(/Die Bearbeitung geht automatisch weiter/)).not.toBeInTheDocument();

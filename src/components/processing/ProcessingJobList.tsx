@@ -15,7 +15,7 @@ const LABELS: Record<PhotoRunStatus, string> = {
   preparing: "Wird hochgeladen",
   queued: "In Warteschlange",
   processing: "In Bearbeitung",
-  unreachable: "Wartet auf den Showroom-Rechner",
+  unreachable: "Wartet auf Rechner",
   saving: "Wird gespeichert",
   complete: "Fertig",
   failed: "Fehlgeschlagen",

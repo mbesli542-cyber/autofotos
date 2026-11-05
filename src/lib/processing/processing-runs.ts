@@ -57,7 +57,7 @@ import { AccessCodeRequiredError } from "./processing-client";
 import { getShotTreatment, selectPhotosForProcessing, type ShotTreatment } from "./shot-treatment";
 import { clearStoredRuns, forgetRun, readStoredRun, storeRun, type StoredRunItem } from "./stored-runs";
 
-export type PhotoRunStatus = "waiting" | PhotoStep;
+export type PhotoRunStatus = "waiting" | PhotoStep | "complete" | "failed";
 
 export interface PhotoRunState {
   photoId: string;
@@ -157,9 +157,18 @@ function toStoredItems(items: readonly PhotoRunState[]): StoredRunItem[] {
   );
 }
 
-/** Changes when a row is added, removed, follows another photo or finishes (not with its progress). */
+/**
+ * Changes when a row is added, removed, follows another photo or finishes – or its outcome
+ * changes (reason, hints) – not with its progress.
+ */
 function storedKey(snapshot: ProcessingRunSnapshot): string {
-  return snapshot.items.map((item) => `${item.photoId}:${isFinished(item) ? item.status : "open"}`).join("|");
+  return snapshot.items
+    .map((item) =>
+      isFinished(item)
+        ? `${item.photoId}:${item.status}:${item.errorCode ?? ""}:${item.error ?? ""}:${item.warnings.map((w) => w.code).join(",")}`
+        : `${item.photoId}:open`,
+    )
+    .join("|");
 }
 
 /** A row of the run for `photo`, waiting to be processed. */

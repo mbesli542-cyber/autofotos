@@ -1,4 +1,5 @@
 import { Lightbulb, Smartphone } from "lucide-react";
+import type { CSSProperties } from "react";
 
 /**
  * Semi-transparent instruction box at the bottom of the preview: what to
@@ -7,19 +8,23 @@ import { Lightbulb, Smartphone } from "lucide-react";
  * phone (the header's status line only asks briefly). The shot's photo hint
  * (`tip`, shot template) is NOT in the box: it is in the header's status line
  * (CheckBanner.tsx), so the box stays short and never reaches the framing
- * guide – also in the narrow portrait viewfinder of small phones.
+ * guide. `style`: where its bottom edge sits – the camera puts the box on the
+ * stage at the bottom of the viewfinder, as wide as the stage allows (a
+ * narrow portrait viewfinder would wrap the text into many lines).
  */
 export function InstructionPanel({
   instruction,
   rotate = false,
   onShowTips,
+  style,
 }: {
   instruction: string;
   rotate?: boolean;
   onShowTips?: () => void;
+  style?: CSSProperties;
 }) {
   return (
-    <div className="pointer-events-none absolute inset-x-3 bottom-3 flex flex-col items-center gap-2">
+    <div className="pointer-events-none absolute inset-x-3 bottom-3 flex flex-col items-center gap-2" style={style}>
       <div className="flex max-w-md items-center gap-1 rounded-xl border border-white/10 bg-[rgb(30_33_38/0.78)] py-1 pr-1 pl-4 text-white backdrop-blur-md">
         <p className="min-w-0 flex-1 py-1.5 text-center text-[13px] leading-snug font-medium" aria-live="polite">
           {instruction}

@@ -35,12 +35,21 @@ import { needsRetake, retakeFallbackMessage } from "./quality-gate";
 import type { ProcessingJob, ProcessingJobStatus } from "./types";
 
 /**
- * The steps of one processing as runs show them; "unreachable": the job was
- * accepted, but the processor does not answer right now (PC asleep,
- * restarting, connection gone) – it is asked again by itself (the next answer
- * sets its status again).
+ * The steps of one processing as runs show them while it is on its way;
+ * "unreachable": the job was accepted, but the processor does not answer
+ * right now (PC asleep, restarting, connection gone) – it is asked again by
+ * itself (the next answer sets its status again). Never "complete" or
+ * "failed": the outcome is known only once the result is saved or the
+ * rejection recorded (processPhoto resolves or throws) – a row marked
+ * finished before that would be kept as finished, without its reason or
+ * hints, by a run stored for a reload.
  */
-export type PhotoStep = "preparing" | ProcessingJobStatus | "unreachable" | "saving";
+export type PhotoStep = "preparing" | "queued" | "processing" | "unreachable" | "saving";
+
+/** The step a job status stands for while the job is not finished (null: finished). */
+function jobStep(status: ProcessingJobStatus): PhotoStep | null {
+  return status === "queued" || status === "processing" ? status : null;
+}
 
 export interface PhotoProcessingDeps {
   mode: BackendMode;
@@ -134,14 +143,16 @@ async function submit(photo: VehiclePhotoWithUrls, preset: ProcessingPresetId, d
       { vehicleId: photo.vehicleId, photoId: photo.id, preset },
       options,
     );
-    deps.onStep?.(status);
+    const step = jobStep(status);
+    if (step) deps.onStep?.(step);
     return jobId;
   }
   deps.onStep?.("preparing");
   const original = await (deps.loadOriginal ?? loadOriginalPhoto)(photo.urls.original, deps.signal);
   const file = await (deps.prepareUpload ?? prepareProcessingUpload)(original);
   const { jobId, status } = await api.submitUploadProcessing({ file, preset, shotKey: photo.shotKey }, options);
-  deps.onStep?.(status);
+  const step = jobStep(status);
+  if (step) deps.onStep?.(step);
   return jobId;
 }
 
@@ -154,7 +165,10 @@ async function finish(
 ): Promise<PhotoProcessingResult> {
   const api = deps.api ?? client;
   const options = { accessCode: deps.accessCode ?? null, signal: deps.signal };
-  const onUpdate = (job: ProcessingJob) => deps.onStep?.(job.status, job.progress);
+  const onUpdate = (job: ProcessingJob) => {
+    const step = jobStep(job.status);
+    if (step) deps.onStep?.(step, job.progress);
+  };
   const onUnreachable = () => deps.onStep?.("unreachable");
   const job = await api.waitForProcessingJob(jobId, { ...options, onUpdate, onUnreachable });
   await ensureCompleted(job, photo, deps.data);
