@@ -3,7 +3,7 @@ import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/lib/cn";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { needsResultCheck } from "@/lib/processing/processing-warnings";
-import type { ShotCheckState } from "@/lib/processing/shot-check";
+import { SHOT_CHECK_LABELS, shotCheckLabel, type ShotCheckState } from "@/lib/processing/shot-check";
 
 export type PhotoVariant = "original" | "processed";
 
@@ -25,9 +25,10 @@ export function processedNeedsCheck(slot: PhotoSlot, variant: PhotoVariant): boo
 }
 
 /**
- * 4:3 tile with shot number, capture state and checkmark (processed version
- * to check: warning sign). With the automatic check (`check`): green check
- * when the photo passed, red when it must be retaken, spinner while checked.
+ * 4:3 tile with shot number, capture state and checkmark (a result to look
+ * at: warning sign). With the automatic check (`check`): green check when the
+ * photo passed, red when it must be retaken, spinner while checked; interior
+ * and detail shots (never checked) keep the neutral blue check ("Gespeichert").
  */
 export function ShotThumbnail({
   slot,
@@ -105,10 +106,10 @@ export function ShotThumbnail({
         >
           <Spinner className="size-3.5" />
         </span>
-      ) : processedNeedsCheck(slot, variant) ? (
+      ) : processedNeedsCheck(slot, variant) || (check?.kind === "ok" && check.hint) ? (
         <span
           className="absolute right-1.5 bottom-1.5 flex size-6 items-center justify-center rounded-full bg-ae-warning text-black shadow"
-          title="Bitte prüfen"
+          title={SHOT_CHECK_LABELS.hint}
         >
           <TriangleAlert className="size-3.5" aria-hidden />
         </span>
@@ -118,7 +119,7 @@ export function ShotThumbnail({
             "absolute right-1.5 bottom-1.5 flex size-6 items-center justify-center rounded-full shadow",
             check?.kind === "ok" ? "bg-ae-success text-black" : "bg-ae-blue text-white",
           )}
-          title={check?.kind === "ok" ? "Geprüft – passt" : undefined}
+          title={check?.kind === "ok" || check?.kind === "saved" ? (shotCheckLabel(check) ?? undefined) : undefined}
         >
           <Check className="size-3.5" strokeWidth={3} aria-hidden />
         </span>

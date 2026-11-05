@@ -208,8 +208,8 @@ describe("<VehicleDetailScreen />", () => {
     const vehicle = await processedVehicleWithExtra({ front: [REMOVED] });
     const view = render(page(vehicle.id, "processed"));
     expect(await screen.findByText("Bitte ein bearbeitetes Foto prüfen – Hinweis in der Großansicht.")).toBeInTheDocument();
-    const card = screen.getByRole("button", { name: "02 Vorne – bearbeitet, bitte prüfen" });
-    expect(within(card).getByTitle("Bitte prüfen")).toBeInTheDocument();
+    const card = screen.getByRole("button", { name: "02 Vorne – Geprüft – bitte Ergebnis ansehen" });
+    expect(within(card).getByTitle("Geprüft – bitte Ergebnis ansehen")).toBeInTheDocument();
 
     fireEvent.click(card);
     const dialog = view.container.querySelector<HTMLElement>("dialog[aria-labelledby='photo-viewer-title']");

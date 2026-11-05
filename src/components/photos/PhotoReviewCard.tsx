@@ -1,6 +1,6 @@
 import { cn } from "@/lib/cn";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
-import type { ShotCheckState } from "@/lib/processing/shot-check";
+import { SHOT_CHECK_LABELS, type ShotCheckState } from "@/lib/processing/shot-check";
 import { processedNeedsCheck, ShotThumbnail, type PhotoVariant } from "./ShotThumbnail";
 
 function describeState(slot: PhotoSlot, variant: PhotoVariant, check: ShotCheckState | undefined): string {
@@ -8,8 +8,9 @@ function describeState(slot: PhotoSlot, variant: PhotoVariant, check: ShotCheckS
   if (slot.pending) return check?.kind === "checking" ? "wird gespeichert und geprüft" : "wird gespeichert";
   if (check?.kind === "retake") return `bitte neu aufnehmen: ${check.reason}`;
   if (check?.kind === "checking") return "wird geprüft";
-  if (processedNeedsCheck(slot, variant)) return "bearbeitet, bitte prüfen";
+  if (processedNeedsCheck(slot, variant) || (check?.kind === "ok" && check.hint)) return SHOT_CHECK_LABELS.hint;
   if (check?.kind === "ok") return "geprüft, passt";
+  if (check?.kind === "saved") return "gespeichert";
   return slot.photo ? "aufgenommen" : "fehlt";
 }
 

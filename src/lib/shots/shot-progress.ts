@@ -121,6 +121,30 @@ export function getNextShotKeyAfterCapture(
   return null;
 }
 
+/**
+ * Where the guided camera goes after a retake when no shot is missing: the
+ * next shot AFTER the current one that must be retaken (`retakeKeys`, e.g.
+ * rejected by the automatic check), wrapping around to earlier ones. Never
+ * the current shot itself (its new photo is just being saved and checked).
+ * null: no other shot must be retaken.
+ */
+export function getNextRetakeShotKey(
+  template: ShotTemplate,
+  retakeKeys: Iterable<string>,
+  currentKey: string,
+): string | null {
+  const retakes = new Set(retakeKeys);
+  retakes.delete(currentKey);
+  if (retakes.size === 0) return null;
+  const shots = getOrderedShots(template).filter((shot) => shot.required);
+  const currentIndex = shots.findIndex((shot) => shot.key === currentKey);
+  for (let step = 1; step <= shots.length; step += 1) {
+    const candidate = shots[(currentIndex + step + shots.length) % shots.length];
+    if (candidate && retakes.has(candidate.key)) return candidate.key;
+  }
+  return null;
+}
+
 /** Previous/next shot in template order (no wrapping). */
 export function getAdjacentShotKey(
   template: ShotTemplate,

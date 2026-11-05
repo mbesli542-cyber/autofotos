@@ -626,9 +626,11 @@ describe("<CameraCapture /> automatic check", () => {
     });
     try {
       setChecks("on", []);
-      render(camera({ photos: photosOf(2) }));
+      const view = render(camera({ photos: photosOf(2) }));
+      const header = view.container.querySelector("header") as HTMLElement;
       act(() => settled?.(check("front", { status: "ok" })));
-      expect(screen.getByText("02 Vorne passt ✓")).toBeInTheDocument();
+      // In the header, never on the framing guide.
+      expect(within(header).getByText("02 Vorne passt ✓")).toBeInTheDocument();
       // Choosing a shot closes the banner, so that shot's own state shows.
       fireEvent.click(screen.getByRole("button", { name: /^2\. Vorne – / }));
       expect(screen.queryByText("02 Vorne passt ✓")).not.toBeInTheDocument();
@@ -636,10 +638,17 @@ describe("<CameraCapture /> automatic check", () => {
         settled?.(check("front_left_45", { status: "retake", message: TOO_SMALL, errorCode: "vehicle_too_small" })),
       );
       const alert = screen.getByRole("alert");
+      expect(header).toContainElement(alert);
       expect(alert).toHaveTextContent(`01 Vorne links (45°): bitte neu aufnehmen – ${TOO_SMALL}`);
-      fireEvent.click(within(alert).getByRole("button", { name: /Jetzt wiederholen/ }));
+      // One line; tapping it opens the full text with the jump to the rejected shot.
+      const line = within(alert).getByRole("button", { name: /01 Vorne links/ });
+      expect(line).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(line);
+      expect(line).toHaveAttribute("aria-expanded", "true");
+      fireEvent.click(within(header).getByRole("button", { name: "Jetzt wiederholen" }));
       expect(heading()).toHaveTextContent("Vorne links (45°)");
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(within(header).queryByRole("button", { name: "Jetzt wiederholen" })).not.toBeInTheDocument();
       // A check of another vehicle says nothing here.
       act(() => settled?.({ ...check("front", { status: "ok" }), vehicleId: "veh_other" }));
       expect(screen.queryByText("02 Vorne passt ✓")).not.toBeInTheDocument();
@@ -681,6 +690,84 @@ describe("<CameraCapture /> automatic check", () => {
     } finally {
       checkVehicle.mockRestore();
     }
+  });
+
+  it("shows the current shot's state as one line in the header, never on the viewfinder", () => {
+    setChecks("on", [check("front_left_45", { status: "retake", message: TOO_SMALL, errorCode: "vehicle_too_small" })]);
+    const view = render(camera({ photos: photosOf(15), initialShotKey: "front_left_45" }));
+    const header = view.container.querySelector("header") as HTMLElement;
+    const viewfinder = screen.getByLabelText("Live-Kamerabild").parentElement as HTMLElement;
+    const line = within(header).getByRole("button", { name: /^Bitte neu aufnehmen:\s*Fahrzeug im Originalfoto zu klein/ });
+    expect(line.querySelector(".truncate")).not.toBeNull();
+    expect(within(viewfinder).queryByText(TOO_SMALL)).toBeNull();
+    // Current shot, progress, remaining count and shutter stay.
+    expect(heading()).toHaveTextContent("Vorne links (45°)");
+    expect(within(header).getByText("15 von 15 aufgenommen · noch 0")).toBeInTheDocument();
+    expect(shutter("Foto wiederholen")).toBeEnabled();
+    // Tapping opens the full reason below the header; closing it hides it again.
+    fireEvent.click(line);
+    expect(within(header).getByRole("button", { name: "Hinweis schließen" })).toBeInTheDocument();
+    fireEvent.click(within(header).getByRole("button", { name: "Hinweis schließen" }));
+    expect(within(header).queryByRole("button", { name: "Hinweis schließen" })).toBeNull();
+  });
+
+  it("shows interior and detail shots as saved – never as passed", () => {
+    const interior = T.shots.find((shot) => shot.category === "interior");
+    if (!interior) throw new Error("no interior shot");
+    setChecks("on", [check(interior.key, { status: "ok" }), check("front", { status: "ok" })]);
+    const view = render(camera({ photos: photosOf(15), initialShotKey: interior.key }));
+    const header = view.container.querySelector("header") as HTMLElement;
+    expect(screen.getByRole("button", { name: `${interior.order}. ${interior.title} – gespeichert` })).toHaveAttribute(
+      "data-check",
+      "saved",
+    );
+    expect(within(header).getByRole("button", { name: "Gespeichert" })).toHaveAttribute("data-tone", "saved");
+    expect(within(header).queryByText(/passt/)).toBeNull();
+    expect(screen.getByRole("button", { name: "2. Vorne – geprüft, passt" })).toHaveAttribute("data-check", "ok");
+  });
+
+  it("says a result with a processor hint should be looked at – in one wording", () => {
+    const hint = { code: "vehicle_part_uncertain", message: "Ein Fahrzeugteil ist unsicher – bitte prüfen." };
+    setChecks("on", [check("front", { status: "ok", warnings: [hint] })]);
+    const view = render(camera({ photos: photosOf(15), initialShotKey: "front" }));
+    const header = view.container.querySelector("header") as HTMLElement;
+    expect(screen.getByRole("button", { name: `2. Vorne – Geprüft – bitte Ergebnis ansehen: ${hint.message}` })).toHaveAttribute(
+      "data-check",
+      "hint",
+    );
+    expect(within(header).getByRole("button", { name: /^Geprüft – bitte Ergebnis ansehen\s*Ein Fahrzeugteil ist unsicher/ })).toBeInTheDocument();
+    expect(within(header).queryByText(/passt/)).toBeNull();
+  });
+
+  it("goes on to the next red shot after a retake instead of leaving – and leaves when none is red", async () => {
+    setChecks("on", [
+      check("front", { status: "retake", message: TOO_SMALL, errorCode: "vehicle_too_small" }),
+      check("rear", { status: "retake", message: TOO_SMALL, errorCode: "vehicle_too_small" }),
+    ]);
+    const { rerender } = render(camera({ photos: photosOf(15) }));
+    // Every photo is there: the employee chooses the red shot to retake.
+    fireEvent.click(screen.getByRole("button", { name: /^7\. Hinten – bitte neu aufnehmen/ }));
+    expect(heading()).toHaveTextContent("Hinten");
+    fireEvent.click(shutter("Foto wiederholen"));
+    await wait(20);
+    await wait(1100);
+    // The next red shot after "Hinten" (wrapping around): "Vorne".
+    expect(heading()).toHaveTextContent(/^Vorne$/);
+    expect(screen.getByText("Noch 1 Foto neu aufnehmen")).toBeInTheDocument();
+    expect(router.replace).not.toHaveBeenCalled();
+    expect(router.back).not.toHaveBeenCalled();
+
+    // "Hinten" is being checked, "Vorne" is retaken: none is red any more – on to the review.
+    setChecks("on", [
+      check("front", { status: "retake", message: TOO_SMALL, errorCode: "vehicle_too_small" }),
+      check("rear", { photoId: "u_rear", status: "checking", takenAt: "2026-10-28T10:10:00.000Z" }),
+    ]);
+    rerender(camera({ photos: photosOf(15) }));
+    fireEvent.click(shutter("Foto wiederholen"));
+    await wait(20);
+    await wait(1100);
+    expect(router.replace).toHaveBeenCalledWith("/fahrzeuge/veh_1/fotos");
+    expect(screen.getByText("Alle Pflichtfotos aufgenommen. Bitte prüfen Sie die Fotos.")).toBeInTheDocument();
   });
 
   it("checks the photos when the camera opens and the check comes on for the first time (after a reload)", () => {

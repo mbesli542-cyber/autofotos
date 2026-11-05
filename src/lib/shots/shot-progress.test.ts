@@ -5,6 +5,7 @@ import {
   getCapturedShotKeys,
   getFirstMissingShotKey,
   getMissingRequiredShots,
+  getNextRetakeShotKey,
   getNextShotKeyAfterCapture,
   getShotProgress,
   isShotSetComplete,
@@ -91,5 +92,19 @@ describe("guided navigation", () => {
     expect(getAdjacentShotKey(T, "front", 1)).toBe("front_right_45");
     expect(getAdjacentShotKey(T, "front_left_45", -1)).toBeNull();
     expect(getAdjacentShotKey(T, "special_detail", 1)).toBeNull();
+  });
+});
+
+describe("getNextRetakeShotKey", () => {
+  it("goes to the next shot to retake after the current one, wrapping around", () => {
+    expect(getNextRetakeShotKey(T, ["front", "rear"], "right_side")).toBe("rear");
+    expect(getNextRetakeShotKey(T, ["front", "rear"], "rear")).toBe("front");
+    expect(getNextRetakeShotKey(T, ["front", "rear"], "special_detail")).toBe("front");
+  });
+
+  it("never returns the shot just retaken and null when no other shot is red", () => {
+    expect(getNextRetakeShotKey(T, ["front"], "front")).toBeNull();
+    expect(getNextRetakeShotKey(T, [], "front")).toBeNull();
+    expect(getNextRetakeShotKey(T, new Set(["front", "rear"]), "front")).toBe("rear");
   });
 });

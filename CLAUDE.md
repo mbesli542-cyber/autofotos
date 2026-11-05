@@ -121,8 +121,8 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | "Fahrzeugdaten" save without overwriting changes made elsewhere | `saveVehicleData` in `src/lib/workflow/vehicle-workflow.ts` |
 | Camera (stream, capture, picked-file check, quality-check interface) | `src/lib/camera/` (`photo-file.ts`: JPG/PNG/WebP/HEIC ≤ 50 MB), `src/components/camera/` |
 | Processing contract, config, presets, real processor, client, adapters | `src/lib/processing/` |
-| Processing runs (per vehicle, outside the screen), start blockers, processor hints | `src/lib/processing/processing-runs.ts`, `run-blockers.ts`, `processing-warnings.ts`, `src/components/processing/ProcessingWarningList.tsx` |
-| Instant per-photo check in the camera (auto-processing after a capture is saved, green/red shot segments; one job per photo shared with runs) | `src/lib/processing/photo-checks.ts`, `shot-check.ts`, `src/hooks/use-photo-checks.ts`, `src/components/camera/CheckBanner.tsx`, `AutoCheckInfo.tsx` |
+| Processing runs (per vehicle, outside the screen; resumed after a reload, screen wake lock while running), start blockers, processor hints | `src/lib/processing/processing-runs.ts`, `stored-runs.ts`, `run-blockers.ts`, `processing-warnings.ts`, `src/lib/device/screen-wake-lock.ts`, `src/components/processing/ProcessingWarningList.tsx` |
+| Instant per-photo check in the camera (auto-processing after a capture is saved, green/red shot segments, interior/detail only "Gespeichert"; one job per photo shared with runs; submitted jobs kept on the device and polled again after a reload, 404 → resubmitted once; 60 s availability poll while the processor is unreachable) | `src/lib/processing/photo-checks.ts`, `job-journal.ts`, `shot-check.ts`, `src/hooks/use-photo-checks.ts`, `src/components/camera/CheckBanner.tsx` (header status line), `AutoCheckInfo.tsx` |
 | Data backend decision (`NEXT_PUBLIC_DATA_BACKEND`) | `src/lib/data/backend-mode.ts` |
 | Demo data migrations (IndexedDB) | `src/lib/data/mock/migrations.ts` |
 | API routes | `src/app/api/processing-status`, `process-photo`, `process-upload`, `process-job/[jobId]` (+ `/result`) |

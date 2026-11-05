@@ -1,6 +1,18 @@
 "use client";
 
-import { Camera, ChevronLeft, ChevronRight, CircleCheck, ImageOff, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
+import {
+  Camera,
+  ChevronLeft,
+  ChevronRight,
+  CircleCheck,
+  ImageOff,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  Trash2,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { ProcessingWarningList } from "@/components/processing/ProcessingWarningList";
 import { Button } from "@/components/ui/Button";
@@ -11,7 +23,7 @@ import { AppError, toUserMessage } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { needsResultCheck } from "@/lib/processing/processing-warnings";
-import type { ShotCheckState } from "@/lib/processing/shot-check";
+import { SHOT_CHECK_LABELS, type ShotCheckState } from "@/lib/processing/shot-check";
 import { getShotTreatment } from "@/lib/processing/shot-treatment";
 import { PhotoVersionToggle } from "./PhotoVersionToggle";
 import type { PhotoVariant } from "./ShotThumbnail";
@@ -284,7 +296,7 @@ export function PhotoViewer({
             {shownVariant === "processed" && imageUrl && (
               <span className="absolute top-3 left-3 rounded-md bg-ae-blue px-2 py-0.5 text-xs font-semibold text-white">
                 {treatment === "original_environment" ? "Bearbeitet · Originalumgebung" : "Bearbeitet"}
-                {needsResultCheck(warnings) ? " · bitte prüfen" : ""}
+                {needsResultCheck(warnings) ? " · bitte Ergebnis ansehen" : ""}
               </span>
             )}
           </div>
@@ -394,7 +406,7 @@ export function PhotoViewer({
               </div>
             )}
 
-            <CheckResult state={checks?.get(slot.key)} />
+            <CheckResult state={checks?.get(slot.key)} showHint={warnings.length === 0} />
             <ProcessingWarningList warnings={warnings} className="mx-auto mb-3 max-w-xl" />
             {slot.photo && !slot.pending && (
               <p className="mb-3 text-center text-xs text-ae-subtle">
@@ -418,8 +430,13 @@ export function PhotoViewer({
   );
 }
 
-/** Result of the automatic check of the photo shown (the processor's reason for a retake). */
-function CheckResult({ state }: { state: ShotCheckState | undefined }) {
+/**
+ * Result of the automatic check of the photo shown (the processor's reason
+ * for a retake). A hint is named once ("bitte Ergebnis ansehen"); its text
+ * shows here only while the hint list of "Bearbeitet" is not shown
+ * (`showHint`). Interior and detail shots are never checked: "Gespeichert".
+ */
+function CheckResult({ state, showHint }: { state: ShotCheckState | undefined; showHint: boolean }) {
   if (state?.kind === "retake") {
     return (
       <p className="mx-auto mb-3 flex max-w-xl items-start gap-2 rounded-lg bg-ae-danger/12 px-3 py-2 text-sm text-ae-danger">
@@ -430,11 +447,33 @@ function CheckResult({ state }: { state: ShotCheckState | undefined }) {
       </p>
     );
   }
+  if (state?.kind === "ok" && state.hint) {
+    return (
+      <p className="mx-auto mb-3 flex max-w-xl items-start justify-center gap-1.5 text-xs font-medium text-ae-warning">
+        <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
+        <span>
+          {SHOT_CHECK_LABELS.hint}
+          {showHint && <span className="block font-normal text-ae-muted">{state.hint}</span>}
+        </span>
+      </p>
+    );
+  }
   if (state?.kind === "ok") {
     return (
       <p className="mb-3 flex items-center justify-center gap-1.5 text-xs font-medium text-ae-success">
         <CircleCheck className="size-3.5" aria-hidden />
-        Automatisch geprüft – passt
+        {SHOT_CHECK_LABELS.ok}
+      </p>
+    );
+  }
+  if (state?.kind === "saved") {
+    return (
+      <p className="mx-auto mb-3 flex max-w-xl items-start justify-center gap-1.5 text-xs text-ae-muted">
+        <Save className="mt-px size-3.5 shrink-0 text-ae-blue" aria-hidden />
+        <span>
+          <span className="font-medium text-ae-text">{SHOT_CHECK_LABELS.saved}</span> – Innenraum- und Detailfotos
+          werden nicht automatisch geprüft.
+        </span>
       </p>
     );
   }

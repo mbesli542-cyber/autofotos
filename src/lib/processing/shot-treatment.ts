@@ -7,7 +7,7 @@
  * - extra photos (extra_*)          → not processed
  * The processor decides by the shotKey, so the correct key is always sent.
  */
-import { getShot, type ShotTemplate } from "@/lib/shots/shot-template";
+import { getShot, type ShotCategory, type ShotTemplate } from "@/lib/shots/shot-template";
 
 export type ShotTreatment = "showroom" | "original_environment";
 
@@ -16,11 +16,16 @@ export const SHOT_TREATMENT_LABELS: Record<ShotTreatment, string> = {
   original_environment: "Innenraum/Detail – Originalumgebung",
 };
 
+/** What happens to a template shot of `category`. */
+export function getCategoryTreatment(category: ShotCategory): ShotTreatment {
+  return category === "exterior" ? "showroom" : "original_environment";
+}
+
 /** null → the photo is not processed (extra photos, unknown shots). */
 export function getShotTreatment(template: ShotTemplate, shotKey: string): ShotTreatment | null {
   const shot = getShot(template, shotKey);
   if (!shot) return null;
-  return shot.category === "exterior" ? "showroom" : "original_environment";
+  return getCategoryTreatment(shot.category);
 }
 
 /** Photos sent to the processor (template shots only, input order kept). */
