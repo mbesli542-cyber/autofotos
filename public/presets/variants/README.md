@@ -1,7 +1,8 @@
 # Showroom look variants (preview, not active)
 
 Complete presets for the same 3D showroom and plate set as
-`../autoexperten-standard.json`. They are **not** loaded by the processor
+`../autoexperten-standard.json` (`autoexperten-haendler.json`: the dealer's own
+backdrop, plate set `../autoexperten-haendler/`). They are **not** loaded by the processor
 (`PRESET_FILES` in `processor/app/presets.py` only knows the standard file);
 they exist so the dealer can choose a look. Built from the dealer's reference
 images (AI-generated – only the room/composition counts, never the car).
@@ -11,8 +12,10 @@ images (AI-generated – only the room/composition counts, never the car).
 | `autoexperten-standard-v1.json` | **Variante 1** – reference branding: the official logo PNG scaled to 60 % of the brand wall (was 40 %), centred (`centerX` 0.5); "Schwetzingen" (Inter Medium, wide tracking) between two thin lines that span the logo width (`ruleLength`/`ruleGap`/`ruleThickness`); no website/phone (no dealer contact data in listing photos, see `../README.md` – the right-hand contact block of the dealer's reference with Lucide icons, `align: "left"` + `icon: "globe"`/`"phone"`, `processor/app/showroom/icons.py`, is still supported by the renderer but left empty); glossier floor reflection inside the existing limits (`strength` 1.4, `maxReflectance` 0.26, `blurRate` 0.025, `fade` 1.3); 3/4 views at the car width measured in the references (`shotPlacement.*_45.widthScale` 1.06 → 0.86 of the frame) where the car stays clear of the wall (fitted per photo, see below); `branding.clearance` 0.02. For the branding alone without the larger car set the four `widthScale` values to 1.0. |
 | `autoexperten-standard-v2.json` | **Variante 2** – V1 + the car stands up to 0.45 m further back in the room (`placement.depthOffsetM`): the plate's proxy car is moved along the camera's viewing ray (`move_proxy_back` in `processor/app/showroom/plates.py`), so ground line, scale (floor homography), tyre-contact pose, contact/ambient shadow and reflection follow. The proxy is limited so 0.5 m of floor stays to the wall (front/rear views: ≈ 0.19 m); the real car is then fitted per photo (below). |
 
+| `autoexperten-haendler.json` | **Händler-Hintergrund** – the dealer's OWN showroom background (supplied by him, made with an image AI) as the fixed plate of all eight exterior shots: `../autoexperten-haendler/` (provenance, camera and recipe in its README). One level studio camera with lens shift, the car turned per shot (3/4 views 0.83 of the width, 1.47 m of floor to the wall); his AI lettering is removed from the plate and the official logo + "Schwetzingen" between two thin rules are composited in wall space at the place and size of his lettering (`branding`, measured by `processor/showroom3d/dealer_clean.py`); no website/phone. Stronger underbody shadow (`edgeOpacity` 0.7, `underbodyFalloff` 0.25, `ambientOpacity` 0.6), `reflection.strength` 1.0. Written by `processor/showroom3d/dealer_backdrop.py --variant`. |
+
 Everything not listed (output, shadow, vehicle adjustments, quality gate) is
-identical to the standard preset. All new fields are written out in both files.
+identical to the standard preset. All new fields are written out in all files.
 
 ## Fitted per photo
 

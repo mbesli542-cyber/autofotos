@@ -1,5 +1,6 @@
 """Showroom look variants (public/presets/variants/): reference branding, glossier floor, car
-further back in the room. The shipped preset keeps the defaults (current look unchanged)."""
+further back in the room, the dealer's own backdrop. The shipped preset keeps the defaults
+(current look unchanged)."""
 
 from __future__ import annotations
 
@@ -11,10 +12,12 @@ import math
 from dataclasses import fields, replace
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 from PIL import Image
 
+from app.config import Settings
 from app.pipeline.pipeline import process_photo
 from app.presets import BackgroundProvider, Placement, PresetConfigError, load_preset, parse_preset
 from app.showroom.branding import BrandingConfig, TextConfig, apply_branding
@@ -396,3 +399,154 @@ def test_listing_photos_carry_no_dealer_contact_data(name):
     assert branding.website.text == "" and branding.phone.text == ""
     texts = " ".join(t.text for t in (branding.city, branding.website, branding.phone))
     assert not re.search(r"\d{4,}|www\.|https?:|@|\.de\b", texts), texts
+
+
+# --------------------------------------------------------------------------- the dealer's own backdrop
+
+HAENDLER_FILE = PRESETS / "variants" / "autoexperten-haendler.json"
+HAENDLER = json.loads(HAENDLER_FILE.read_text(encoding="utf-8"))
+HAENDLER_PLATES = PRESETS / "autoexperten-haendler" / "plates.json"
+#: Where the AI lettering was in the dealer's 1448 × 1086 image (processor/showroom3d/dealer_clean.py).
+DEALER_TEXT_BOX = (336, 52, 1062, 226)
+DEALER_WORDMARK = (349, 63, 1048)  # left, cap top, right
+DEALER_RULES = (359, 1038)  # outer ends of the two rules
+ALL_VARIANTS = sorted(p.name for p in (PRESETS / "variants").glob("*.json"))
+
+
+@pytest.fixture(scope="module")
+def dealer_plates():
+    return load_plate_set(HAENDLER_PLATES)
+
+
+def test_the_dealer_variant_is_a_complete_valid_preset():
+    preset = parse_preset(HAENDLER)
+    assert HAENDLER["id"] == STANDARD["id"]  # copied over the standard file, it replaces it
+    assert HAENDLER["background"]["plates"] == "autoexperten-haendler/plates.json"
+    for section in ("output", "vehicleAdjustments", "quality"):
+        assert HAENDLER[section] == STANDARD[section], section
+    # stronger underbody shadow, everything else of the grounding as shipped
+    assert (preset.shadow.edge_opacity, preset.shadow.underbody_falloff, preset.shadow.ambient_opacity) == (0.7, 0.25, 0.6)
+    changed = {"edgeOpacity", "underbodyFalloff", "ambientOpacity"}
+    assert {k: v for k, v in HAENDLER["shadow"].items() if k not in changed} == {
+        k: v for k, v in STANDARD["shadow"].items() if k not in changed
+    }
+    assert preset.reflection.strength == 1.0 and HAENDLER["reflection"] == STANDARD["reflection"]
+    branding = preset.branding
+    assert branding.enabled and branding.logo.file == "official/AutoExperten_Logo.png"
+    assert branding.city.text == "Schwetzingen" and branding.city.rule_length > 0 and branding.city.rule_thickness > 0
+    assert branding.website.text == "" and branding.phone.text == ""
+    # every field is written out (copying the variant over the standard file hides nothing)
+    for name in ("city", "website", "phone"):
+        assert {"align", "icon", "ruleLength", "ruleGap", "ruleThickness"} <= set(HAENDLER["branding"][name])
+    assert {"widthScale", "depthOffsetM"} <= set(HAENDLER["placement"])
+
+
+@pytest.mark.parametrize("name", ALL_VARIANTS)
+def test_no_variant_carries_dealer_contact_data(name):
+    """Every look variant (also future ones): logo + city only on the wall (mobile.de AGB-HB no. 9/14)."""
+    data = json.loads((PRESETS / "variants" / name).read_text(encoding="utf-8"))
+    branding = parse_preset(data).branding
+    assert branding.website.text == "" and branding.phone.text == "", name
+    texts = " ".join(t.text for t in (branding.city, branding.website, branding.phone))
+    assert not re.search(r"\d{4,}|www\.|https?:|@|\.de\b|\+49", texts), texts
+
+
+def test_the_dealer_plate_set_loads_with_one_fixed_studio_camera(dealer_plates):
+    plates = dealer_plates.plates
+    assert set(plates) == set(plates_module.PLATE_SHOTS)
+    first = plates["front_left_45"]
+    for key, plate in plates.items():
+        # ONE plate image and ONE reflection pass for all shots – the camera never moves
+        assert plate.image == first.image and plate.reflection == first.reflection, key
+        assert plate.size == (2400, 1800)
+        assert np.allclose(plate.floor_h, first.floor_h) and np.allclose(plate.wall_h, first.wall_h), key
+        assert plate.camera.position == first.camera.position and plate.camera.pitch_down_deg == 0.0
+        assert plate.horizon_v == first.horizon_v
+        assert plate.brand_area == first.brand_area
+        assert plate.shadow is not None and plate.shadow != first.shadow or key == "front_left_45"
+        assert plate.reflectance and max(k for _, k in plate.reflectance) <= 0.5
+    # level camera: the wall/floor junction is one horizontal row – his skirting (row 492 of 1086)
+    top = first.floor_top(1448, 1086)
+    assert np.allclose(top, top[0], atol=1e-3) and top[0] == pytest.approx(492.0, abs=0.6)
+    # the car is turned in front of the same camera: 3/4 views at his reference size, with floor to the wall
+    for key in ("front_left_45", "front_right_45", "rear_left_45", "rear_right_45"):
+        plate = plates[key]
+        assert 0.80 <= plate.target_width_ratio <= 0.86, key
+        assert 0.78 <= plate.ground_v <= 0.9, key
+        assert plate.expected_near_end() == ("left" if key in ("front_left_45", "rear_right_45") else "right"), key
+    for plate in plates.values():
+        corners = []
+        c = plate.proxy_contacts
+        centre = np.mean([np.asarray(p.floor) for p in c.values()], axis=0)
+        front = 0.5 * (np.asarray(c["front_left"].floor) + np.asarray(c["front_right"].floor))
+        rear = 0.5 * (np.asarray(c["rear_left"].floor) + np.asarray(c["rear_right"].floor))
+        axis = (front - rear) / np.linalg.norm(front - rear)
+        side = np.array([-axis[1], axis[0]])
+        for i in (-1, 1):
+            for j in (-1, 1):
+                corners.append(centre + i * 0.5 * plate.proxy["lengthM"] * axis + j * 0.5 * plate.proxy["widthM"] * side)
+        assert -max(p[1] for p in corners) >= 1.0, plate.key  # at least 1 m of floor to the wall
+    # mirrored partners see the car from the other side at the same size
+    for a, b in plates_module.MIRROR_PLATES.items():
+        assert plates[a].target_width_ratio == pytest.approx(plates[b].target_width_ratio, abs=1e-3)
+
+
+def test_the_dealer_plate_has_no_lettering(dealer_plates):
+    """The cleaned, upscaled plate itself contains no text or logo (official branding is composited)."""
+    rgb = np.asarray(Image.open(dealer_plates.plate("front").image).convert("RGB")).astype(np.float32)
+    sx, sy = rgb.shape[1] / 1448, rgb.shape[0] / 1086
+    x0, y0, x1, y1 = DEALER_TEXT_BOX
+    wall = rgb[int(y0 * sy) : int(y1 * sy), int(x0 * sx) : int(x1 * sx)]
+    luma = wall.mean(axis=-1)
+    assert luma.min() > 170  # no dark letters (his were ≈ 40–120)
+    assert (wall[..., 2] - wall[..., 0]).max() < 25  # no blue letters (his: B − R ≈ 200)
+    # smooth wall: no letter edges left (high-pass of the luminance)
+    high = luma - cv2.GaussianBlur(luma, (0, 0), 4.0)
+    assert np.abs(high).max() < 6.0
+
+
+def test_the_official_branding_sits_where_his_lettering_was():
+    settings = Settings(assets_dir=REPO_ROOT / "public")
+    preset = parse_preset(HAENDLER)
+    showroom = BackgroundProvider(settings).get(preset, "front_left_45", 1448, 1086)
+    lx0, ly0, lx1, _ = showroom.branding.box("logo")
+    left, top, right = DEALER_WORDMARK
+    assert lx0 == pytest.approx(left, abs=4) and lx1 == pytest.approx(right, abs=4)
+    assert ly0 == pytest.approx(top, abs=4)
+    cx0, cy0, cx1, cy1 = showroom.branding.box("city")
+    assert cx0 == pytest.approx(DEALER_RULES[0], abs=5) and cx1 == pytest.approx(DEALER_RULES[1], abs=5)
+    assert 178 <= cy0 <= 190 and cy1 <= 222
+    # the roof of a typical car stays below the branding, and the same branding is on every plate
+    assert showroom.branding.bottom < showroom.plate.proxy_bbox[1] * 1086
+    other = BackgroundProvider(settings).get(preset, "left_side", 1448, 1086)
+    assert other.branding.boxes == showroom.branding.boxes
+
+
+def test_the_dealer_plates_brand_and_shadow_like_the_standard_set(dealer_plates):
+    settings = Settings(assets_dir=REPO_ROOT / "public")
+    preset = parse_preset(HAENDLER)
+    provider = BackgroundProvider(settings)
+    for key in ("front_left_45", "left_side", "rear"):
+        showroom = provider.get(preset, key, 1200, 900)
+        assert float(showroom.shadow.min()) < 0.85, key  # the proxy shadow pass is there …
+        bx0, by0, bx1, by1 = showroom.plate.proxy_bbox
+        rows = (np.arange(900) + 0.5) / 900
+        assert showroom.shadow[rows < showroom.plate.horizon_v].min() == 1.0  # … on the floor only
+        assert showroom.reflection is not None and showroom.reflection.max() > 0.2
+        assert np.abs(showroom.reflection[: int(0.44 * 900)]).max() < 1e-4  # the wall has no floor reflection
+
+
+def test_the_pipeline_composites_a_car_onto_the_dealer_plate(fake_segmenter, three_quarter):
+    settings = Settings(assets_dir=REPO_ROOT / "public")
+    preset = parse_preset(HAENDLER)
+    result = process_photo(
+        encode_jpeg(three_quarter[0], 97), preset=preset, segmenter=fake_segmenter,
+        backgrounds=BackgroundProvider(settings), shot_key="front_left_45",
+    )  # fmt: skip
+    meta = result.metadata
+    assert meta["plateUsed"] == "front_left_45"
+    out = _decode(result.jpeg)
+    assert out.shape == (1800, 2400, 3)
+    assert meta["reflection"]["platePass"] is True
+    placement = meta["placement"]
+    assert placement["achievedWidthRatio"] == pytest.approx(0.83, abs=0.05)

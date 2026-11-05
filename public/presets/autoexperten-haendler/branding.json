@@ -1,0 +1,16 @@
+{
+  "logo": {
+    "centerX": 0.5366,
+    "top": 0.2063,
+    "maxWidth": 0.7206
+  },
+  "city": {
+    "centerX": 0.5366,
+    "top": 0.4302,
+    "capHeight": 0.0426,
+    "textWidth": 0.3784,
+    "ruleLength": 0.134,
+    "ruleGap": 0.0268,
+    "ruleThickness": 0.0056
+  }
+}
