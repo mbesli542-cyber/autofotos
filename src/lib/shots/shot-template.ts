@@ -17,6 +17,12 @@ export interface ShotDefinition {
   title: string;
   /** German instruction shown in the camera. */
   instruction: string;
+  /**
+   * Short German photo hint shown under the instruction (only where it helps,
+   * e.g. space behind the car, plate frames) – the general rules are in
+   * src/lib/shots/shooting-guide.ts.
+   */
+  tip?: string;
   category: ShotCategory;
   /** Framing guide in /public/overlays, or null (generic grid + corner marks only). */
   overlayAsset: string | null;
@@ -39,6 +45,11 @@ export const SHOT_CATEGORY_LABELS: Record<ShotCategory, string> = {
 
 const POSITION_AS_TEMPLATE = "Positionieren Sie das Fahrzeug wie in der Vorlage.";
 
+/** Photo hints shared by several shots. */
+const TIP_CORNER = "Ganzes Auto mit Rand – 2–3 m frei dahinter, nichts angeschnitten.";
+const TIP_PLATE = "Kennzeichenhalter mit Händlerwerbung und Aufkleber vorher abnehmen.";
+const TIP_SIDE = "Weit genug weg, damit vorne und hinten Platz bleibt – nichts dahinter parken.";
+
 export const AUTOEXPERTEN_STANDARD_TEMPLATE: ShotTemplate = {
   id: "autoexperten_standard_v1",
   name: "AutoExperten Standard (15 Fotos)",
@@ -48,6 +59,7 @@ export const AUTOEXPERTEN_STANDARD_TEMPLATE: ShotTemplate = {
       order: 1,
       title: "Vorne links (45°)",
       instruction: POSITION_AS_TEMPLATE,
+      tip: TIP_CORNER,
       category: "exterior",
       overlayAsset: "/overlays/front-left-45.svg",
       required: true,
@@ -58,6 +70,7 @@ export const AUTOEXPERTEN_STANDARD_TEMPLATE: ShotTemplate = {
       title: "Vorne",
       instruction:
         "Stellen Sie sich mittig vor das Fahrzeug. Das Kennzeichen sollte gerade im Bild sein.",
+      tip: TIP_PLATE,
       category: "exterior",
       overlayAsset: "/overlays/front.svg",
       required: true,
@@ -67,6 +80,7 @@ export const AUTOEXPERTEN_STANDARD_TEMPLATE: ShotTemplate = {
       order: 3,
       title: "Vorne rechts (45°)",
       instruction: POSITION_AS_TEMPLATE,
+      tip: TIP_CORNER,
       category: "exterior",
       overlayAsset: "/overlays/front-right-45.svg",
       required: true,
@@ -77,6 +91,7 @@ export const AUTOEXPERTEN_STANDARD_TEMPLATE: ShotTemplate = {
       title: "Linke Fahrzeugseite",
       instruction:
         "Fotografieren Sie die gesamte linke Seite parallel zum Fahrzeug.",
+      tip: TIP_SIDE,
       category: "exterior",
       overlayAsset: "/overlays/side.svg",
       required: true,
@@ -87,6 +102,7 @@ export const AUTOEXPERTEN_STANDARD_TEMPLATE: ShotTemplate = {
       title: "Rechte Fahrzeugseite",
       instruction:
         "Fotografieren Sie die gesamte rechte Seite parallel zum Fahrzeug.",
+      tip: TIP_SIDE,
       category: "exterior",
       overlayAsset: "/overlays/side.svg",
       overlayMirrored: true,
@@ -97,6 +113,7 @@ export const AUTOEXPERTEN_STANDARD_TEMPLATE: ShotTemplate = {
       order: 6,
       title: "Hinten links (45°)",
       instruction: POSITION_AS_TEMPLATE,
+      tip: TIP_CORNER,
       category: "exterior",
       overlayAsset: "/overlays/rear-left-45.svg",
       required: true,
@@ -107,6 +124,7 @@ export const AUTOEXPERTEN_STANDARD_TEMPLATE: ShotTemplate = {
       title: "Hinten",
       instruction:
         "Stellen Sie sich mittig hinter das Fahrzeug. Das Kennzeichen sollte gerade im Bild sein.",
+      tip: TIP_PLATE,
       category: "exterior",
       overlayAsset: "/overlays/rear.svg",
       required: true,
@@ -116,6 +134,7 @@ export const AUTOEXPERTEN_STANDARD_TEMPLATE: ShotTemplate = {
       order: 8,
       title: "Hinten rechts (45°)",
       instruction: POSITION_AS_TEMPLATE,
+      tip: TIP_CORNER,
       category: "exterior",
       overlayAsset: "/overlays/rear-right-45.svg",
       required: true,
@@ -125,6 +144,7 @@ export const AUTOEXPERTEN_STANDARD_TEMPLATE: ShotTemplate = {
       order: 9,
       title: "Cockpit",
       instruction: "Fotografieren Sie das Cockpit möglichst symmetrisch.",
+      tip: "Lenkrad gerade, Innenraum aufgeräumt – keine persönlichen Gegenstände.",
       category: "interior",
       overlayAsset: "/overlays/cockpit.svg",
       required: true,
@@ -134,6 +154,7 @@ export const AUTOEXPERTEN_STANDARD_TEMPLATE: ShotTemplate = {
       order: 10,
       title: "Innenraum vorne",
       instruction: "Zeigen Sie Sitze, Armaturenbrett und Mittelkonsole.",
+      tip: "Türen öffnen für mehr Licht, keine Personen im Bild.",
       category: "interior",
       overlayAsset: null,
       required: true,
@@ -174,6 +195,7 @@ export const AUTOEXPERTEN_STANDARD_TEMPLATE: ShotTemplate = {
       title: "Felge / Rad",
       instruction:
         "Fotografieren Sie das Rad gerade von der Seite und möglichst formatfüllend.",
+      tip: "Felge vorher reinigen.",
       category: "detail",
       overlayAsset: "/overlays/wheel.svg",
       required: true,

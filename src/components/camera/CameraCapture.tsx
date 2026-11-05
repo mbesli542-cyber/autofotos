@@ -27,6 +27,12 @@ import {
   getFirstMissingShotKey,
   getNextShotKeyAfterCapture,
 } from "@/lib/shots/shot-progress";
+import {
+  markShootingTipsSeen,
+  readShootingTipsPrefs,
+  shouldShowShootingTips,
+  writeShootingTipsPrefs,
+} from "@/lib/shots/shooting-guide";
 import { getOrderedShots, getShot, type ShotDefinition, type ShotTemplate } from "@/lib/shots/shot-template";
 import { AutoCheckInfo } from "./AutoCheckInfo";
 import { CameraErrorPanel } from "./CameraErrorPanel";
@@ -35,6 +41,8 @@ import { CapturePreview } from "./CapturePreview";
 import { CaptureControls } from "./CaptureControls";
 import { CheckBanner, ShotCheckChip, type CheckBannerState } from "./CheckBanner";
 import { InstructionPanel } from "./InstructionPanel";
+import { RotatePhonePrompt } from "./RotatePhonePrompt";
+import { ShootingTipsSheet } from "./ShootingTips";
 import { ShotProgress } from "./ShotProgress";
 
 interface PreviewState {
@@ -135,6 +143,15 @@ export function CameraCapture({
   /** Result of the last finished automatic check (shown briefly). */
   const [banner, setBanner] = useState<CheckBannerState | null>(null);
   const [showCheckInfo, setShowCheckInfo] = useState(false);
+  /**
+   * "Tipps für perfekte Fotos": opens by itself once when the camera opens for
+   * a vehicle without any photo ("auto"), or from the instruction box ("manual").
+   */
+  const [tips, setTips] = useState<"auto" | "manual" | null>(() =>
+    shouldShowShootingTips(readShootingTipsPrefs(), vehicle.id, photos.length === 0 && pending.length === 0)
+      ? "auto"
+      : null,
+  );
 
   const reviewHref = cameraReturnHref(vehicle.id, "fotos");
   /** Close button / after a single retake: back to where the retake was started. */
@@ -236,6 +253,11 @@ export function CameraCapture({
       void photoChecks.checkVehicle(vehicle.id);
     }
   }, [checkSnapshot.availability, vehicle.id]);
+
+  // Shown by itself once per vehicle – also when the camera is left without closing the tips.
+  useEffect(() => {
+    if (tips === "auto") writeShootingTipsPrefs(markShootingTipsSeen(readShootingTipsPrefs(), vehicle.id));
+  }, [tips, vehicle.id]);
 
   useEffect(() => {
     if (!banner) return;
@@ -351,6 +373,14 @@ export function CameraCapture({
   function selectShot(key: string) {
     setBanner(null);
     goTo(key);
+  }
+
+  /** Tips closed; `autoShow`: whether they still open by themselves for the next new vehicle. */
+  function closeTips(autoShow: boolean) {
+    if (tips === "auto" && !autoShow) {
+      writeShootingTipsPrefs(markShootingTipsSeen(readShootingTipsPrefs(), vehicle.id, false));
+    }
+    setTips(null);
   }
 
   /** Access code entered in the camera (demo mode): stored on this device, the photos taken so far are checked. */
@@ -495,6 +525,7 @@ export function CameraCapture({
                 aria-label="Live-Kamerabild"
               />
               <CameraOverlay shot={shot} />
+              {shot.category === "exterior" && isPortraitStream && !preview && <RotatePhonePrompt />}
 
               {!preview && !banner && (shotHint || alreadyCaptured) && (
                 <div className="pointer-events-none absolute inset-x-3 top-3 flex flex-col items-center gap-2">
@@ -510,10 +541,7 @@ export function CameraCapture({
                 </div>
               )}
 
-              <InstructionPanel
-                instruction={shot.instruction}
-                showRotateHint={shot.category === "exterior" && isPortraitStream}
-              />
+              <InstructionPanel instruction={shot.instruction} tip={shot.tip} onShowTips={() => setTips("manual")} />
 
               {camera.state.status === "starting" && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-white/80" role="status">
@@ -558,6 +586,8 @@ export function CameraCapture({
           />
         </div>
       </div>
+
+      {tips && <ShootingTipsSheet showAutoChoice={tips === "auto"} onClose={closeTips} />}
 
       {showCheckInfo && checkOffMessage && (
         <AutoCheckInfo
