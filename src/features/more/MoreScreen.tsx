@@ -13,6 +13,7 @@ import { useAuthState } from "@/hooks/use-auth";
 import { getAppServices, getBackendMode, getShotTemplate } from "@/lib/app-services";
 import { MockDataProvider } from "@/lib/data/mock/mock-data-provider";
 import { toUserMessage } from "@/lib/errors";
+import { endProcessingSession } from "@/lib/processing/processing-runs";
 import { getOrderedShots, SHOT_CATEGORY_LABELS } from "@/lib/shots/shot-template";
 
 function Card({ title, children }: { title: string; children: ReactNode }) {
@@ -37,6 +38,8 @@ export function MoreScreen() {
   useEffect(() => () => setConfirmReset(false), []);
 
   async function handleSignOut() {
+    // Nothing of this user's processing goes on or is continued after a reload on this device.
+    endProcessingSession();
     await getAppServices().authStore.signOut();
     router.replace("/login");
   }

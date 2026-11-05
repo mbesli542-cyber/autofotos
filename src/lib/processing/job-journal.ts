@@ -6,6 +6,10 @@
  * (photo-checks.ts, processing-runs.ts). The processor keeps jobs for 24 h;
  * older entries are ignored. A missing or throwing localStorage (private
  * mode, blocked storage) only means nothing can be resumed after a reload.
+ *
+ * Every entry belongs to the user who submitted it: only that user's jobs
+ * are resumed (a shared device, a session that expired meanwhile), and
+ * signing out forgets them all (photo-checks.ts `stopAll`).
  */
 import { isProcessingPresetId, type ProcessingPresetId } from "@/lib/domain/types";
 import { isValidProcessingJobId } from "./types";
@@ -19,6 +23,8 @@ export const JOB_MAX_AGE_MS = 24 * 60 * 60_000;
 const MAX_ENTRIES = 100;
 
 export interface JournalEntry {
+  /** The signed-in user who submitted the job – only that user's jobs are resumed. */
+  userId: string;
   vehicleId: string;
   photoId: string;
   jobId: string;
@@ -47,6 +53,7 @@ function isEntry(value: unknown): value is JournalEntry {
   if (typeof value !== "object" || value === null) return false;
   const entry = value as Record<string, unknown>;
   return (
+    typeof entry.userId === "string" &&
     typeof entry.vehicleId === "string" &&
     typeof entry.photoId === "string" &&
     isValidProcessingJobId(entry.jobId) &&
@@ -118,7 +125,7 @@ export function forgetJob(photoId: string, preset?: ProcessingPresetId, storage 
   if (kept.length !== entries.length) write(storage, kept);
 }
 
-/** Forgets every job (another user signed in). */
+/** Forgets every job (signed out, another user signed in). */
 export function clearJobJournal(storage = browserStorage()): void {
   write(storage, []);
 }

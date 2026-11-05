@@ -16,6 +16,7 @@ const NOW = Date.parse("2026-11-05T10:00:00.000Z");
 
 function entry(patch: Partial<JournalEntry> = {}): JournalEntry {
   return {
+    userId: "u_anna",
     vehicleId: "veh_1",
     photoId: "p_front",
     jobId: "0123456789abcdef0123456789abcdef",
@@ -75,6 +76,8 @@ describe("job journal", () => {
       entry({ photoId: "p_expired", startedAt: new Date(NOW - JOB_MAX_AGE_MS - 1).toISOString() }),
       entry({ photoId: "p_bad_job", jobId: "../../etc" }),
       entry({ photoId: "p_bad_preset", preset: "flux" as JournalEntry["preset"] }),
+      // Kept before entries carried their user: nobody to resume it for.
+      { ...entry({ photoId: "p_no_user" }), userId: undefined },
       { photoId: "p_partial" },
       null,
       "x",

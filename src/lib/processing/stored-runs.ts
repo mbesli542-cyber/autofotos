@@ -5,7 +5,8 @@
  * jobs are polled, not sent again (job-journal.ts, processing-runs.ts). A
  * run older than the processor keeps its jobs (24 h) is ignored; a missing
  * or throwing localStorage only means a reload starts with the style
- * selection again.
+ * selection again. A run belongs to the user who started it: only that user
+ * continues it, and signing out forgets every stored run (`clearStoredRuns`).
  */
 import { isProcessingPresetId, type ProcessingPresetId, type ProcessingWarning } from "@/lib/domain/types";
 import { JOB_MAX_AGE_MS, type JournalStorage } from "./job-journal";
@@ -29,6 +30,8 @@ export interface StoredRunItem {
 }
 
 export interface StoredRun {
+  /** The signed-in user who started the run – only that user continues it. */
+  userId: string;
   vehicleId: string;
   preset: ProcessingPresetId;
   /** Started with "Bereits geprüfte Fotos erneut bearbeiten" (every photo sent again). */
@@ -80,6 +83,7 @@ function parseRun(value: unknown, now: number): StoredRun | null {
   if (typeof value !== "object" || value === null) return null;
   const run = value as Record<string, unknown>;
   if (
+    typeof run.userId !== "string" ||
     typeof run.vehicleId !== "string" ||
     !isProcessingPresetId(run.preset) ||
     typeof run.reprocess !== "boolean" ||
@@ -93,6 +97,7 @@ function parseRun(value: unknown, now: number): StoredRun | null {
   const items = run.items.map(parseItem);
   if (items.length === 0 || items.some((item) => item === null)) return null;
   return {
+    userId: run.userId,
     vehicleId: run.vehicleId,
     preset: run.preset,
     reprocess: run.reprocess,
@@ -144,9 +149,14 @@ export function storeRun(run: StoredRun, storage = browserStorage(), now = Date.
   writeAll(storage, [...readAll(storage, now).filter((stored) => stored.vehicleId !== run.vehicleId), run]);
 }
 
-/** Forgets the vehicle's run (finished, reset, signed out). */
+/** Forgets the vehicle's run (finished, reset, another user's). */
 export function forgetRun(vehicleId: string, storage = browserStorage(), now = Date.now()): void {
   const runs = readAll(storage, now);
   const kept = runs.filter((run) => run.vehicleId !== vehicleId);
   if (kept.length !== runs.length) writeAll(storage, kept);
+}
+
+/** Forgets every stored run (signed out, another user signed in). */
+export function clearStoredRuns(storage = browserStorage()): void {
+  writeAll(storage, []);
 }

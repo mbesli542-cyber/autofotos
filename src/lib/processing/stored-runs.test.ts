@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
 import type { JournalStorage } from "./job-journal";
-import { STORED_RUNS_KEY, forgetRun, parseStoredRuns, readStoredRun, storeRun, type StoredRun } from "./stored-runs";
+import {
+  STORED_RUNS_KEY,
+  clearStoredRuns,
+  forgetRun,
+  parseStoredRuns,
+  readStoredRun,
+  storeRun,
+  type StoredRun,
+} from "./stored-runs";
 
 const NOW = Date.parse("2026-11-05T10:00:00.000Z");
 
 function run(patch: Partial<StoredRun> = {}): StoredRun {
   return {
+    userId: "u_anna",
     vehicleId: "veh_1",
     preset: "autoexperten_standard",
     reprocess: false,
@@ -61,6 +70,15 @@ describe("stored runs", () => {
     expect(storage.data.has(STORED_RUNS_KEY)).toBe(false);
   });
 
+  it("forgets every run on sign-out", () => {
+    const storage = memoryStorage();
+    storeRun(run(), storage, NOW);
+    storeRun(run({ vehicleId: "veh_2", userId: "u_ben" }), storage, NOW);
+    clearStoredRuns(storage);
+    expect(storage.data.has(STORED_RUNS_KEY)).toBe(false);
+    expect(readStoredRun("veh_2", storage, NOW)).toBeNull();
+  });
+
   it("ignores runs older than the processor keeps its jobs and malformed runs", () => {
     const raw = JSON.stringify([
       run({ vehicleId: "veh_ok" }),
@@ -68,6 +86,8 @@ describe("stored runs", () => {
       run({ vehicleId: "veh_empty", items: [] }),
       { ...run({ vehicleId: "veh_bad_item" }), items: [{ photoId: "p" }] },
       { ...run({ vehicleId: "veh_bad_preset" }), preset: "flux" },
+      // Kept before runs carried their user: nobody to continue it for.
+      { ...run({ vehicleId: "veh_no_user" }), userId: undefined },
       42,
     ]);
     expect(parseStoredRuns(raw, NOW).map((entry) => entry.vehicleId)).toEqual(["veh_ok"]);
@@ -90,5 +110,6 @@ describe("stored runs", () => {
     expect(() => storeRun(run(), throwing, NOW)).not.toThrow();
     expect(readStoredRun("veh_1", throwing, NOW)).toBeNull();
     expect(() => forgetRun("veh_1", throwing, NOW)).not.toThrow();
+    expect(() => clearStoredRuns(throwing)).not.toThrow();
   });
 });

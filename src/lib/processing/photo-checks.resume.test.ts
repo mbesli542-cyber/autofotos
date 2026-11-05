@@ -129,6 +129,7 @@ function stubProcessor(known: Map<string, ProcessingJob>) {
 
 function rememberJob(jobId: string) {
   recordJob({
+    userId: "u_anna",
     vehicleId: PHOTO.vehicleId,
     photoId: PHOTO.id,
     jobId,

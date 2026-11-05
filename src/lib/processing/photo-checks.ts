@@ -39,8 +39,17 @@
  *   discarded tab its photo is checked again – by polling that job, not by
  *   sending the photo a second time; a job the processor no longer knows
  *   (restarted) is submitted once more (processPhoto). A job whose answer
- *   could not be fetched (connection, processor asleep) stays known and is
- *   polled again when the photo is checked again.
+ *   could not be fetched (connection, processor asleep, the photos could not
+ *   be read) stays known and is polled again when the photo is checked
+ *   again. Only the jobs of the signed-in user are resumed; signing out
+ *   forgets them.
+ * - Opening the camera, "Fotos überprüfen" or the vehicle page checks the
+ *   template photos without a result, a check or a stored rejection
+ *   (`checkOnOpen`). A check that ended with an error is NOT sent again on
+ *   every visit (a deterministic failure would cost the dealer's PC a job
+ *   per page view): it is repeated when the checks come on again, and
+ *   "Fotos bearbeiten" processes it – unless its job is still kept on the
+ *   device, which is only polled.
  * - While the checks are off because the processor is not reachable (or the
  *   device is offline), its status is asked again every
  *   AVAILABILITY_POLL_MS – only while a page that needs the checks is shown
@@ -54,11 +63,13 @@ import {
   isProcessingPresetId,
   type ProcessingPresetId,
   type ProcessingWarning,
+  type VehiclePhoto,
   type VehiclePhotoWithUrls,
 } from "@/lib/domain/types";
 import { toUserMessage } from "@/lib/errors";
 import type { UploadItem } from "@/lib/offline/upload-queue";
 import { isOlderCapture } from "@/lib/photos/capture-order";
+import type { ShotTemplate } from "@/lib/shots/shot-template";
 import { markProcessedIfDone } from "@/lib/workflow/vehicle-workflow";
 import { readStoredAccessCode, storeAccessCode, subscribeAccessCode } from "./access-code-storage";
 import {
@@ -101,6 +112,7 @@ const STORAGE_KEY = "ae-photo.photo-checks.v1";
 const MAX_STORED = 300;
 
 const GENERIC_FAILURE = "Bearbeitung fehlgeschlagen.";
+const PHOTOS_UNREADABLE_MESSAGE = "Die Fotos konnten gerade nicht geladen werden.";
 const ACCESS_CODE_INVALID_MESSAGE = "Der Zugangscode ist falsch – bitte neu eingeben.";
 
 /**
@@ -212,6 +224,11 @@ function sessionUser(auth: AuthState): string | null | undefined {
   return auth.status === "authenticated" ? auth.user.id : null;
 }
 
+/** The signed-in user's id right now (null: signed out or still unknown). */
+function signedInUser(): string | null {
+  return sessionUser(getAppServices().authStore.getSnapshot()) ?? null;
+}
+
 /** Key of a shot of a vehicle (`captures`). */
 export function shotSlotKey(check: Pick<PhotoCheck, "vehicleId" | "shotKey">): string {
   return `${check.vehicleId}/${check.shotKey}`;
@@ -226,6 +243,31 @@ export function shotSlotKey(check: Pick<PhotoCheck, "vehicleId" | "shotKey">): s
  */
 export function shouldPollAvailability(availability: AutoCheckAvailability, watched: boolean, visible: boolean): boolean {
   return watched && visible && (availability === "no_processor" || availability === "offline");
+}
+
+/**
+ * What opening a page that shows the checks (camera, "Fotos überprüfen",
+ * vehicle page) does with one of the vehicle's photos (pure):
+ * - "check":  a template photo without a result, a check or a stored
+ *             rejection – it is checked
+ * - "resume": its check could not run, but its job is still kept on this
+ *             device (`jobKept`, e.g. the photos could not be read right
+ *             after a reload) – that job is polled, the photo is not sent again
+ * - null:     nothing to do – also for a check that ended with an error and
+ *             has no job any more: it is not sent again on every visit (it is
+ *             repeated when the checks come on again, or by "Fotos bearbeiten")
+ * Placeholder drawings of the demo samples are never sent.
+ */
+export function checkOnOpen(
+  photo: Pick<VehiclePhoto, "shotKey" | "processedStoragePath" | "originalStoragePath">,
+  template: ShotTemplate,
+  check: Pick<PhotoCheck, "status"> | undefined,
+  jobKept: boolean,
+): "check" | "resume" | null {
+  if (getShotTreatment(template, photo.shotKey) === null || photo.processedStoragePath) return null;
+  if (isPlaceholderPhoto(photo)) return null;
+  if (!check) return "check";
+  return check.status === "error" && jobKept ? "resume" : null;
 }
 
 function documentVisible(): boolean {
@@ -293,6 +335,13 @@ export class PhotoChecks {
   private statusRequest: Promise<ProcessingStatus | null> | null = null;
   /** Pages shown right now that need the checks (`watch`). */
   private watchers = 0;
+  /**
+   * The processor refused the stored access code in this tab: the checks stay
+   * off until a code is entered again (or the user changes) – also while a
+   * status asked before (cached) does not ask for one, so a refused code never
+   * repeats checks in a loop.
+   */
+  private codeRefused = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
   /* ---------- useSyncExternalStore API ---------- */
@@ -325,7 +374,9 @@ export class PhotoChecks {
     this.started = true;
     const { uploads, authStore } = getAppServices();
     this.restore();
-    this.resumeJobs();
+    let user = sessionUser(authStore.getSnapshot());
+    // Only the signed-in user's jobs are resumed – once the user is known.
+    if (typeof user === "string") this.resumeJobs(user);
     uploads.onUploaded((item) => void this.captureSaved(item));
     window.addEventListener("online", () => void this.refreshAvailability(true));
     window.addEventListener("offline", () => this.setAvailability("offline"));
@@ -336,14 +387,18 @@ export class PhotoChecks {
       }
       this.updatePolling();
     });
-    subscribeAccessCode(() => void this.refreshAvailability());
-    let user = sessionUser(authStore.getSnapshot());
+    subscribeAccessCode(() => {
+      // A new code: it is tried (the refusal was of the code before).
+      if (readStoredAccessCode()) this.codeRefused = false;
+      void this.refreshAvailability();
+    });
     authStore.subscribe(() => {
       const next = sessionUser(authStore.getSnapshot());
       if (next === undefined || next === user) return;
       const changed = user !== undefined;
       user = next;
       if (changed) this.stopAll();
+      if (typeof next === "string") this.resumeJobs(next);
     });
   }
 
@@ -359,7 +414,7 @@ export class PhotoChecks {
     const status = await this.processingStatus(force);
     let availability: AutoCheckAvailability = "on";
     if (!canStartProcessing(status)) availability = "no_processor";
-    else if (status?.accessCodeRequired && !readStoredAccessCode()) availability = "access_code";
+    else if ((status?.accessCodeRequired || this.codeRefused) && !readStoredAccessCode()) availability = "access_code";
     this.setAvailability(availability);
     if (availability === "on") this.pump();
     return availability;
@@ -367,10 +422,11 @@ export class PhotoChecks {
 
   /**
    * Checks the vehicle's current template photos that have no result, no
-   * check and no stored rejection yet, or whose check could not run – when
-   * the camera, "Fotos überprüfen" or the vehicle page is shown with the
-   * checks on (also right after they came on), and after the access code
-   * was entered in the camera. Placeholder drawings (demo samples) are skipped.
+   * check and no stored rejection yet (`checkOnOpen`) – when the camera,
+   * "Fotos überprüfen" or the vehicle page is shown with the checks on (also
+   * right after they came on), and after the access code was entered in the
+   * camera. A check that ended with an error is not sent again here (only
+   * its job polled while it is still kept on the device).
    */
   async checkVehicle(vehicleId: string): Promise<void> {
     if ((await this.refreshAvailability()) !== "on") return;
@@ -381,12 +437,13 @@ export class PhotoChecks {
       return;
     }
     const { template } = getAppServices();
+    const user = signedInUser();
     for (const photo of photos) {
-      if (getShotTreatment(template, photo.shotKey) === null || photo.processedStoragePath) continue;
-      if (isPlaceholderPhoto(photo)) continue;
       const check = this.snapshot.checks.get(photo.id);
-      if (!check) this.enqueue({ ...photo, preset: CHECK_PRESET });
-      else if (check.status === "error") this.requeue(photo.id);
+      const job = check ? findJob(photo.id, check.preset) : null;
+      const action = checkOnOpen(photo, template, check, job !== null && job.userId === user);
+      if (action === "check") this.enqueue({ ...photo, preset: CHECK_PRESET });
+      else if (action === "resume") this.requeue(photo.id);
     }
     this.pump();
   }
@@ -413,6 +470,7 @@ export class PhotoChecks {
   stopAll(): void {
     // The jobs of the previous user are not resumed after a reload.
     clearJobJournal();
+    this.codeRefused = false;
     this.queue.length = 0;
     for (const controller of this.checkControllers.values()) controller.abort();
     this.checkControllers.clear();
@@ -449,18 +507,19 @@ export class PhotoChecks {
   /* ---------- internals ---------- */
 
   /**
-   * The jobs submitted before a reload (or a discarded tab) whose outcome is
-   * not known yet: their photos are checked again – by polling the job
-   * (createJob), not by sending the photo again.
+   * The jobs `user` submitted before a reload (or a discarded tab) whose
+   * outcome is not known yet: their photos are checked again – by polling
+   * the job (createJob), not by sending the photo again. Jobs of another
+   * user (a shared device, a session that expired) are forgotten.
    */
-  private resumeJobs(): void {
+  private resumeJobs(user: string): void {
     const { template } = getAppServices();
-    const entries = readJobJournal();
+    const entries = readJobJournal().filter((entry) => {
+      if (entry.userId === user && getShotTreatment(template, entry.shotKey) !== null) return true;
+      forgetJob(entry.photoId, entry.preset);
+      return false;
+    });
     for (const entry of entries) {
-      if (getShotTreatment(template, entry.shotKey) === null) {
-        forgetJob(entry.photoId, entry.preset);
-        continue;
-      }
       this.enqueue({
         id: entry.photoId,
         vehicleId: entry.vehicleId,
@@ -595,9 +654,13 @@ export class PhotoChecks {
       if (!check || !controller || controller.signal.aborted || check.status !== "waiting") return;
       const photo = await this.currentPhoto(check);
       if (controller.signal.aborted) return;
-      if (!photo) {
+      if (photo === "replaced") {
         // Replaced by a newer photo (or deleted) meanwhile – nothing to check.
         this.drop(photoId);
+        return;
+      }
+      if (photo === "unreadable") {
+        await this.photosUnreadable(photoId, controller);
         return;
       }
       if (this.snapshot.checks.get(photoId)?.status !== "waiting") return;
@@ -615,17 +678,51 @@ export class PhotoChecks {
     }
   }
 
-  /** The check's photo if it is still the current photo of its shot (with its URLs), else null. */
-  private async currentPhoto(check: PhotoCheck): Promise<VehiclePhotoWithUrls | null> {
+  /**
+   * The check's photo if it is still the current photo of its shot (with its
+   * URLs); "replaced" when a newer photo replaced it (or it was deleted);
+   * "unreadable" when the photos could not be read right now (e.g. a weak
+   * connection right after a reload) – that says nothing about the photo.
+   */
+  private async currentPhoto(check: PhotoCheck): Promise<VehiclePhotoWithUrls | "replaced" | "unreadable"> {
     const { backend } = getAppServices();
+    let current: VehiclePhoto | undefined;
     try {
-      const current = (await backend.data.listPhotos(check.vehicleId)).find((photo) => photo.shotKey === check.shotKey);
-      if (!current || current.id !== check.photoId) return null;
-      const [resolved] = await backend.data.resolvePhotoUrls([current]);
-      return resolved ?? null;
+      current = (await backend.data.listPhotos(check.vehicleId)).find((photo) => photo.shotKey === check.shotKey);
     } catch {
-      return null;
+      return "unreadable";
     }
+    if (!current || current.id !== check.photoId) return "replaced";
+    try {
+      const [resolved] = await backend.data.resolvePhotoUrls([current]);
+      return resolved ?? "unreadable";
+    } catch {
+      return "unreadable";
+    }
+  }
+
+  /**
+   * The check's photo could not be read (nothing was sent): its job, if one
+   * was submitted before a reload, stays kept on the device – it is polled
+   * the next time instead of sending the photo again. While the processor is
+   * not reachable either the check waits. Otherwise it ends as "not possible"
+   * for now and the next page open polls its job (checkOnOpen "resume") – or,
+   * without a job, checks the photo as one without a check.
+   */
+  private async photosUnreadable(photoId: string, controller: AbortController): Promise<void> {
+    const availability = await this.refreshAvailability(true);
+    const check = this.snapshot.checks.get(photoId);
+    if (controller.signal.aborted || check?.status !== "waiting") return;
+    if (availability !== "on") {
+      this.requeue(photoId);
+      return;
+    }
+    const job = findJob(photoId, check.preset);
+    if (job === null || job.userId !== signedInUser()) {
+      this.drop(photoId);
+      return;
+    }
+    this.settle(photoId, { status: "error", message: PHOTOS_UNREADABLE_MESSAGE, errorCode: null, warnings: [] });
   }
 
   /** All required shots processed and the capture completed: the vehicle counts as processed. */
@@ -650,6 +747,9 @@ export class PhotoChecks {
     const { backend } = getAppServices();
     const base = this.snapshot.checks.get(photo.id);
     const takenAt = base?.takenAt ?? photo.takenAt;
+    // Jobs are kept per user: only this user's job of the photo is polled.
+    const user = signedInUser();
+    const kept = findJob(photo.id, preset);
     this.putCheck({
       photoId: photo.id,
       vehicleId: photo.vehicleId,
@@ -673,9 +773,11 @@ export class PhotoChecks {
           for (const listener of steps) listener(step, progress);
         },
         // Submitted before a reload: its answer is fetched instead of sending the photo again.
-        resumeJobId: findJob(photo.id, preset)?.jobId ?? null,
-        onSubmitted: (jobId) =>
+        resumeJobId: kept !== null && kept.userId === user ? kept.jobId : null,
+        onSubmitted: (jobId) => {
+          if (user === null) return; // nobody to resume it for
           recordJob({
+            userId: user,
             vehicleId: photo.vehicleId,
             photoId: photo.id,
             jobId,
@@ -685,7 +787,8 @@ export class PhotoChecks {
             shotOrder: photo.shotOrder,
             title: photo.title,
             takenAt,
-          }),
+          });
+        },
       }).finally(() => this.releaseJobSlot()),
     );
     const job: SharedJob = { promise, controller, users: 0, steps };
@@ -712,6 +815,9 @@ export class PhotoChecks {
           return;
         }
         if (error instanceof AccessCodeRequiredError) {
+          // Off until a code is entered again (the status is asked anew then).
+          this.codeRefused = true;
+          this.status = null;
           storeAccessCode(null);
           this.setAvailability("access_code");
           this.settle(photo.id, {

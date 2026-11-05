@@ -31,7 +31,9 @@
  *
  * Runs belong to the signed-in user: when the session ends or another user
  * signs in (shared devices), every run is stopped – its uploads and polls
- * are aborted – and the next person starts with the style selection.
+ * are aborted – and the next person starts with the style selection. Runs
+ * kept on the device carry their user: only that user continues one after
+ * a reload, and signing out forgets them (`endProcessingSession`).
  *
  * A run survives a reload or a discarded tab (iPhone Safari): it is kept on
  * the device while it runs (stored-runs.ts) and `resume` – called when its
@@ -53,7 +55,7 @@ import { photoChecks, type PhotoCheck } from "./photo-checks";
 import { PRESET_UNAVAILABLE_MESSAGE, isProcessingPresetAvailable } from "./presets";
 import { AccessCodeRequiredError } from "./processing-client";
 import { getShotTreatment, selectPhotosForProcessing, type ShotTreatment } from "./shot-treatment";
-import { forgetRun, readStoredRun, storeRun, type StoredRunItem } from "./stored-runs";
+import { clearStoredRuns, forgetRun, readStoredRun, storeRun, type StoredRunItem } from "./stored-runs";
 
 export type PhotoRunStatus = "waiting" | PhotoStep;
 
@@ -87,6 +89,11 @@ export type RunOutcome =
 export interface RunResult {
   outcome: RunOutcome;
   message?: string;
+}
+
+/** The outcome of a run continued after a reload, with its style (`resume`). */
+export interface ResumeResult extends RunResult {
+  preset: ProcessingPresetId;
 }
 
 export interface ProcessingRunSnapshot {
@@ -131,6 +138,8 @@ interface VehicleRun {
   reprocess: boolean;
   /** When the run started (ISO). */
   startedAt: string;
+  /** The signed-in user who started it (kept with the stored run); null: not known – not kept. */
+  userId: string | null;
   /** What was last kept on the device (storedKey) – rewritten only when a row finished. */
   storedKey: string | null;
 }
@@ -173,6 +182,11 @@ function waitingItem(photo: VehiclePhotoWithUrls, treatment: ShotTreatment): Pho
 function sessionUser(auth: AuthState): string | null | undefined {
   if (auth.status === "loading") return undefined;
   return auth.status === "authenticated" ? auth.user.id : null;
+}
+
+/** The signed-in user's id right now (null: signed out or still unknown). */
+function signedInUser(): string | null {
+  return sessionUser(getAppServices().authStore.getSnapshot()) ?? null;
 }
 
 /** The newest finished check of a photo of the shot taken after `takenAt` (photo-checks.ts). */
@@ -231,6 +245,7 @@ export class ProcessingRuns {
     run.active = 1;
     run.reprocess = options.reprocess ?? false;
     run.startedAt = new Date().toISOString();
+    run.userId = signedInUser();
     const toItems = (list: readonly VehiclePhotoWithUrls[]) =>
       list.map((photo) => waitingItem(photo, getShotTreatment(template, photo.shotKey) ?? "original_environment"));
     this.set(run, { phase: "running", preset, items: toItems(shown) });
@@ -279,6 +294,7 @@ export class ProcessingRuns {
 
     const generation = run.generation;
     run.active = Math.max(0, run.active) + 1;
+    run.userId = signedInUser() ?? run.userId;
     const queue = (targets: ReadonlyMap<string, VehiclePhotoWithUrls>) =>
       this.set(run, {
         ...run.snapshot,
@@ -324,15 +340,18 @@ export class ProcessingRuns {
    * reloaded (or the tab discarded): kept on the device while it ran. Its
    * finished rows stay as they were; every other row is processed again with
    * the shot's current photo – a job submitted before the reload is polled,
-   * not sent again (photo-checks.ts). null: nothing to continue (no stored
-   * run, or a run of the vehicle is shown already).
+   * not sent again (photo-checks.ts). Only the user who started it
+   * continues it; a run of another user is forgotten. null: nothing to
+   * continue (no stored run, or a run of the vehicle is shown already).
    */
-  async resume(vehicleId: string): Promise<RunResult | null> {
+  async resume(vehicleId: string): Promise<ResumeResult | null> {
     const run = this.run(vehicleId);
     if (run.active > 0 || run.snapshot.phase !== "idle") return null;
+    const user = signedInUser();
+    if (user === null) return null; // not known yet – nobody to continue it for
     const stored = readStoredRun(vehicleId);
     if (!stored) return null;
-    if (!isProcessingPresetAvailable(stored.preset)) {
+    if (stored.userId !== user || !isProcessingPresetAvailable(stored.preset)) {
       forgetRun(vehicleId);
       return null;
     }
@@ -343,6 +362,7 @@ export class ProcessingRuns {
     run.active = 1;
     run.reprocess = stored.reprocess;
     run.startedAt = stored.startedAt;
+    run.userId = stored.userId;
     this.set(run, {
       phase: "running",
       preset: stored.preset,
@@ -361,7 +381,7 @@ export class ProcessingRuns {
     } catch {
       // Not readable right now: the open rows fail (they can be processed again from the list).
     }
-    if (run.generation !== generation) return { outcome: "cancelled" };
+    if (run.generation !== generation) return { outcome: "cancelled", preset: stored.preset };
     const photos: VehiclePhotoWithUrls[] = [];
     const items = run.snapshot.items.flatMap((item): PhotoRunState[] => {
       if (isFinished(item)) return [item];
@@ -374,9 +394,9 @@ export class ProcessingRuns {
     this.set(run, { ...run.snapshot, items });
     const policy: KnownPolicy = stored.reprocess ? "skip_checked" : "skip_known";
     const accessDenied = await this.processAll(run, generation, photos, stored.preset, readStoredAccessCode(), policy);
-    // The stored code is no longer valid: the processing page asks for it again.
+    // The stored code is no longer valid (complete() resets the run): the processing page asks for it again.
     if (accessDenied !== null && run.generation === generation) storeAccessCode(null);
-    return this.complete(run, generation, accessDenied);
+    return { ...(await this.complete(run, generation, accessDenied)), preset: stored.preset };
   }
 
   /** Back to the style selection; uploads and polls still on their way are aborted. */
@@ -385,9 +405,10 @@ export class ProcessingRuns {
     if (run) this.resetRun(run);
   }
 
-  /** Ends every run (the session ended or another user signed in). */
+  /** Ends every run (the session ended or another user signed in); nothing of them is continued after a reload. */
   clear(): void {
     for (const run of this.runs.values()) this.resetRun(run);
+    clearStoredRuns();
   }
 
   /* ---------- internals ---------- */
@@ -421,6 +442,7 @@ export class ProcessingRuns {
         controller: new AbortController(),
         reprocess: false,
         startedAt: new Date().toISOString(),
+        userId: null,
         storedKey: null,
       };
       this.runs.set(vehicleId, run);
@@ -643,7 +665,7 @@ export class ProcessingRuns {
   /** Keeps a running run on the device (for `resume` after a reload); a finished or reset one is forgotten. */
   private store(run: VehicleRun): void {
     const { snapshot } = run;
-    if (snapshot.phase !== "running" || snapshot.preset === null) {
+    if (snapshot.phase !== "running" || snapshot.preset === null || run.userId === null) {
       if (run.storedKey !== null) forgetRun(run.vehicleId);
       run.storedKey = null;
       return;
@@ -652,6 +674,7 @@ export class ProcessingRuns {
     if (key === run.storedKey) return;
     run.storedKey = key;
     storeRun({
+      userId: run.userId,
       vehicleId: run.vehicleId,
       preset: snapshot.preset,
       reprocess: run.reprocess,
@@ -663,3 +686,14 @@ export class ProcessingRuns {
 
 /** The runs of this browser tab (module-level, shared by every processing screen). */
 export const processingRuns = new ProcessingRuns();
+
+/**
+ * Signing out on this device: every run and check of the user ends, and
+ * nothing of them is continued after a reload – also when no run or check
+ * was started in this page load (stored runs and the job journal are
+ * forgotten). The next person starts with the style selection.
+ */
+export function endProcessingSession(): void {
+  processingRuns.clear();
+  photoChecks.stopAll();
+}
