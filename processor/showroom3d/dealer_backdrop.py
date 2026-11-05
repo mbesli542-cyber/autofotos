@@ -411,6 +411,17 @@ VARIANT_STUDIO_LIGHT = {
 }
 
 
+#: The quality gate's "photo from above" rule is relative to the plate's proxy car (contact rise
+#: and bbox aspect of the 3/4 views). The studio camera (1.6 m, car 4.5 m away) sees the proxy
+#: with more rise (0.1905 vs 0.1546/0.1591 in the earlier 3D room) and a lower aspect (1.934/1.937
+#: vs 2.1436/2.1355), so the unscaled factors (1.7, 0.8) let a photo from a window above pass
+#: (regression case too_high: rise factor 1.48, aspect factor 0.798 – a toy car seen from above in
+#: a level studio). These are the earlier room's ABSOLUTE thresholds on this plate, the more
+#: generous of its front/rear 3/4 plates (1.7 × 0.1591 / 0.1905 = 1.42; 0.8 × 2.1355 / 1.9372 =
+#: 0.882 → 0.88): never stricter than before for a normal photo (Clio 1.35, MG 5 1.34 here).
+VARIANT_QUALITY = {"highViewRiseFactor": 1.42, "highViewAspectFactor": 0.88}
+
+
 def strength_path(target: Path, strength: str) -> Path:
     """The variant file of a strength: the recommended one is `target` itself."""
     return target if strength == RECOMMENDED else target.with_name(f"{target.stem}-{strength}{target.suffix}")
@@ -469,6 +480,7 @@ def variant_data(standard: Path, plates: str, layout: dict, room: dict) -> dict:
     for name in ("website", "phone"):  # no dealer contact data in listing photos (mobile.de)
         branding[name]["text"] = ""
     data["vehicleAdjustments"]["studioLight"] = dict(VARIANT_STUDIO_LIGHT)
+    data["quality"].update(VARIANT_QUALITY)
     return data
 
 

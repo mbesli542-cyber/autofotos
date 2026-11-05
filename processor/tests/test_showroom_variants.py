@@ -422,8 +422,10 @@ def test_the_dealer_variant_is_a_complete_valid_preset():
     preset = parse_preset(HAENDLER)
     assert HAENDLER["id"] == STANDARD["id"]  # copied over the standard file, it replaces it
     assert HAENDLER["background"]["plates"] == "autoexperten-haendler/plates.json"
-    for section in ("output", "quality"):
-        assert HAENDLER[section] == STANDARD[section], section
+    assert HAENDLER["output"] == STANDARD["output"]
+    # the quality gate as shipped, the "photo from above" rule re-scaled to this plate's camera
+    # (test_the_dealer_gate_keeps_the_earlier_rooms_high_view_thresholds)
+    assert HAENDLER["quality"] == {**STANDARD["quality"], "highViewRiseFactor": 1.42, "highViewAspectFactor": 0.88}
     # "Schatten mittel" (the recommendation, see test_the_dealer_variant_comes_in_three_shadow_strengths)
     assert HAENDLER["shadow"] == {**STANDARD["shadow"], **dict(DEALER_STRENGTHS["mittel"][0])}
     assert HAENDLER["reflection"] == {**STANDARD["reflection"], **dict(DEALER_STRENGTHS["mittel"][1])}
@@ -491,6 +493,36 @@ def test_the_dealer_variant_comes_in_three_shadow_strengths():
     assert s["kraeftig"].edge_opacity < 0.7 and s["kraeftig"].underbody_falloff < 0.25 and s["kraeftig"].ambient_opacity < 0.6
     r = {k: p.reflection for k, p in presets.items()}
     assert r["leicht"].fade < r["mittel"].fade < r["kraeftig"].fade <= 1.0  # the car's mirror image stays near the car
+
+
+#: Proxy contact rise and bbox aspect of the earlier 3D room's 3/4 plates (front, rear pairs).
+EARLIER_ROOM_3Q = {"front": (0.1546, 2.1436), "rear": (0.1591, 2.1355)}
+EARLIER_HIGH_VIEW = (1.7, 0.8)  # highViewRiseFactor, highViewAspectFactor there
+
+
+def test_the_dealer_gate_keeps_the_earlier_rooms_high_view_thresholds(dealer_plates):
+    """The "photo from above" rule is relative to the plate's proxy car. The studio camera sees it
+    with more contact rise and a lower aspect than the earlier room, so the dealer files scale the
+    two factors back to the earlier ABSOLUTE thresholds – never stricter on any 3/4 plate (normal
+    photos stay accepted), as strict as before on the rear ones (the photo from a window above,
+    regression case too_high, is rejected again)."""
+    earlier = Path(REPO_ROOT / "public/presets/autoexperten-standard/plates.json")
+    if earlier.is_file():  # the recorded values are the earlier room's plates
+        old = load_plate_set(earlier)
+        for side, (rise, aspect) in EARLIER_ROOM_3Q.items():
+            plate = old.plate(f"{side}_left_45")
+            assert (plate.proxy_rise_ratio(), plate.proxy_aspect()) == pytest.approx((rise, aspect), abs=5e-5)
+    quality = parse_preset(HAENDLER).quality
+    for side, (rise, aspect) in EARLIER_ROOM_3Q.items():
+        for key in (f"{side}_left_45", f"{side}_right_45"):
+            plate = dealer_plates.plate(key)
+            new_rise = quality.high_view_rise_factor * plate.proxy_rise_ratio()
+            new_aspect = quality.high_view_aspect_factor * plate.proxy_aspect()
+            assert new_rise >= EARLIER_HIGH_VIEW[0] * rise - 1e-3, key  # never stricter …
+            assert new_aspect <= EARLIER_HIGH_VIEW[1] * aspect + 1e-3, key
+            if side == "rear":  # … and as strict as before on the rear 3/4 plates
+                assert new_rise == pytest.approx(EARLIER_HIGH_VIEW[0] * rise, rel=0.01), key
+                assert new_aspect == pytest.approx(EARLIER_HIGH_VIEW[1] * aspect, rel=0.01), key
 
 
 @pytest.mark.parametrize("name", ALL_VARIANTS)
