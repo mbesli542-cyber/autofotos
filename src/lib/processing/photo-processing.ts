@@ -17,6 +17,13 @@
  * photo fixes (quality-gate.ts needsRetake) is kept with the photo first
  * (data.recordPhotoRejection – best effort), so every device knows the shot
  * must be retaken.
+ *
+ * Resuming: `onSubmitted` reports the processor's job id right after the
+ * submit (photo-checks.ts keeps it on the device), and `resumeJobId` waits
+ * for such a job instead of sending the photo again – e.g. after the page
+ * was reloaded or the tab discarded (the processor keeps jobs for 24 h). A
+ * job the processor no longer knows (404: restarted, expired) is submitted
+ * once more; a second 404 fails.
  */
 import type { BackendMode, DataProvider } from "@/lib/data/types";
 import type { ProcessingPresetId, ProcessingWarning, VehiclePhotoWithUrls } from "@/lib/domain/types";
@@ -42,6 +49,10 @@ export interface PhotoProcessingDeps {
   >;
   loadOriginal?: (url: string, signal?: AbortSignal) => Promise<Blob>;
   prepareUpload?: (original: Blob) => Promise<Blob>;
+  /** A job of this photo and style submitted earlier: its result is awaited instead of submitting again. */
+  resumeJobId?: string | null;
+  /** Called with the processor's job id right after the photo was submitted. */
+  onSubmitted?: (jobId: string) => void;
 }
 
 export const NO_RESULT_MESSAGE = "Die Bildbearbeitung hat kein Ergebnis geliefert.";
@@ -86,18 +97,58 @@ export async function processPhoto(
   preset: ProcessingPresetId,
   deps: PhotoProcessingDeps,
 ): Promise<PhotoProcessingResult> {
+  let jobId = deps.resumeJobId ?? null;
+  let resubmitted = false;
+  for (;;) {
+    if (jobId === null) {
+      jobId = await submit(photo, preset, deps);
+      deps.onSubmitted?.(jobId);
+    }
+    try {
+      return await finish(photo, preset, jobId, deps);
+    } catch (error) {
+      // The processor no longer knows the job (restarted or expired): sent once more.
+      if (!(error instanceof client.ProcessingJobNotFoundError) || resubmitted) throw error;
+      resubmitted = true;
+      jobId = null;
+    }
+  }
+}
+
+/** Sends the photo to the processor; returns the job id. */
+async function submit(photo: VehiclePhotoWithUrls, preset: ProcessingPresetId, deps: PhotoProcessingDeps): Promise<string> {
   const api = deps.api ?? client;
   const options = { accessCode: deps.accessCode ?? null, signal: deps.signal };
-  const onUpdate = (job: ProcessingJob) => deps.onStep?.(job.status, job.progress);
-
   if (deps.mode === "supabase") {
     const { jobId, status } = await api.submitPhotoProcessing(
       { vehicleId: photo.vehicleId, photoId: photo.id, preset },
       options,
     );
     deps.onStep?.(status);
-    const job = await api.waitForProcessingJob(jobId, { ...options, onUpdate });
-    await ensureCompleted(job, photo, deps.data);
+    return jobId;
+  }
+  deps.onStep?.("preparing");
+  const original = await (deps.loadOriginal ?? loadOriginalPhoto)(photo.urls.original, deps.signal);
+  const file = await (deps.prepareUpload ?? prepareProcessingUpload)(original);
+  const { jobId, status } = await api.submitUploadProcessing({ file, preset, shotKey: photo.shotKey }, options);
+  deps.onStep?.(status);
+  return jobId;
+}
+
+/** Waits for the job and saves its result with the photo. */
+async function finish(
+  photo: VehiclePhotoWithUrls,
+  preset: ProcessingPresetId,
+  jobId: string,
+  deps: PhotoProcessingDeps,
+): Promise<PhotoProcessingResult> {
+  const api = deps.api ?? client;
+  const options = { accessCode: deps.accessCode ?? null, signal: deps.signal };
+  const onUpdate = (job: ProcessingJob) => deps.onStep?.(job.status, job.progress);
+  const job = await api.waitForProcessingJob(jobId, { ...options, onUpdate });
+  await ensureCompleted(job, photo, deps.data);
+
+  if (deps.mode === "supabase") {
     if (job.result?.kind !== "stored") throw new AppError("unknown", { userMessage: NO_RESULT_MESSAGE });
     const warnings = parseProcessingWarnings(job.warnings);
     deps.onStep?.("saving");
@@ -110,13 +161,6 @@ export async function processPhoto(
     return { warnings };
   }
 
-  deps.onStep?.("preparing");
-  const original = await (deps.loadOriginal ?? loadOriginalPhoto)(photo.urls.original, deps.signal);
-  const file = await (deps.prepareUpload ?? prepareProcessingUpload)(original);
-  const { jobId, status } = await api.submitUploadProcessing({ file, preset, shotKey: photo.shotKey }, options);
-  deps.onStep?.(status);
-  const job = await api.waitForProcessingJob(jobId, { ...options, onUpdate });
-  await ensureCompleted(job, photo, deps.data);
   if (job.result?.kind !== "file") throw new AppError("unknown", { userMessage: NO_RESULT_MESSAGE });
   const warnings = parseProcessingWarnings(job.warnings);
   deps.onStep?.("saving");

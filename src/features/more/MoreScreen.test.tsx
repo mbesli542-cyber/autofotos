@@ -17,6 +17,8 @@ import { installDialogPolyfill } from "@/components/ui/dialog-test-polyfill";
 import { ToastProvider } from "@/components/ui/Toast";
 import { getAppServices } from "@/lib/app-services";
 import { MockDataProvider } from "@/lib/data/mock/mock-data-provider";
+import { readJobJournal, recordJob } from "@/lib/processing/job-journal";
+import { readStoredRun, storeRun } from "@/lib/processing/stored-runs";
 import { MoreScreen } from "./MoreScreen";
 
 function renderMore() {
@@ -144,6 +146,52 @@ describe("<MoreScreen /> – 'Alle Daten auf diesem Gerät löschen'", () => {
     rerender(ui("visible"));
     await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
     expect(confirmDialog()?.open).toBe(false);
+  });
+});
+
+describe("<MoreScreen /> – 'Abmelden'", () => {
+  it("leaves nothing of the user's processing on the device for the next person", async () => {
+    const { authStore } = getAppServices();
+    await act(() => authStore.signIn("anna.meier@autoexperten-rn.de", "Werkstatt#2026"));
+    const startedAt = new Date().toISOString();
+    storeRun({
+      userId: "demo-user",
+      vehicleId: "veh_1",
+      preset: "autoexperten_standard",
+      reprocess: false,
+      startedAt,
+      items: [
+        {
+          photoId: "p_front",
+          shotKey: "front",
+          title: "Vorne",
+          shotOrder: 2,
+          treatment: "showroom",
+          status: "open",
+          error: null,
+          errorCode: null,
+          warnings: [],
+        },
+      ],
+    });
+    recordJob({
+      userId: "demo-user",
+      vehicleId: "veh_1",
+      photoId: "p_front",
+      jobId: "0123456789abcdef0123456789abcdef",
+      preset: "autoexperten_standard",
+      startedAt,
+      shotKey: "front",
+      shotOrder: 2,
+      title: "Vorne",
+      takenAt: startedAt,
+    });
+    renderMore();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Abmelden" })));
+    // A run or check of this user is neither continued after a reload nor by the next person.
+    expect(readStoredRun("veh_1")).toBeNull();
+    expect(readJobJournal()).toEqual([]);
+    expect(authStore.getSnapshot().status).toBe("unauthenticated");
   });
 });
 

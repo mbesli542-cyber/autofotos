@@ -121,6 +121,48 @@ export function getNextShotKeyAfterCapture(
   return null;
 }
 
+/**
+ * Where the guided camera goes after a retake when no shot is missing: the
+ * next shot AFTER the current one that must be retaken (`retakeKeys`, e.g.
+ * rejected by the automatic check), wrapping around to earlier ones. Never
+ * the current shot itself (its new photo is just being saved and checked).
+ * null: no other shot must be retaken.
+ */
+export function getNextRetakeShotKey(
+  template: ShotTemplate,
+  retakeKeys: Iterable<string>,
+  currentKey: string,
+): string | null {
+  const retakes = new Set(retakeKeys);
+  retakes.delete(currentKey);
+  if (retakes.size === 0) return null;
+  const shots = getOrderedShots(template).filter((shot) => shot.required);
+  const currentIndex = shots.findIndex((shot) => shot.key === currentKey);
+  for (let step = 1; step <= shots.length; step += 1) {
+    const candidate = shots[(currentIndex + step + shots.length) % shots.length];
+    if (candidate && retakes.has(candidate.key)) return candidate.key;
+  }
+  return null;
+}
+
+/**
+ * Where the guided camera goes after a capture when no shot is missing
+ * (pure): the next rejected shot after the current one (getNextRetakeShotKey)
+ * – or the current shot itself when its NEW photo was already rejected
+ * (`retakeKeys` are the shots red right now, the current one only then).
+ * `left`: the shots still to retake, the current one included when red.
+ * null: no shot is red – the camera is left for "Fotos überprüfen".
+ */
+export function getRetakeContinuation(
+  template: ShotTemplate,
+  retakeKeys: readonly string[],
+  currentKey: string,
+): { key: string; left: number } | null {
+  const left = new Set(retakeKeys).size;
+  const key = getNextRetakeShotKey(template, retakeKeys, currentKey) ?? (retakeKeys.includes(currentKey) ? currentKey : null);
+  return key === null ? null : { key, left };
+}
+
 /** Previous/next shot in template order (no wrapping). */
 export function getAdjacentShotKey(
   template: ShotTemplate,

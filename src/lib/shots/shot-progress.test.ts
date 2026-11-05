@@ -5,7 +5,9 @@ import {
   getCapturedShotKeys,
   getFirstMissingShotKey,
   getMissingRequiredShots,
+  getNextRetakeShotKey,
   getNextShotKeyAfterCapture,
+  getRetakeContinuation,
   getShotProgress,
   isShotSetComplete,
   sortPhotosByShotOrder,
@@ -91,5 +93,37 @@ describe("guided navigation", () => {
     expect(getAdjacentShotKey(T, "front", 1)).toBe("front_right_45");
     expect(getAdjacentShotKey(T, "front_left_45", -1)).toBeNull();
     expect(getAdjacentShotKey(T, "special_detail", 1)).toBeNull();
+  });
+});
+
+describe("getNextRetakeShotKey", () => {
+  it("goes to the next shot to retake after the current one, wrapping around", () => {
+    expect(getNextRetakeShotKey(T, ["front", "rear"], "right_side")).toBe("rear");
+    expect(getNextRetakeShotKey(T, ["front", "rear"], "rear")).toBe("front");
+    expect(getNextRetakeShotKey(T, ["front", "rear"], "special_detail")).toBe("front");
+  });
+
+  it("never returns the shot just retaken and null when no other shot is red", () => {
+    expect(getNextRetakeShotKey(T, ["front"], "front")).toBeNull();
+    expect(getNextRetakeShotKey(T, [], "front")).toBeNull();
+    expect(getNextRetakeShotKey(T, new Set(["front", "rear"]), "front")).toBe("rear");
+  });
+});
+
+describe("getRetakeContinuation", () => {
+  it("goes on to the next red shot and counts every red shot still to retake", () => {
+    // Shot 01 (green) was retaken, 02 and 05 are red.
+    expect(getRetakeContinuation(T, ["front", "left_side"], "front_left_45")).toEqual({ key: "front", left: 2 });
+    // 02 retaken – its new photo is being checked, so it is not red: one left.
+    expect(getRetakeContinuation(T, ["left_side"], "front")).toEqual({ key: "left_side", left: 1 });
+  });
+
+  it("counts the current shot when its new photo was already rejected, and stays there when it is the only red one", () => {
+    expect(getRetakeContinuation(T, ["left_side", "rear"], "left_side")).toEqual({ key: "rear", left: 2 });
+    expect(getRetakeContinuation(T, ["left_side"], "left_side")).toEqual({ key: "left_side", left: 1 });
+  });
+
+  it("leaves the camera when no shot is red", () => {
+    expect(getRetakeContinuation(T, [], "front")).toBeNull();
   });
 });

@@ -8,6 +8,12 @@ import {
   checkResultMessage,
   getShotCheckState,
   getShotCheckStates,
+  passThroughState,
+  resultsToCheckMessage,
+  retakesLeftMessage,
+  shotCheckDescription,
+  shotCheckDetail,
+  shotCheckLabel,
 } from "./shot-check";
 
 const TOO_SMALL = "Fahrzeug im Originalfoto zu klein. Bitte näher fotografieren.";
@@ -187,18 +193,28 @@ describe("getShotCheckState", () => {
 });
 
 describe("checkResultMessage", () => {
-  it("says in one line whether the shot is usable", () => {
-    expect(checkResultMessage({ order: 2, title: "Vorne" }, { kind: "ok", hint: null })).toBe("02 Vorne passt ✓");
-    expect(checkResultMessage({ order: 1, title: "Vorne links (45°)" }, { kind: "retake", reason: TOO_SMALL })).toBe(
-      `01 Vorne links (45°): bitte neu aufnehmen – ${TOO_SMALL}`,
-    );
-    expect(checkResultMessage({ order: 3, title: "Vorne rechts (45°)" }, { kind: "ok", hint: UNCERTAIN.message })).toBe(
-      `03 Vorne rechts (45°) passt – bitte Ergebnis später prüfen: ${UNCERTAIN.message}`,
-    );
+  it("names the shot and its state with the one wording of every screen, the reason after it", () => {
+    expect(checkResultMessage({ order: 2, title: "Vorne" }, { kind: "ok", hint: null })).toEqual({
+      label: "02 Vorne · Geprüft – passt",
+      detail: null,
+    });
+    expect(checkResultMessage({ order: 1, title: "Vorne links (45°)" }, { kind: "retake", reason: TOO_SMALL })).toEqual({
+      label: "01 Vorne links (45°) · Bitte neu aufnehmen",
+      detail: TOO_SMALL,
+    });
+    expect(checkResultMessage({ order: 3, title: "Vorne rechts (45°)" }, { kind: "ok", hint: UNCERTAIN.message })).toEqual({
+      label: "03 Vorne rechts (45°) · Geprüft – bitte Ergebnis ansehen",
+      detail: UNCERTAIN.message,
+    });
     expect(checkResultMessage({ order: 2, title: "Vorne" }, { kind: "checking" })).toBeNull();
-    expect(checkResultMessage({ order: 7, title: "Hinten" }, { kind: "error", reason: "x", accessCode: true })).toBe(
-      "07 Hinten: nicht geprüft – der Zugangscode ist falsch. Bitte neu eingeben.",
-    );
+    expect(checkResultMessage({ order: 7, title: "Hinten" }, { kind: "error", reason: "x", accessCode: true })).toEqual({
+      label: "07 Hinten · Prüfung nicht möglich",
+      detail: "Der Zugangscode ist falsch – bitte neu eingeben.",
+    });
+    expect(checkResultMessage({ order: 7, title: "Hinten" }, { kind: "error", reason: "x" })).toEqual({
+      label: "07 Hinten · Prüfung nicht möglich",
+      detail: "Wird unter „Fotos bearbeiten“ nachgeholt.",
+    });
   });
 
   it("explains why the check is off (and how to switch it on in demo mode)", () => {
@@ -210,5 +226,86 @@ describe("checkResultMessage", () => {
     expect(autoCheckOffMessage("unreachable")).toMatch(/^Der Showroom-Rechner ist gerade nicht erreichbar\./);
     expect(autoCheckOffMessage("unreachable")).not.toContain("verbunden");
     expect(autoCheckOffMessage("offline")).toContain("Keine Internetverbindung");
+  });
+});
+
+describe("interior and detail shots (passed through, never checked)", () => {
+  const interior = (p: VehiclePhotoWithUrls | null, upload: UploadItem | null = null, category: "interior" | "detail" = "interior") => ({
+    key: "front",
+    category,
+    photo: p,
+    pending: upload,
+  });
+
+  it("are saved – never passed, also not while their pass-through is processed or with the checks off", () => {
+    const current = photo("p1");
+    expect(getShotCheckState(interior(current), [check("p1")], "on")).toEqual({ kind: "saved" });
+    expect(getShotCheckState(interior(current, null, "detail"), [check("p1", { status: "checking" })], "on")).toEqual({
+      kind: "saved",
+    });
+    expect(getShotCheckState(interior(current), [], "no_processor")).toEqual({ kind: "saved" });
+    expect(getShotCheckState(interior(current), [check("p1", { status: "error", message: "Offline" })], "on")).toEqual({
+      kind: "saved",
+    });
+    const processed = photo("p1", undefined, { processedStoragePath: "x.jpg", processedPreset: "autoexperten_standard" });
+    expect(getShotCheckState(interior(processed), [], "on")).toEqual({ kind: "saved" });
+  });
+
+  it("show a refused file as a retake and nothing while being saved or missing", () => {
+    expect(
+      getShotCheckState(
+        interior(photo("p1")),
+        [check("p1", { status: "retake", message: "Zu groß.", errorCode: "image_too_large" })],
+        "on",
+      ),
+    ).toEqual({ kind: "retake", reason: "Zu groß." });
+    expect(getShotCheckState(interior(photo("p1"), pending("uploading")), [], "on")).toEqual({ kind: "none" });
+    expect(getShotCheckState(interior(null), [], "on")).toEqual({ kind: "none" });
+  });
+
+  it("maps any state (pure)", () => {
+    expect(passThroughState({ kind: "ok", hint: null }, true)).toEqual({ kind: "saved" });
+    expect(passThroughState({ kind: "checking" }, true)).toEqual({ kind: "saved" });
+    expect(passThroughState({ kind: "checking" }, false)).toEqual({ kind: "none" });
+    expect(passThroughState({ kind: "retake", reason: "x" }, true)).toEqual({ kind: "retake", reason: "x" });
+    // Nothing to report in the camera when such a check finishes.
+    expect(checkResultMessage({ order: 13, title: "Tür & Sitzbedienung" }, { kind: "saved" })).toBeNull();
+  });
+});
+
+describe("wording", () => {
+  it("uses one label per state on every screen", () => {
+    expect(shotCheckLabel({ kind: "none" })).toBeNull();
+    expect(shotCheckLabel({ kind: "checking" })).toBe("Wird geprüft…");
+    expect(shotCheckLabel({ kind: "ok", hint: null })).toBe("Geprüft – passt");
+    expect(shotCheckLabel({ kind: "ok", hint: UNCERTAIN.message })).toBe("Geprüft – bitte Ergebnis ansehen");
+    expect(shotCheckLabel({ kind: "saved" })).toBe("Gespeichert");
+    expect(shotCheckLabel({ kind: "retake", reason: "x" })).toBe("Bitte neu aufnehmen");
+    expect(shotCheckLabel({ kind: "error", reason: "x" })).toBe("Prüfung nicht möglich");
+  });
+
+  it("puts the processor's hint or reason after the label with a colon", () => {
+    expect(shotCheckDetail({ kind: "ok", hint: null })).toBeNull();
+    expect(shotCheckDetail({ kind: "saved" })).toBeNull();
+    expect(shotCheckDescription({ kind: "none" })).toBeNull();
+    expect(shotCheckDescription({ kind: "ok", hint: null })).toBe("Geprüft – passt");
+    expect(shotCheckDescription({ kind: "ok", hint: UNCERTAIN.message })).toBe(
+      `Geprüft – bitte Ergebnis ansehen: ${UNCERTAIN.message}`,
+    );
+    expect(shotCheckDescription({ kind: "retake", reason: TOO_SMALL })).toBe(`Bitte neu aufnehmen: ${TOO_SMALL}`);
+    expect(shotCheckDescription({ kind: "error", reason: "Offline." })).toBe("Prüfung nicht möglich: Offline.");
+    expect(shotCheckDescription({ kind: "saved" })).toBe("Gespeichert");
+  });
+
+  it("sums up the results to look at with the same wording", () => {
+    expect(resultsToCheckMessage(1, "viewer")).toBe(
+      "1 Foto: Geprüft – bitte Ergebnis ansehen (Hinweis in der Großansicht).",
+    );
+    expect(resultsToCheckMessage(3, "list")).toBe("3 Fotos: Geprüft – bitte Ergebnis ansehen (Hinweise in der Liste).");
+  });
+
+  it("counts the photos left to retake in correct German", () => {
+    expect(retakesLeftMessage(1)).toBe("Noch 1 Foto neu aufnehmen");
+    expect(retakesLeftMessage(2)).toBe("Noch 2 Fotos neu aufnehmen");
   });
 });

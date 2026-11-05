@@ -18,6 +18,8 @@ import {
   type PhotoProcessingDeps,
   type PhotoProcessingResult,
 } from "@/lib/processing/photo-processing";
+import { AccessCodeRequiredError } from "@/lib/processing/processing-client";
+import { storeRun } from "@/lib/processing/stored-runs";
 import { PROCESSOR_STORAGE_MISSING_MESSAGE, type ProcessingStatus } from "@/lib/processing/types";
 import { completeCapture, savePhotoAndSyncStatus } from "@/lib/workflow/vehicle-workflow";
 import { ProcessingScreen } from "./ProcessingScreen";
@@ -164,6 +166,30 @@ describe("<ProcessingScreen />", () => {
     }
   });
 
+  it("keeps the screen on while the photos are processed and lets it turn off at the end", async () => {
+    const vehicleId = await createCompleteVehicle("WakeLock");
+    const release = vi.fn(async () => undefined);
+    const request = vi.fn(async () => ({ released: false, release }));
+    Object.defineProperty(navigator, "wakeLock", { configurable: true, value: { request } });
+    const jobs = gate();
+    vi.mocked(processPhoto).mockImplementation(async (photo, preset, deps) => {
+      await jobs.opened;
+      return saveResult(photo, preset, deps);
+    });
+    try {
+      renderScreen(vehicleId);
+      fireEvent.click(await startButton());
+      await screen.findByText("Fotos werden verarbeitet…");
+      await waitFor(() => expect(request).toHaveBeenCalledWith("screen"));
+      expect(release).not.toHaveBeenCalled();
+      await act(async () => jobs.open());
+      await screen.findByText("Bearbeitung abgeschlossen");
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      Reflect.deleteProperty(navigator, "wakeLock");
+    }
+  });
+
   it("waits until new photos of the vehicle are saved before processing", async () => {
     const vehicleId = await createCompleteVehicle("Upload");
     const { backend, uploads } = getAppServices();
@@ -270,7 +296,7 @@ describe("<ProcessingScreen />", () => {
 
     // 15 saved results – two of them to check (the upscaled one is only a note).
     expect(screen.getByText("15 von 15 Fotos bearbeitet.")).toBeInTheDocument();
-    expect(screen.getByText("Bitte 2 Ergebnisse prüfen – siehe Hinweise in der Liste.")).toBeInTheDocument();
+    expect(screen.getByText("2 Fotos: Geprüft – bitte Ergebnis ansehen (Hinweise in der Liste).")).toBeInTheDocument();
     expect(within(row("Vorne links (45°)")).getByText(mirrored.message)).toBeInTheDocument();
     expect(within(row("Vorne links (45°)")).getByRole("link", { name: "Foto neu aufnehmen: Vorne links (45°)" })).toHaveAttribute(
       "href",
@@ -605,5 +631,49 @@ describe("<ProcessingScreen />", () => {
     renderScreen(await createCompleteVehicle("Storage"));
     expect(await screen.findByText(PROCESSOR_STORAGE_MISSING_MESSAGE)).toBeInTheDocument();
     expect(await startButton()).toBeDisabled();
+  });
+
+  // Last: the checks of this tab keep the refused code's state (photo-checks.ts) – nothing runs after it.
+  it("asks for the access code again when the run continued after a reload is refused", async () => {
+    const vehicleId = await createCompleteVehicle("ResumeDenied");
+    const { authStore, backend } = getAppServices();
+    await act(() => authStore.signIn("anna.meier@autoexperten-rn.de", "Werkstatt#2026"));
+    status = { ...CONNECTED, accessCodeRequired: true };
+    window.localStorage.setItem("ae-photo.processing-access-code", "alt");
+    const photos = await backend.data.listPhotos(vehicleId);
+    const user = authStore.getSnapshot();
+    if (user.status !== "authenticated") throw new Error("signed in expected");
+    // The run was going on when the page was reloaded.
+    storeRun({
+      userId: user.user.id,
+      vehicleId,
+      preset: "autoexperten_standard",
+      reprocess: false,
+      startedAt: new Date().toISOString(),
+      items: photos.slice(0, 2).map((photo) => ({
+        photoId: photo.id,
+        shotKey: photo.shotKey,
+        title: photo.title,
+        shotOrder: photo.shotOrder,
+        treatment: "showroom" as const,
+        status: "open" as const,
+        error: null,
+        errorCode: null,
+        warnings: [],
+      })),
+    });
+    vi.mocked(processPhoto).mockRejectedValue(
+      new AccessCodeRequiredError(401, "unauthorized", { userMessage: "Der Zugangscode ist ungültig." }),
+    );
+    try {
+      renderScreen(vehicleId);
+      // Not silently back to the style selection: the reason and the code entry.
+      expect(await screen.findByText("Der Zugangscode ist ungültig.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Speichern & erneut versuchen" })).toBeInTheDocument();
+      expect(window.localStorage.getItem("ae-photo.processing-access-code")).toBeNull();
+    } finally {
+      await act(() => authStore.signOut());
+      window.localStorage.removeItem("ae-photo.processing-access-code");
+    }
   });
 });

@@ -22,11 +22,20 @@ import { isOlderThanSavedPhoto } from "@/lib/photos/capture-order";
 import { buildPhotoSlots, isSlotCaptured, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { storeAccessCode } from "@/lib/processing/access-code-storage";
 import { photoChecks, type PhotoCheck } from "@/lib/processing/photo-checks";
-import { autoCheckOffMessage, checkResultMessage, getPhotoCheckState } from "@/lib/processing/shot-check";
+import {
+  autoCheckOffMessage,
+  checkResultMessage,
+  getPhotoCheckState,
+  isCaptureRejected,
+  isPassThroughCategory,
+  passThroughState,
+  retakesLeftMessage,
+} from "@/lib/processing/shot-check";
 import {
   getAdjacentShotKey,
   getFirstMissingShotKey,
   getNextShotKeyAfterCapture,
+  getRetakeContinuation,
 } from "@/lib/shots/shot-progress";
 import { readShootingTipsPrefs, shouldShowShootingTips, writeShootingTipsPrefs } from "@/lib/shots/shooting-guide";
 import { getOrderedShots, getShot, type ShotDefinition, type ShotTemplate } from "@/lib/shots/shot-template";
@@ -35,7 +44,7 @@ import { CameraErrorPanel } from "./CameraErrorPanel";
 import { CameraOverlay } from "./CameraOverlay";
 import { CapturePreview } from "./CapturePreview";
 import { CaptureControls } from "./CaptureControls";
-import { CheckBanner, ShotCheckChip, type CheckBannerState } from "./CheckBanner";
+import { CheckStatusDetails, CheckStatusLine, checkStatusContent, type CheckBannerState } from "./CheckBanner";
 import { InstructionPanel } from "./InstructionPanel";
 import { RotatePhonePrompt } from "./RotatePhonePrompt";
 import { ShootingTipsSheet } from "./ShootingTips";
@@ -44,6 +53,8 @@ import { ShotProgress } from "./ShotProgress";
 interface PreviewState {
   url: string;
   shot: ShotDefinition;
+  /** Capture time (ISO) of the photo previewed. */
+  takenAt: string;
   warnings: CaptureQualityWarning[];
   nextKey: string | null;
 }
@@ -78,8 +89,8 @@ function leaveCamera(router: Router, href: string) {
   else router.replace(href);
 }
 
-/** How long the banner of a finished check stays (ms): a rejection longer than an OK. */
-const CHECK_BANNER_MS = { ok: 3_500, retake: 9_000, error: 6_000 } as const;
+/** How long a banner stays in the check status line (ms): a rejection longer than an OK. */
+const CHECK_BANNER_MS = { ok: 3_500, hint: 6_000, retake: 9_000, error: 6_000, retakes_left: 4_000 } as const;
 
 /**
  * The banner for a finished check of the camera's vehicle – null when the
@@ -90,10 +101,14 @@ function bannerFor(check: PhotoCheck, slots: readonly PhotoSlot[]): CheckBannerS
   if (!slot) return null;
   if (slot.pending && slot.pending.id !== check.photoId) return null;
   if (slot.photo && slot.photo.id !== check.photoId && isOlderThanSavedPhoto(check.takenAt, slot.photo)) return null;
-  const state = getPhotoCheckState(check);
-  const text = checkResultMessage(slot, state);
-  if (!text || (state.kind !== "ok" && state.kind !== "retake" && state.kind !== "error")) return null;
-  return { id: `${check.photoId}-${check.status}`, shotKey: slot.key, kind: state.kind, text };
+  // Interior and detail shots are never checked: nothing to report unless the file was refused.
+  const checked = getPhotoCheckState(check);
+  const state = isPassThroughCategory(slot.category) ? passThroughState(checked, true) : checked;
+  const message = checkResultMessage(slot, state);
+  if (!message || (state.kind !== "ok" && state.kind !== "retake" && state.kind !== "error")) return null;
+  // A result with a processor hint is not a plain "passt": amber, like its segment.
+  const kind = state.kind === "ok" && state.hint ? "hint" : state.kind;
+  return { id: `${check.photoId}-${check.status}`, shotKey: slot.key, kind, ...message };
 }
 
 const UNKNOWN_SHOT_HINT = "Diese Aufnahme gibt es in der Kamera nicht. Es geht mit den Pflichtfotos weiter.";
@@ -138,6 +153,8 @@ export function CameraCapture({
   const [preview, setPreview] = useState<PreviewState | null>(null);
   /** Result of the last finished automatic check (shown briefly). */
   const [banner, setBanner] = useState<CheckBannerState | null>(null);
+  /** The check status line whose full text is open (CheckStatusContent.id). */
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showCheckInfo, setShowCheckInfo] = useState(false);
   /**
    * "Tipps für perfekte Fotos": opens by itself once per device when the camera
@@ -187,7 +204,13 @@ export function CameraCapture({
   const capturedCount = capturedKeys.size;
   const remainingCount = shots.length - capturedCount;
   /** Shots the automatic check rejected (template order). */
-  const retakeKeys = slots.filter((slot) => checkStates.get(slot.key)?.kind === "retake").map((slot) => slot.key);
+  const retakeKeys = useMemo(
+    () => slots.filter((slot) => checkStates.get(slot.key)?.kind === "retake").map((slot) => slot.key),
+    [slots, checkStates],
+  );
+  /** The rejected shots and the checks as shown right now, for finishing a preview (see completePreview). */
+  const retakeKeysRef = useRef(retakeKeys);
+  const checksRef = useRef(checkSnapshot.checks);
   const checkOffMessage = autoCheckOffMessage(checkSnapshot.availability);
 
   const completePreview = useCallback(
@@ -195,14 +218,40 @@ export function CameraCapture({
       setPreview(null);
       if (returnTo) {
         leaveCamera(router, exitHref);
-      } else if (state.nextKey) {
-        setSelectedKey(state.nextKey);
-      } else {
-        toast.success("Alle Pflichtfotos aufgenommen. Bitte prüfen Sie die Fotos.");
-        leaveCamera(router, reviewHref);
+        return;
       }
+      if (state.nextKey) {
+        setSelectedKey(state.nextKey);
+        return;
+      }
+      // No shot is missing: on to the next shot the check rejected – the camera
+      // is left only when none is red any more. The shots red right now count,
+      // the current one only if the photo just taken was rejected already (not
+      // the one it replaced). Said in the header's status line, never over the
+      // framing guide.
+      const rejectedAgain = isCaptureRejected(checksRef.current.values(), {
+        vehicleId: vehicle.id,
+        shotKey: state.shot.key,
+        takenAt: state.takenAt,
+      });
+      const retakes = retakeKeysRef.current.filter((key) => key !== state.shot.key || rejectedAgain);
+      const next = getRetakeContinuation(template, retakes, state.shot.key);
+      if (next) {
+        setExpandedId(null);
+        setBanner({
+          id: `retakes-left:${next.key}:${next.left}`,
+          shotKey: next.key,
+          kind: "retakes_left",
+          label: retakesLeftMessage(next.left),
+          detail: null,
+        });
+        setSelectedKey(next.key);
+        return;
+      }
+      toast.success("Alle Pflichtfotos aufgenommen. Bitte prüfen Sie die Fotos.");
+      leaveCamera(router, reviewHref);
     },
-    [returnTo, exitHref, reviewHref, router, toast],
+    [returnTo, exitHref, reviewHref, router, toast, template, vehicle.id],
   );
 
   // Show the captured photo briefly, then advance automatically.
@@ -226,6 +275,11 @@ export function CameraCapture({
     slotsRef.current = slots;
   }, [slots]);
 
+  useLayoutEffect(() => {
+    retakeKeysRef.current = retakeKeys;
+    checksRef.current = checkSnapshot.checks;
+  }, [retakeKeys, checkSnapshot.checks]);
+
   // A finished automatic check of this vehicle shows a short banner (while the camera is shown).
   useEffect(
     () =>
@@ -237,27 +291,18 @@ export function CameraCapture({
     [vehicle.id],
   );
 
-  // The checks are on again (connection back, code entered, processor answering):
-  // photos of this vehicle taken while they were off are checked now.
-  const availabilityRef = useRef(checkSnapshot.availability);
-  useEffect(() => {
-    const previous = availabilityRef.current;
-    availabilityRef.current = checkSnapshot.availability;
-    if (checkSnapshot.availability === "on" && previous !== "on" && previous !== "unknown") {
-      void photoChecks.checkVehicle(vehicle.id);
-    }
-  }, [checkSnapshot.availability, vehicle.id]);
-
   // Shown by itself once per device – also when the camera is left without closing the tips.
   useEffect(() => {
     if (tips === "auto") writeShootingTipsPrefs({ autoShown: true });
   }, [tips]);
 
+  // The banner stays while its full text is open.
+  const bannerOpen = banner !== null && expandedId === `banner:${banner.id}`;
   useEffect(() => {
-    if (!banner) return;
+    if (!banner || bannerOpen) return;
     const timer = setTimeout(() => setBanner(null), CHECK_BANNER_MS[banner.kind]);
     return () => clearTimeout(timer);
-  }, [banner]);
+  }, [banner, bannerOpen]);
 
   // The device's storage is full: told for every capture it refuses – retrying alone never
   // helps, and a capture kept in memory only is lost when the app is closed.
@@ -282,6 +327,7 @@ export function CameraCapture({
       setPreview(null);
       setFlashKey(0);
       setBanner(null);
+      setExpandedId(null);
       setShowCheckInfo(false);
       // The tips stay: their dialog closes while the camera is hidden and opens again with it.
     };
@@ -302,6 +348,9 @@ export function CameraCapture({
     // Keep this shot selected while it is saved and previewed (the background
     // upload may otherwise change the auto-selected "first missing" shot).
     setSelectedKey(target.key);
+    // The real capture time ("Aufgenommen am"); which photo of the shot is
+    // the current one follows src/lib/photos/capture-order.ts.
+    const takenAt = new Date().toISOString();
     try {
       // Persisted locally first – never lost if the upload fails.
       await uploads.enqueue({
@@ -310,9 +359,7 @@ export function CameraCapture({
         shotOrder: target.order,
         title: target.title,
         file,
-        // The real capture time ("Aufgenommen am"); which photo of the shot is
-        // the current one follows src/lib/photos/capture-order.ts.
-        takenAt: new Date().toISOString(),
+        takenAt,
       });
     } catch {
       toast.error("Foto konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.");
@@ -325,7 +372,7 @@ export function CameraCapture({
       if (nextKey && !returnTo) setSelectedKey(nextKey);
       return;
     }
-    setPreview({ url: URL.createObjectURL(file), shot: target, warnings: quality.warnings, nextKey });
+    setPreview({ url: URL.createObjectURL(file), shot: target, takenAt, warnings: quality.warnings, nextKey });
   }
 
   function openFilePicker() {
@@ -376,6 +423,7 @@ export function CameraCapture({
   /** A shot chosen in the progress, banner or retake hint: jump there (the banner closes, so its state shows). */
   function selectShot(key: string) {
     setBanner(null);
+    setExpandedId(null);
     goTo(key);
   }
 
@@ -396,6 +444,9 @@ export function CameraCapture({
   const askToRotate = portraitExterior && !preview;
   const alreadyCaptured = isSlotCaptured(currentSlot);
   const currentCheck = checkStates.get(shot.key) ?? { kind: "none" as const };
+  /** The check status line in the header: a check that just finished, else the current shot's state. */
+  const statusContent = preview ? null : checkStatusContent(banner, shot, currentCheck, alreadyCaptured);
+  const statusExpanded = statusContent !== null && expandedId === statusContent.id;
   const shotHint =
     selectedKey !== null || preview || busy
       ? null
@@ -407,8 +458,12 @@ export function CameraCapture({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-black text-white">
-      {/* Top: step + title + progress. Short viewports (landscape) put the status next to the progress. */}
-      <header className="pt-safe shrink-0 px-3 pb-2 short:grid short:grid-cols-[minmax(0,1fr)_auto] short:items-center short:pb-1">
+      {/*
+        Top: step + title + progress + the check status line. Short viewports
+        (landscape) put the status next to the progress. The check status never
+        sits on the framing guide: its full text opens below the header on tap.
+      */}
+      <header className="pt-safe relative z-30 shrink-0 px-3 pb-2 short:grid short:grid-cols-[minmax(0,1fr)_auto] short:items-center short:pb-1">
         <div className="flex h-14 items-center gap-2 short:col-span-2 short:h-10">
           <Link
             href={exitHref}
@@ -521,7 +576,17 @@ export function CameraCapture({
               <span className="short:hidden">Prüfung aus</span>
             </button>
           )}
+          {/* Portrait: a line of its own (its height kept, so the viewfinder never jumps); short: inline. */}
+          <CheckStatusLine
+            content={statusContent}
+            expanded={statusExpanded}
+            onToggle={() => setExpandedId(statusExpanded ? null : (statusContent?.id ?? null))}
+            className="order-last h-6 basis-full short:order-none short:ml-3 short:max-w-[40vw] short:basis-auto short:empty:hidden"
+          />
         </div>
+        {statusContent && statusExpanded && (
+          <CheckStatusDetails content={statusContent} onSelect={selectShot} onClose={() => setExpandedId(null)} />
+        )}
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col landscape:flex-row">
@@ -543,17 +608,15 @@ export function CameraCapture({
               <CameraOverlay shot={shot} />
               {portraitExterior && <RotatePhonePrompt paused={Boolean(preview)} />}
 
-              {!preview && !banner && (shotHint || alreadyCaptured) && (
+              {/* Only until a shot is chosen (nothing to frame yet while every photo is there). */}
+              {!preview && shotHint && (
                 <div className="pointer-events-none absolute inset-x-3 top-3 flex flex-col items-center gap-2">
-                  {shotHint && (
-                    <p
-                      className="max-w-sm rounded-xl bg-ae-warning px-3 py-1.5 text-center text-xs font-semibold text-black"
-                      role="status"
-                    >
-                      {shotHint}
-                    </p>
-                  )}
-                  {alreadyCaptured && <ShotCheckChip state={currentCheck} />}
+                  <p
+                    className="max-w-sm rounded-xl bg-ae-warning px-3 py-1.5 text-center text-xs font-semibold text-black"
+                    role="status"
+                  >
+                    {shotHint}
+                  </p>
                 </div>
               )}
 
@@ -577,7 +640,6 @@ export function CameraCapture({
               {flashKey > 0 && (
                 <div key={flashKey} className="pointer-events-none absolute inset-0 animate-flash bg-white opacity-0" />
               )}
-              {banner && <CheckBanner banner={banner} onSelect={selectShot} onDismiss={() => setBanner(null)} />}
               {preview && (
                 <CapturePreview
                   url={preview.url}

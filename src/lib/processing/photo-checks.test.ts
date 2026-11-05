@@ -1,11 +1,22 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VehiclePhoto } from "@/lib/domain/types";
 import { AppError } from "@/lib/errors";
 import type { UploadItem } from "@/lib/offline/upload-queue";
 import { AUTOEXPERTEN_STANDARD_TEMPLATE } from "@/lib/shots/shot-template";
 import { ProcessingJobFailedError, processPhoto, type PhotoProcessingResult } from "./photo-processing";
 import { storeAccessCode } from "./access-code-storage";
-import { CHECK_PRESET, MAX_PARALLEL_JOBS, PhotoChecks, knownOutcomeOf, type PhotoCheck } from "./photo-checks";
+import { readJobJournal, recordJob } from "./job-journal";
+import {
+  AVAILABILITY_POLL_MS,
+  CHECK_PRESET,
+  MAX_PARALLEL_JOBS,
+  PhotoChecks,
+  checkOnOpen,
+  isKeptOutcome,
+  knownOutcomeOf,
+  shouldPollAvailability,
+  type PhotoCheck,
+} from "./photo-checks";
 import { AccessCodeRequiredError } from "./processing-client";
 import { ACCESS_CODE_INVALID_CODE } from "./shot-check";
 import type { ProcessingStatus } from "./types";
@@ -14,6 +25,10 @@ import type { ProcessingStatus } from "./types";
 const env = vi.hoisted(() => ({
   photos: [] as unknown[],
   uploaded: [] as ((item: unknown) => void)[],
+  /** The next this many reads of the photo list fail (weak connection). */
+  unreadable: 0,
+  /** The signed-in user. */
+  user: "u_anna",
 }));
 
 vi.mock("@/lib/app-services", () => ({
@@ -21,8 +36,13 @@ vi.mock("@/lib/app-services", () => ({
     backend: {
       mode: "demo",
       data: {
-        listPhotos: async (vehicleId: string) =>
-          (env.photos as { vehicleId: string }[]).filter((photo) => photo.vehicleId === vehicleId),
+        listPhotos: async (vehicleId: string) => {
+          if (env.unreadable > 0) {
+            env.unreadable -= 1;
+            throw new TypeError("Failed to fetch");
+          }
+          return (env.photos as { vehicleId: string }[]).filter((photo) => photo.vehicleId === vehicleId);
+        },
         resolvePhotoUrls: async (photos: unknown[]) =>
           (photos as { id: string }[]).map((photo) => ({
             ...photo,
@@ -39,7 +59,7 @@ vi.mock("@/lib/app-services", () => ({
       },
     },
     authStore: {
-      getSnapshot: () => ({ status: "authenticated", user: { id: "u_anna", email: "anna@autoexperten-rn.de" } }),
+      getSnapshot: () => ({ status: "authenticated", user: { id: env.user, email: `${env.user}@autoexperten-rn.de` } }),
       subscribe: () => () => {},
     },
   }),
@@ -129,6 +149,8 @@ beforeEach(() => {
   status = CONNECTED;
   env.photos = [];
   env.uploaded = [];
+  env.unreadable = 0;
+  env.user = "u_anna";
   window.localStorage.clear();
   vi.mocked(processPhoto).mockReset();
   vi.mocked(processPhoto).mockResolvedValue({ warnings: [] });
@@ -298,12 +320,87 @@ describe("PhotoChecks", () => {
     storeAccessCode(null);
   });
 
-  it("checks a photo again whose check failed (checkVehicle)", async () => {
+  it("never repeats checks in a loop when the processor refuses a code that a cached status did not ask for", async () => {
+    storeAccessCode("ALT");
+    const checks = started();
+    await checks.refreshAvailability(true); // cached: no code needed
+    vi.mocked(processPhoto).mockRejectedValue(new AccessCodeRequiredError(401, "unauthorized"));
+    save(savedPhoto("p_loop_rear", "rear"));
+    await vi.waitFor(() => expect(statusOf(checks, "p_loop_rear")).toBe("error"));
+    await flush();
+    await flush();
+    expect(checks.getSnapshot().availability).toBe("access_code");
+    expect(processPhoto).toHaveBeenCalledTimes(1);
+
+    // A new code: checked once more.
+    vi.mocked(processPhoto).mockResolvedValue({ warnings: [] });
+    storeAccessCode("NEU");
+    await vi.waitFor(() => expect(statusOf(checks, "p_loop_rear")).toBe("ok"));
+    expect(processPhoto).toHaveBeenCalledTimes(2);
+    storeAccessCode(null);
+  });
+
+  it("checks the photos without a check when a page opens – a failed check is not sent again on every visit", async () => {
+    vi.mocked(processPhoto).mockImplementation(async (photo) => {
+      if (photo.id === "p_fail_rear") throw new ProcessingJobFailedError("processing_failed", "Bearbeitung fehlgeschlagen.");
+      return { warnings: [] };
+    });
+    const checks = started();
+    save(savedPhoto("p_fail_rear", "rear"));
+    await vi.waitFor(() => expect(statusOf(checks, "p_fail_rear")).toBe("error"));
+    // Taken while this tab did not follow the uploads (e.g. another device).
+    env.photos = [...(env.photos as VehiclePhoto[]), savedPhoto("p_new_front", "front")];
+    for (let visit = 0; visit < 4; visit += 1) await checks.checkVehicle("veh_1");
+    await vi.waitFor(() => expect(statusOf(checks, "p_new_front")).toBe("ok"));
+    expect(vi.mocked(processPhoto).mock.calls.map(([photo]) => photo.id)).toEqual(["p_fail_rear", "p_new_front"]);
+    expect(statusOf(checks, "p_fail_rear")).toBe("error");
+  });
+
+  it("keeps a failed check after a reload – it is not sent again on every page load, only by 'Fotos bearbeiten'", async () => {
+    vi.mocked(processPhoto).mockRejectedValue(new ProcessingJobFailedError("processing_failed", "Bearbeitung fehlgeschlagen."));
+    const checks = started();
+    save(savedPhoto("p_failed_rear", "rear"));
+    await vi.waitFor(() => expect(statusOf(checks, "p_failed_rear")).toBe("error"));
+
+    for (let load = 0; load < 3; load += 1) {
+      const reloaded = started();
+      expect(reloaded.getSnapshot().checks.get("p_failed_rear")).toMatchObject({
+        status: "error",
+        message: "Bearbeitung fehlgeschlagen.",
+        errorCode: "processing_failed",
+        restored: true,
+      });
+      await reloaded.checkVehicle("veh_1");
+      await flush();
+    }
+    expect(processPhoto).toHaveBeenCalledTimes(1);
+    // Only shown: "Fotos bearbeiten" processes it.
+    const photo = { ...savedPhoto("p_failed_rear", "rear"), urls: { original: "", thumbnail: "", processed: null } };
+    expect(started().knownOutcome(photo, CHECK_PRESET)).toBeNull();
+  });
+
+  it("keeps rejections and failures by the photo, but not a refused access code", () => {
+    expect(isKeptOutcome({ status: "retake", errorCode: "vehicle_cropped" })).toBe(true);
+    expect(isKeptOutcome({ status: "retake", errorCode: null })).toBe(false); // result saved with the photo
+    expect(isKeptOutcome({ status: "error", errorCode: "processing_failed" })).toBe(true);
+    expect(isKeptOutcome({ status: "error", errorCode: null })).toBe(true);
+    expect(isKeptOutcome({ status: "error", errorCode: ACCESS_CODE_INVALID_CODE })).toBe(false);
+    expect(isKeptOutcome({ status: "ok", errorCode: null })).toBe(false);
+  });
+
+  it("repeats a check that could not run when the checks come on again", async () => {
     vi.mocked(processPhoto).mockRejectedValueOnce(new AppError("unknown"));
     const checks = started();
     save(savedPhoto("p_fail_rear", "rear"));
     await vi.waitFor(() => expect(statusOf(checks, "p_fail_rear")).toBe("error"));
     await checks.checkVehicle("veh_1");
+    expect(processPhoto).toHaveBeenCalledTimes(1);
+
+    // The processor was gone for a while and answers again.
+    status = { ...CONNECTED, connected: false, showroomSource: null };
+    await checks.refreshAvailability(true);
+    status = CONNECTED;
+    await checks.refreshAvailability(true);
     await vi.waitFor(() => expect(statusOf(checks, "p_fail_rear")).toBe("ok"));
     expect(processPhoto).toHaveBeenCalledTimes(2);
   });
@@ -319,6 +416,23 @@ describe("PhotoChecks", () => {
     await vi.waitFor(() => expect(statusOf(checks, "p_kept_front")).toBe("ok"));
     expect(checks.getSnapshot().checks.has("p_kept_rear")).toBe(false);
     expect(vi.mocked(processPhoto).mock.calls.map(([photo]) => photo.id)).toEqual(["p_kept_front"]);
+  });
+
+  it("polls the kept job of a check that could not run when a page opens – the photo is not sent again", async () => {
+    const JOB = "0123456789abcdef0123456789abcdef";
+    vi.mocked(processPhoto).mockImplementationOnce(async (_photo, _preset, deps) => {
+      deps.onSubmitted?.(JOB);
+      throw new AppError("network"); // the answer did not arrive, the processor still answers its status
+    });
+    const checks = started();
+    save(savedPhoto("p_lost", "rear"));
+    await vi.waitFor(() => expect(statusOf(checks, "p_lost")).toBe("error"));
+    expect(readJobJournal().map((entry) => entry.jobId)).toEqual([JOB]);
+
+    await checks.checkVehicle("veh_1");
+    await vi.waitFor(() => expect(statusOf(checks, "p_lost")).toBe("ok"));
+    expect(processPhoto).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(processPhoto).mock.calls[1]?.[2].resumeJobId).toBe(JOB);
   });
 
   it("never runs more than MAX_PARALLEL_JOBS processings together with a run", async () => {
@@ -477,5 +591,301 @@ describe("knownOutcomeOf", () => {
     expect(knownOutcomeOf(photo, CHECK_PRESET, { ...rejected, photoId: "p_other" })).toBeNull();
     expect(knownOutcomeOf(photo, CHECK_PRESET, { ...rejected, status: "error", errorCode: null })).toBeNull();
     expect(knownOutcomeOf(photo, CHECK_PRESET, { ...rejected, status: "checking" })).toBeNull();
+  });
+});
+
+describe("PhotoChecks – jobs survive a reload", () => {
+  const JOB = "0123456789abcdef0123456789abcdef";
+
+  function journalEntry(photo: VehiclePhoto, jobId = JOB, userId = "u_anna") {
+    return {
+      userId,
+      vehicleId: photo.vehicleId,
+      photoId: photo.id,
+      jobId,
+      preset: CHECK_PRESET,
+      startedAt: new Date().toISOString(),
+      shotKey: photo.shotKey,
+      shotOrder: photo.shotOrder,
+      title: photo.title,
+      takenAt: photo.takenAt,
+    };
+  }
+
+  it("keeps the job id from the submit until the outcome is known", async () => {
+    const job = gate();
+    vi.mocked(processPhoto).mockImplementation(async (_photo, _preset, deps) => {
+      deps.onSubmitted?.(JOB);
+      await job.opened;
+      return { warnings: [] };
+    });
+    const checks = started();
+    save(savedPhoto("p_front", "front"));
+    await vi.waitFor(() => expect(readJobJournal()).toHaveLength(1));
+    expect(readJobJournal()[0]).toMatchObject({
+      userId: "u_anna",
+      photoId: "p_front",
+      jobId: JOB,
+      vehicleId: "veh_1",
+      preset: CHECK_PRESET,
+    });
+    job.open();
+    await vi.waitFor(() => expect(statusOf(checks, "p_front")).toBe("ok"));
+    expect(readJobJournal()).toEqual([]);
+  });
+
+  it("resumes a check after a reload by polling its job instead of sending the photo again", async () => {
+    const photo = savedPhoto("p_rear_left", "rear_left_45");
+    env.photos = [photo];
+    recordJob(journalEntry(photo));
+    vi.mocked(processPhoto).mockRejectedValue(new ProcessingJobFailedError("vehicle_cropped", "Angeschnitten."));
+    const reloaded = started();
+    // Shown as being checked right away (not "aufgenommen" without a state).
+    expect(statusOf(reloaded, "p_rear_left")).toBe("waiting");
+    await vi.waitFor(() => expect(statusOf(reloaded, "p_rear_left")).toBe("retake"));
+    expect(processPhoto).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(processPhoto).mock.calls[0]?.[2].resumeJobId).toBe(JOB);
+    expect(reloaded.getSnapshot().checks.get("p_rear_left")).toMatchObject({ errorCode: "vehicle_cropped" });
+    expect(readJobJournal()).toEqual([]);
+  });
+
+  it("resumes only the signed-in user's jobs – another user's are forgotten, never polled", async () => {
+    const photo = savedPhoto("p_ben", "rear_left_45");
+    env.photos = [photo];
+    recordJob(journalEntry(photo, JOB, "u_ben"));
+    const reloaded = started(); // Anna is signed in
+    await flush();
+    expect(reloaded.getSnapshot().checks.has("p_ben")).toBe(false);
+    expect(processPhoto).not.toHaveBeenCalled();
+    expect(readJobJournal()).toEqual([]);
+
+    // Ben's job is not polled for Anna either when she opens the vehicle: her check sends the photo.
+    recordJob(journalEntry(photo, JOB, "u_ben"));
+    await reloaded.checkVehicle("veh_1");
+    await vi.waitFor(() => expect(statusOf(reloaded, "p_ben")).toBe("ok"));
+    expect(vi.mocked(processPhoto).mock.calls[0]?.[2].resumeJobId).toBeNull();
+  });
+
+  it("keeps the job when the photos cannot be read right after a reload – and polls it on the next page open", async () => {
+    const photo = savedPhoto("p_weak", "rear_left_45");
+    env.photos = [photo];
+    recordJob(journalEntry(photo));
+    env.unreadable = 1;
+    const reloaded = started();
+    await vi.waitFor(() => expect(statusOf(reloaded, "p_weak")).toBe("error"));
+    expect(processPhoto).not.toHaveBeenCalled();
+    expect(readJobJournal().map((entry) => entry.jobId)).toEqual([JOB]);
+
+    await reloaded.checkVehicle("veh_1");
+    await vi.waitFor(() => expect(statusOf(reloaded, "p_weak")).toBe("ok"));
+    expect(processPhoto).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(processPhoto).mock.calls[0]?.[2].resumeJobId).toBe(JOB);
+    expect(readJobJournal()).toEqual([]);
+  });
+
+  it("checks a new capture again on the next page open when its photo could not be read (nothing was sent)", async () => {
+    const checks = started();
+    env.unreadable = 1;
+    save(savedPhoto("p_unread", "rear"));
+    await vi.waitFor(() => expect(checks.getSnapshot().captures.get("veh_1/rear")?.photoId).toBe("p_unread"));
+    await vi.waitFor(() => expect(checks.getSnapshot().checks.has("p_unread")).toBe(false));
+    expect(processPhoto).not.toHaveBeenCalled();
+    await checks.checkVehicle("veh_1");
+    await vi.waitFor(() => expect(statusOf(checks, "p_unread")).toBe("ok"));
+    expect(processPhoto).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets the check wait with its job when neither the photos nor the processor can be reached", async () => {
+    const photo = savedPhoto("p_down", "rear_left_45");
+    env.photos = [photo];
+    recordJob(journalEntry(photo));
+    env.unreadable = 1;
+    const reloaded = started();
+    // The processor stops answering while the photos are read.
+    status = { ...CONNECTED, connected: false, showroomSource: null };
+    await vi.waitFor(() => expect(reloaded.getSnapshot().availability).toBe("no_processor"));
+    await flush();
+    expect(statusOf(reloaded, "p_down")).toBe("waiting");
+    expect(processPhoto).not.toHaveBeenCalled();
+    expect(readJobJournal().map((entry) => entry.jobId)).toEqual([JOB]);
+  });
+
+  it("forgets every kept job when the session ends", async () => {
+    const photo = savedPhoto("p_end", "rear_left_45");
+    env.photos = [photo];
+    status = { ...CONNECTED, connected: false, showroomSource: null };
+    recordJob(journalEntry(photo));
+    const reloaded = started();
+    await vi.waitFor(() => expect(reloaded.getSnapshot().availability).toBe("no_processor"));
+    reloaded.stopAll();
+    expect(readJobJournal()).toEqual([]);
+    expect(reloaded.getSnapshot().checks.has("p_end")).toBe(false);
+  });
+
+  it("drops a resumed job whose photo was replaced meanwhile", async () => {
+    const old = savedPhoto("p_old_front", "front", "2026-11-03T10:00:00.000Z");
+    env.photos = [savedPhoto("p_new_front", "front", "2026-11-03T10:05:00.000Z")];
+    recordJob(journalEntry(old));
+    const reloaded = started();
+    await vi.waitFor(() => expect(reloaded.getSnapshot().checks.has("p_old_front")).toBe(false));
+    expect(processPhoto).not.toHaveBeenCalled();
+    expect(readJobJournal()).toEqual([]);
+  });
+
+  it("keeps the job while the processor is not reachable and polls it once it is back", async () => {
+    const photo = savedPhoto("p_sleep", "left_side");
+    vi.mocked(processPhoto).mockImplementationOnce(async (_photo, _preset, deps) => {
+      deps.onSubmitted?.(JOB);
+      status = { ...CONNECTED, connected: false, showroomSource: null };
+      throw new AppError("network");
+    });
+    const checks = started();
+    save(photo);
+    await vi.waitFor(() => expect(checks.getSnapshot().availability).toBe("no_processor"));
+    await vi.waitFor(() => expect(statusOf(checks, "p_sleep")).toBe("waiting"));
+    expect(readJobJournal().map((entry) => entry.jobId)).toEqual([JOB]);
+
+    status = CONNECTED;
+    await checks.refreshAvailability(true);
+    await vi.waitFor(() => expect(statusOf(checks, "p_sleep")).toBe("ok"));
+    expect(vi.mocked(processPhoto).mock.calls[1]?.[2].resumeJobId).toBe(JOB);
+  });
+
+  it("forgets the job of a photo a retake replaced", async () => {
+    const job = gate();
+    vi.mocked(processPhoto).mockImplementation(async (photo, _preset, deps) => {
+      if (photo.id === "p_first") {
+        deps.onSubmitted?.(JOB);
+        await new Promise<void>((resolve, reject) => {
+          void job.opened.then(resolve);
+          deps.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        });
+      }
+      return { warnings: [] };
+    });
+    const checks = started();
+    save(savedPhoto("p_first", "front", "2026-11-03T10:00:00.000Z"));
+    await vi.waitFor(() => expect(readJobJournal()).toHaveLength(1));
+    save(savedPhoto("p_second", "front", "2026-11-03T10:02:00.000Z"));
+    await vi.waitFor(() => expect(statusOf(checks, "p_second")).toBe("ok"));
+    expect(readJobJournal()).toEqual([]);
+  });
+
+  it("tolerates a storage that throws: the check still runs", async () => {
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("full", "QuotaExceededError");
+    });
+    try {
+      vi.mocked(processPhoto).mockImplementation(async (_photo, _preset, deps) => {
+        deps.onSubmitted?.(JOB);
+        return { warnings: [] };
+      });
+      const checks = started();
+      save(savedPhoto("p_blocked", "rear"));
+      await vi.waitFor(() => expect(statusOf(checks, "p_blocked")).toBe("ok"));
+    } finally {
+      getItem.mockRestore();
+      setItem.mockRestore();
+    }
+  });
+});
+
+describe("PhotoChecks – availability while the checks are off", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const statusRequests = () =>
+    vi.mocked(fetch).mock.calls.filter(([input]) => String(input).endsWith("/api/processing-status")).length;
+
+  it("asks the processor again every minute while a page needs the checks – and checks what waited", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    status = { ...CONNECTED, connected: false, showroomSource: null };
+    const checks = started();
+    save(savedPhoto("p_slept", "rear"));
+    await vi.waitFor(() => expect(checks.getSnapshot().availability).toBe("no_processor"));
+    const unwatch = checks.watch();
+    const before = statusRequests();
+    vi.advanceTimersByTime(AVAILABILITY_POLL_MS);
+    await vi.waitFor(() => expect(statusRequests()).toBe(before + 1));
+    await flush();
+    expect(checks.getSnapshot().availability).toBe("no_processor");
+
+    // The dealer's PC is back.
+    status = CONNECTED;
+    vi.advanceTimersByTime(AVAILABILITY_POLL_MS);
+    await vi.waitFor(() => expect(statusOf(checks, "p_slept")).toBe("ok"));
+    // On again: no more polling.
+    const settledRequests = statusRequests();
+    vi.advanceTimersByTime(3 * AVAILABILITY_POLL_MS);
+    await flush();
+    expect(statusRequests()).toBe(settledRequests);
+    unwatch();
+  });
+
+  it("does not poll without a page that needs the checks, or while the tab is hidden", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    status = { ...CONNECTED, connected: false, showroomSource: null };
+    const checks = started();
+    await checks.refreshAvailability(true);
+    const before = statusRequests();
+    vi.advanceTimersByTime(2 * AVAILABILITY_POLL_MS);
+    await flush();
+    expect(statusRequests()).toBe(before);
+
+    const unwatch = checks.watch();
+    unwatch();
+    vi.advanceTimersByTime(2 * AVAILABILITY_POLL_MS);
+    await flush();
+    expect(statusRequests()).toBe(before);
+
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    try {
+      const hiddenWatch = checks.watch();
+      vi.advanceTimersByTime(2 * AVAILABILITY_POLL_MS);
+      await flush();
+      expect(statusRequests()).toBe(before);
+      hiddenWatch();
+    } finally {
+      visibility.mockRestore();
+    }
+  });
+});
+
+describe("checkOnOpen", () => {
+  const photo = savedPhoto("p_front", "front");
+
+  it("checks a template photo without a result, a check or a stored rejection", () => {
+    expect(checkOnOpen(photo, AUTOEXPERTEN_STANDARD_TEMPLATE, undefined, false)).toBe("check");
+  });
+
+  it("never sends again a photo whose check ended – only polls a job that is still kept", () => {
+    for (const state of ["waiting", "checking", "ok", "retake", "error"] as const) {
+      expect(checkOnOpen(photo, AUTOEXPERTEN_STANDARD_TEMPLATE, { status: state }, false)).toBeNull();
+    }
+    expect(checkOnOpen(photo, AUTOEXPERTEN_STANDARD_TEMPLATE, { status: "error" }, true)).toBe("resume");
+    expect(checkOnOpen(photo, AUTOEXPERTEN_STANDARD_TEMPLATE, { status: "retake" }, true)).toBeNull();
+  });
+
+  it("skips processed photos, extra photos and the demo samples' drawings", () => {
+    const template = AUTOEXPERTEN_STANDARD_TEMPLATE;
+    expect(checkOnOpen({ ...photo, processedStoragePath: "veh_1/front/p.jpg" }, template, undefined, false)).toBeNull();
+    expect(checkOnOpen(savedPhoto("p_extra", "extra_01"), template, undefined, false)).toBeNull();
+    expect(checkOnOpen({ ...photo, originalStoragePath: "static:/demo/shots/front.svg" }, template, undefined, false)).toBeNull();
+  });
+});
+
+describe("shouldPollAvailability", () => {
+  it("polls only while the processor is unreachable or the device offline, on a shown page in a visible tab", () => {
+    expect(shouldPollAvailability("no_processor", true, true)).toBe(true);
+    expect(shouldPollAvailability("offline", true, true)).toBe(true);
+    expect(shouldPollAvailability("no_processor", false, true)).toBe(false);
+    expect(shouldPollAvailability("no_processor", true, false)).toBe(false);
+    for (const availability of ["on", "unknown", "access_code"] as const) {
+      expect(shouldPollAvailability(availability, true, true)).toBe(false);
+    }
   });
 });

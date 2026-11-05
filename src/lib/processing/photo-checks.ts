@@ -30,12 +30,38 @@
  * - A check that could not run because the processor is gone (connection,
  *   5xx, not connected) waits again instead of reporting an error; the
  *   camera then shows that the check is off.
- * - Rejections are kept with the photo (processPhoto → data.recordPhotoRejection,
- *   so other devices show them and do not check the photo again by
- *   themselves) and on this device (localStorage, best effort) so the red
- *   state survives a reload. They are only shown: a stored rejection never
- *   stops "Fotos bearbeiten" from sending the photo again (the quality gate
- *   may have changed meanwhile); results are saved with the photo anyway.
+ * - Rejections are kept with the photo (processPhoto → data.recordPhotoRejection:
+ *   `rejected:<code>` while it has no result), so every device shows them
+ *   and does not check the photo again by itself. Rejections and failed
+ *   checks are also kept on this device (localStorage, best effort) so the
+ *   red state – and "Prüfung nicht möglich" – survives a reload, and a failed
+ *   photo is not sent again on every page load. They are only shown: a
+ *   stored outcome never stops "Fotos bearbeiten" from sending the photo
+ *   again (the quality gate may have changed meanwhile); results are saved
+ *   with the photo anyway. A refused access code is not kept (it is about
+ *   the code, not the photo).
+ * - Jobs survive a reload: every submitted job is kept on this device
+ *   (job-journal.ts) until its outcome is known. After a reload or a
+ *   discarded tab its photo is checked again – by polling that job, not by
+ *   sending the photo a second time; a job the processor no longer knows
+ *   (restarted) is submitted once more (processPhoto). A job whose answer
+ *   could not be fetched (connection, processor asleep, the photos could not
+ *   be read) stays known and is polled again when the photo is checked
+ *   again. Only the jobs of the signed-in user are resumed; signing out
+ *   forgets them.
+ * - Opening the camera, "Fotos überprüfen" or the vehicle page checks the
+ *   template photos without a result, a check or a stored rejection
+ *   (`checkOnOpen`). A check that ended with an error is NOT sent again on
+ *   every visit (a deterministic failure would cost the dealer's PC a job
+ *   per page view): it is repeated when the checks come on again, and
+ *   "Fotos bearbeiten" processes it – unless its job is still kept on the
+ *   device, which is only polled.
+ * - While the checks are off because the processor is not reachable (or the
+ *   device is offline), its status is asked again every
+ *   AVAILABILITY_POLL_MS – only while a page that needs the checks is shown
+ *   (`watch`) and the tab is visible – so photos taken while the dealer's PC
+ *   slept are checked once it is back.
+ * - Placeholder drawings of the demo sample vehicles are never sent.
  */
 import { getAppServices } from "@/lib/app-services";
 import type { AuthState } from "@/lib/auth/auth-store";
@@ -43,11 +69,13 @@ import {
   isProcessingPresetId,
   type ProcessingPresetId,
   type ProcessingWarning,
+  type VehiclePhoto,
   type VehiclePhotoWithUrls,
 } from "@/lib/domain/types";
 import { toUserMessage } from "@/lib/errors";
 import type { UploadItem } from "@/lib/offline/upload-queue";
 import { isOlderCapture } from "@/lib/photos/capture-order";
+import type { ShotTemplate } from "@/lib/shots/shot-template";
 import { markProcessedIfDone } from "@/lib/workflow/vehicle-workflow";
 import { readStoredAccessCode, storeAccessCode, subscribeAccessCode } from "./access-code-storage";
 import {
@@ -56,9 +84,16 @@ import {
   type PhotoProcessingResult,
   type PhotoStep,
 } from "./photo-processing";
-import { AccessCodeRequiredError, ProcessingNotConnectedError, fetchProcessingStatus } from "./processing-client";
+import { clearJobJournal, findJob, forgetJob, readJobJournal, recordJob } from "./job-journal";
+import {
+  AccessCodeRequiredError,
+  ProcessingNotConnectedError,
+  fetchProcessingStatus,
+  jobMayStillRun,
+} from "./processing-client";
 import { hasRetakeWarning, storedRejection, warningsToCheck, getWarningKind } from "./processing-warnings";
 import { needsRetake, retakeFallbackMessage } from "./quality-gate";
+import { isPlaceholderPhoto } from "./run-blockers";
 import { ACCESS_CODE_INVALID_CODE } from "./shot-check";
 import { getShotTreatment } from "./shot-treatment";
 import { canStartProcessing, type ProcessingStatus } from "./types";
@@ -75,11 +110,15 @@ export const MAX_PARALLEL_JOBS = 3;
 /** The processor status is asked again after this long. */
 const STATUS_MAX_AGE_MS = 30_000;
 
+/** While the checks are off (processor not reachable, offline), its status is asked again this often. */
+export const AVAILABILITY_POLL_MS = 60_000;
+
 const STORAGE_KEY = "ae-photo.photo-checks.v1";
 /** Rejections kept on the device (oldest dropped first). */
 const MAX_STORED = 300;
 
 const GENERIC_FAILURE = "Bearbeitung fehlgeschlagen.";
+const PHOTOS_UNREADABLE_MESSAGE = "Die Fotos konnten gerade nicht geladen werden.";
 const ACCESS_CODE_INVALID_MESSAGE = "Der Zugangscode ist falsch – bitte neu eingeben.";
 
 /**
@@ -167,10 +206,17 @@ interface SharedJob {
   steps: Set<(step: PhotoStep, progress?: number) => void>;
 }
 
-type StoredRejection = Pick<
+/** A rejection or a failed check kept on this device (`status` missing: a rejection kept before failures were). */
+type StoredOutcome = Pick<
   PhotoCheck,
   "photoId" | "vehicleId" | "shotKey" | "shotOrder" | "title" | "takenAt" | "preset" | "message" | "errorCode"
->;
+> & { status?: "retake" | "error" };
+
+/** Whether the outcome of a check is kept on this device (pure): a rejection by its code, or a failed check. */
+export function isKeptOutcome(check: Pick<PhotoCheck, "status" | "errorCode">): boolean {
+  if (check.status === "retake") return check.errorCode !== null;
+  return check.status === "error" && check.errorCode !== ACCESS_CODE_INVALID_CODE;
+}
 
 const EMPTY: PhotoChecksSnapshot = { availability: "unknown", checks: new Map(), captures: new Map() };
 
@@ -193,9 +239,58 @@ function sessionUser(auth: AuthState): string | null | undefined {
   return auth.status === "authenticated" ? auth.user.id : null;
 }
 
+/** The signed-in user's id right now (null: signed out or still unknown). */
+function signedInUser(): string | null {
+  return sessionUser(getAppServices().authStore.getSnapshot()) ?? null;
+}
+
 /** Key of a shot of a vehicle (`captures`). */
 export function shotSlotKey(check: Pick<PhotoCheck, "vehicleId" | "shotKey">): string {
   return `${check.vehicleId}/${check.shotKey}`;
+}
+
+/**
+ * Whether the processor status is asked again every AVAILABILITY_POLL_MS
+ * (pure): while the checks are off because the configured processor is not
+ * reachable ("unreachable": PC asleep, restarting) or the device is offline
+ * – only while a page that needs the checks is shown (`watched`) and the tab
+ * is visible. A deployment without a processor ("no_processor") does not get
+ * one by waiting, and a missing access code needs the employee, not a poll.
+ */
+export function shouldPollAvailability(availability: AutoCheckAvailability, watched: boolean, visible: boolean): boolean {
+  return watched && visible && (availability === "unreachable" || availability === "offline");
+}
+
+/**
+ * What opening a page that shows the checks (camera, "Fotos überprüfen",
+ * vehicle page) does with one of the vehicle's photos (pure):
+ * - "check":  a template photo without a result, a check or a stored
+ *             rejection (`rejected:<code>` kept with the photo, e.g. by a
+ *             check on another device) – it is checked
+ * - "resume": its check could not run, but its job is still kept on this
+ *             device (`jobKept`, e.g. the photos could not be read right
+ *             after a reload) – that job is polled, the photo is not sent again
+ * - null:     nothing to do – also for a check that ended with an error and
+ *             has no job any more: it is not sent again on every visit (it is
+ *             repeated when the checks come on again, or by "Fotos bearbeiten")
+ * Placeholder drawings of the demo samples are never sent.
+ */
+export function checkOnOpen(
+  photo: Pick<VehiclePhoto, "shotKey" | "processedStoragePath" | "originalStoragePath" | "processingWarnings">,
+  template: ShotTemplate,
+  check: Pick<PhotoCheck, "status"> | undefined,
+  jobKept: boolean,
+): "check" | "resume" | null {
+  if (getShotTreatment(template, photo.shotKey) === null || photo.processedStoragePath) return null;
+  if (isPlaceholderPhoto(photo)) return null;
+  // Rejected already (kept with the photo): not sent again by itself – "Fotos bearbeiten" still can.
+  if (storedRejection(photo) !== null) return null;
+  if (!check) return "check";
+  return check.status === "error" && jobKept ? "resume" : null;
+}
+
+function documentVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState !== "hidden";
 }
 
 /**
@@ -266,6 +361,16 @@ export class PhotoChecks {
   private status: ProcessingStatus | null = null;
   private statusAt = 0;
   private statusRequest: Promise<ProcessingStatus | null> | null = null;
+  /** Pages shown right now that need the checks (`watch`). */
+  private watchers = 0;
+  /**
+   * The processor refused the stored access code in this tab: the checks stay
+   * off until a code is entered again (or the user changes) – also while a
+   * status asked before (cached) does not ask for one, so a refused code never
+   * repeats checks in a loop.
+   */
+  private codeRefused = false;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
 
   /* ---------- useSyncExternalStore API ---------- */
 
@@ -288,25 +393,40 @@ export class PhotoChecks {
 
   /**
    * Starts listening for saved captures (once per tab; browser only):
-   * restores the rejections stored on this device and follows the
-   * connection, the access code and the signed-in user.
+   * restores the rejections stored on this device, resumes the jobs
+   * submitted before a reload and follows the connection, the access code,
+   * the tab's visibility and the signed-in user.
    */
   start(): void {
     if (this.started || typeof window === "undefined") return;
     this.started = true;
     const { uploads, authStore } = getAppServices();
     this.restore();
+    let user = sessionUser(authStore.getSnapshot());
+    // Only the signed-in user's jobs are resumed – once the user is known.
+    if (typeof user === "string") this.resumeJobs(user);
     uploads.onUploaded((item) => void this.captureSaved(item));
     window.addEventListener("online", () => void this.refreshAvailability(true));
     window.addEventListener("offline", () => this.setAvailability("offline"));
-    subscribeAccessCode(() => void this.refreshAvailability());
-    let user = sessionUser(authStore.getSnapshot());
+    document.addEventListener("visibilitychange", () => {
+      // Back on screen while the checks are off: ask right away, then every minute.
+      if (documentVisible() && shouldPollAvailability(this.snapshot.availability, this.watchers > 0, true)) {
+        void this.refreshAvailability(true);
+      }
+      this.updatePolling();
+    });
+    subscribeAccessCode(() => {
+      // A new code: it is tried (the refusal was of the code before).
+      if (readStoredAccessCode()) this.codeRefused = false;
+      void this.refreshAvailability();
+    });
     authStore.subscribe(() => {
       const next = sessionUser(authStore.getSnapshot());
       if (next === undefined || next === user) return;
       const changed = user !== undefined;
       user = next;
       if (changed) this.stopAll();
+      if (typeof next === "string") this.resumeJobs(next);
     });
   }
 
@@ -322,7 +442,7 @@ export class PhotoChecks {
     const status = await this.processingStatus(force);
     let availability: AutoCheckAvailability = "on";
     if (!canStartProcessing(status)) availability = unavailableReason(status);
-    else if (status?.accessCodeRequired && !readStoredAccessCode()) availability = "access_code";
+    else if ((status?.accessCodeRequired || this.codeRefused) && !readStoredAccessCode()) availability = "access_code";
     this.setAvailability(availability);
     if (availability === "on") this.pump();
     return availability;
@@ -330,9 +450,11 @@ export class PhotoChecks {
 
   /**
    * Checks the vehicle's current template photos that have no result, no
-   * stored rejection and no check yet, or whose check could not run (e.g.
-   * right after the access code was entered in the camera, or when the
-   * checks are on again).
+   * check and no stored rejection yet (`checkOnOpen`) – when the camera,
+   * "Fotos überprüfen" or the vehicle page is shown with the checks on (also
+   * right after they came on), and after the access code was entered in the
+   * camera. A check that ended with an error is not sent again here (only
+   * its job polled while it is still kept on the device).
    */
   async checkVehicle(vehicleId: string): Promise<void> {
     if ((await this.refreshAvailability()) !== "on") return;
@@ -343,19 +465,40 @@ export class PhotoChecks {
       return;
     }
     const { template } = getAppServices();
+    const user = signedInUser();
     for (const photo of photos) {
-      if (getShotTreatment(template, photo.shotKey) === null || photo.processedStoragePath) continue;
-      // Rejected already (kept with the photo, e.g. checked on another device): not sent again by itself.
-      if (storedRejection(photo) !== null) continue;
       const check = this.snapshot.checks.get(photo.id);
-      if (!check) this.enqueue({ ...photo, preset: CHECK_PRESET });
-      else if (check.status === "error") this.requeue(photo.id);
+      const job = check ? findJob(photo.id, check.preset) : null;
+      const action = checkOnOpen(photo, template, check, job !== null && job.userId === user);
+      if (action === "check") this.enqueue({ ...photo, preset: CHECK_PRESET });
+      else if (action === "resume") this.requeue(photo.id);
     }
     this.pump();
   }
 
-  /** Ends every check (signed out / another user). Stored rejections stay with their photo ids. */
+  /**
+   * A page that needs the checks is shown (camera, "Fotos überprüfen",
+   * vehicle page): while it is, the processor status is asked again every
+   * AVAILABILITY_POLL_MS as long as the checks are off because it is not
+   * reachable. Returns the function to call when the page is hidden.
+   */
+  watch(): () => void {
+    this.watchers += 1;
+    this.updatePolling();
+    let watching = true;
+    return () => {
+      if (!watching) return;
+      watching = false;
+      this.watchers -= 1;
+      this.updatePolling();
+    };
+  }
+
+  /** Ends every check (signed out / another user). Stored outcomes stay with their photo ids. */
   stopAll(): void {
+    // The jobs of the previous user are not resumed after a reload.
+    clearJobJournal();
+    this.codeRefused = false;
     this.queue.length = 0;
     for (const controller of this.checkControllers.values()) controller.abort();
     this.checkControllers.clear();
@@ -404,6 +547,44 @@ export class PhotoChecks {
   }
 
   /* ---------- internals ---------- */
+
+  /**
+   * The jobs `user` submitted before a reload (or a discarded tab) whose
+   * outcome is not known yet: their photos are checked again – by polling
+   * the job (createJob), not by sending the photo again. Jobs of another
+   * user (a shared device, a session that expired) are forgotten.
+   */
+  private resumeJobs(user: string): void {
+    const { template } = getAppServices();
+    const entries = readJobJournal().filter((entry) => {
+      if (entry.userId === user && getShotTreatment(template, entry.shotKey) !== null) return true;
+      forgetJob(entry.photoId, entry.preset);
+      return false;
+    });
+    for (const entry of entries) {
+      this.enqueue({
+        id: entry.photoId,
+        vehicleId: entry.vehicleId,
+        shotKey: entry.shotKey,
+        shotOrder: entry.shotOrder,
+        title: entry.title,
+        takenAt: entry.takenAt,
+        preset: entry.preset,
+      });
+    }
+    if (entries.length > 0) void this.refreshAvailability(); // polled as soon as the checks are on
+  }
+
+  /** Starts or stops asking the processor status every AVAILABILITY_POLL_MS (shouldPollAvailability). */
+  private updatePolling(): void {
+    const poll = shouldPollAvailability(this.snapshot.availability, this.watchers > 0, documentVisible());
+    if (poll && this.pollTimer === null) {
+      this.pollTimer = setInterval(() => void this.refreshAvailability(true), AVAILABILITY_POLL_MS);
+    } else if (!poll && this.pollTimer !== null) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
 
   private async processingStatus(force: boolean): Promise<ProcessingStatus | null> {
     if (!force && this.status && Date.now() - this.statusAt < STATUS_MAX_AGE_MS) return this.status;
@@ -515,9 +696,13 @@ export class PhotoChecks {
       if (!check || !controller || controller.signal.aborted || check.status !== "waiting") return;
       const photo = await this.currentPhoto(check);
       if (controller.signal.aborted) return;
-      if (!photo) {
+      if (photo === "replaced") {
         // Replaced by a newer photo (or deleted) meanwhile – nothing to check.
         this.drop(photoId);
+        return;
+      }
+      if (photo === "unreadable") {
+        await this.photosUnreadable(photoId, controller);
         return;
       }
       if (this.snapshot.checks.get(photoId)?.status !== "waiting") return;
@@ -535,17 +720,51 @@ export class PhotoChecks {
     }
   }
 
-  /** The check's photo if it is still the current photo of its shot (with its URLs), else null. */
-  private async currentPhoto(check: PhotoCheck): Promise<VehiclePhotoWithUrls | null> {
+  /**
+   * The check's photo if it is still the current photo of its shot (with its
+   * URLs); "replaced" when a newer photo replaced it (or it was deleted);
+   * "unreadable" when the photos could not be read right now (e.g. a weak
+   * connection right after a reload) – that says nothing about the photo.
+   */
+  private async currentPhoto(check: PhotoCheck): Promise<VehiclePhotoWithUrls | "replaced" | "unreadable"> {
     const { backend } = getAppServices();
+    let current: VehiclePhoto | undefined;
     try {
-      const current = (await backend.data.listPhotos(check.vehicleId)).find((photo) => photo.shotKey === check.shotKey);
-      if (!current || current.id !== check.photoId) return null;
-      const [resolved] = await backend.data.resolvePhotoUrls([current]);
-      return resolved ?? null;
+      current = (await backend.data.listPhotos(check.vehicleId)).find((photo) => photo.shotKey === check.shotKey);
     } catch {
-      return null;
+      return "unreadable";
     }
+    if (!current || current.id !== check.photoId) return "replaced";
+    try {
+      const [resolved] = await backend.data.resolvePhotoUrls([current]);
+      return resolved ?? "unreadable";
+    } catch {
+      return "unreadable";
+    }
+  }
+
+  /**
+   * The check's photo could not be read (nothing was sent): its job, if one
+   * was submitted before a reload, stays kept on the device – it is polled
+   * the next time instead of sending the photo again. While the processor is
+   * not reachable either the check waits. Otherwise it ends as "not possible"
+   * for now and the next page open polls its job (checkOnOpen "resume") – or,
+   * without a job, checks the photo as one without a check.
+   */
+  private async photosUnreadable(photoId: string, controller: AbortController): Promise<void> {
+    const availability = await this.refreshAvailability(true);
+    const check = this.snapshot.checks.get(photoId);
+    if (controller.signal.aborted || check?.status !== "waiting") return;
+    if (availability !== "on") {
+      this.requeue(photoId);
+      return;
+    }
+    const job = findJob(photoId, check.preset);
+    if (job === null || job.userId !== signedInUser()) {
+      this.drop(photoId);
+      return;
+    }
+    this.settle(photoId, { status: "error", message: PHOTOS_UNREADABLE_MESSAGE, errorCode: null, warnings: [] });
   }
 
   /** All required shots processed and the capture completed: the vehicle counts as processed. */
@@ -569,13 +788,17 @@ export class PhotoChecks {
     const steps = new Set<(step: PhotoStep, progress?: number) => void>();
     const { backend } = getAppServices();
     const base = this.snapshot.checks.get(photo.id);
+    const takenAt = base?.takenAt ?? photo.takenAt;
+    // Jobs are kept per user: only this user's job of the photo is polled.
+    const user = signedInUser();
+    const kept = findJob(photo.id, preset);
     this.putCheck({
       photoId: photo.id,
       vehicleId: photo.vehicleId,
       shotKey: photo.shotKey,
       shotOrder: photo.shotOrder,
       title: photo.title,
-      takenAt: base?.takenAt ?? photo.takenAt,
+      takenAt,
       preset,
       status: "checking",
       message: null,
@@ -591,6 +814,23 @@ export class PhotoChecks {
         onStep: (step, progress) => {
           for (const listener of steps) listener(step, progress);
         },
+        // Submitted before a reload: its answer is fetched instead of sending the photo again.
+        resumeJobId: kept !== null && kept.userId === user ? kept.jobId : null,
+        onSubmitted: (jobId) => {
+          if (user === null) return; // nobody to resume it for
+          recordJob({
+            userId: user,
+            vehicleId: photo.vehicleId,
+            photoId: photo.id,
+            jobId,
+            preset,
+            startedAt: new Date().toISOString(),
+            shotKey: photo.shotKey,
+            shotOrder: photo.shotOrder,
+            title: photo.title,
+            takenAt,
+          });
+        },
       }).finally(() => this.releaseJobSlot()),
     );
     const job: SharedJob = { promise, controller, users: 0, steps };
@@ -598,6 +838,7 @@ export class PhotoChecks {
     promise.then(
       ({ warnings }) => {
         this.jobs.delete(key);
+        forgetJob(photo.id, preset);
         const retake = hasRetakeWarning(warnings);
         this.settle(photo.id, {
           status: retake ? "retake" : "ok",
@@ -608,12 +849,17 @@ export class PhotoChecks {
       },
       (error: unknown) => {
         this.jobs.delete(key);
+        // Its answer may still come (connection or processor gone for a while): polled again later.
+        if (controller.signal.aborted || isAbort(error) || !jobMayStillRun(error)) forgetJob(photo.id, preset);
         if (controller.signal.aborted || isAbort(error)) {
           // Nobody waits for it any more (retake, reset, signed out).
           this.drop(photo.id);
           return;
         }
         if (error instanceof AccessCodeRequiredError) {
+          // Off until a code is entered again (the status is asked anew then).
+          this.codeRefused = true;
+          this.status = null;
           storeAccessCode(null);
           this.setAvailability("access_code");
           this.settle(photo.id, {
@@ -733,10 +979,11 @@ export class PhotoChecks {
     for (const listener of this.settledListeners) listener(settled);
   }
 
-  /** Forgets the check of a photo (aborts it while it waits or runs). */
+  /** Forgets the check of a photo (aborts it while it waits or runs) and its job. */
   private drop(photoId: string): void {
     this.checkControllers.get(photoId)?.abort();
     this.checkControllers.delete(photoId);
+    forgetJob(photoId);
     const index = this.queue.indexOf(photoId);
     if (index >= 0) this.queue.splice(index, 1);
     if (!this.snapshot.checks.has(photoId)) return;
@@ -776,6 +1023,7 @@ export class PhotoChecks {
     const previous = this.snapshot.availability;
     if (previous === availability) return;
     this.set({ ...this.snapshot, availability });
+    this.updatePolling();
     // On again (connection back, code entered, processor answering): checks that could not run are repeated.
     if (availability === "on" && previous !== "unknown") {
       for (const check of this.snapshot.checks.values()) {
@@ -784,12 +1032,12 @@ export class PhotoChecks {
     }
   }
 
-  /** Rejected photos (by the processor's code) are kept on this device. */
+  /** Rejected photos (by the processor's code) and failed checks are kept on this device (isKeptOutcome). */
   private persist(): void {
-    const rejections: StoredRejection[] = [...this.snapshot.checks.values()]
-      .filter((check) => check.status === "retake" && check.errorCode !== null)
+    const rejections: StoredOutcome[] = [...this.snapshot.checks.values()]
+      .filter(isKeptOutcome)
       .slice(-MAX_STORED)
-      .map(({ photoId, vehicleId, shotKey, shotOrder, title, takenAt, preset, message, errorCode }) => ({
+      .map(({ photoId, vehicleId, shotKey, shotOrder, title, takenAt, preset, status, message, errorCode }) => ({
         photoId,
         vehicleId,
         shotKey,
@@ -797,6 +1045,7 @@ export class PhotoChecks {
         title,
         takenAt,
         preset,
+        status: status === "error" ? "error" : "retake",
         message,
         errorCode,
       }));
@@ -817,16 +1066,18 @@ export class PhotoChecks {
     }
     if (!Array.isArray(stored)) return;
     const checks = new Map(this.snapshot.checks);
-    for (const entry of stored as Partial<StoredRejection>[]) {
+    for (const entry of stored as Partial<StoredOutcome>[]) {
+      const failed = entry?.status === "error";
       if (
         typeof entry?.photoId !== "string" ||
         typeof entry.vehicleId !== "string" ||
         typeof entry.shotKey !== "string" ||
-        typeof entry.errorCode !== "string" ||
+        !(typeof entry.errorCode === "string" || (failed && entry.errorCode === null)) ||
         checks.has(entry.photoId)
       ) {
         continue;
       }
+      const errorCode = entry.errorCode ?? null;
       checks.set(entry.photoId, {
         photoId: entry.photoId,
         vehicleId: entry.vehicleId,
@@ -835,9 +1086,14 @@ export class PhotoChecks {
         title: typeof entry.title === "string" ? entry.title : entry.shotKey,
         takenAt: typeof entry.takenAt === "string" ? entry.takenAt : "",
         preset: isProcessingPresetId(entry.preset) ? entry.preset : CHECK_PRESET,
-        status: "retake",
-        message: typeof entry.message === "string" ? entry.message : retakeFallbackMessage(entry.errorCode),
-        errorCode: entry.errorCode,
+        status: failed ? "error" : "retake",
+        message:
+          typeof entry.message === "string"
+            ? entry.message
+            : failed
+              ? GENERIC_FAILURE
+              : retakeFallbackMessage(errorCode ?? ""),
+        errorCode,
         warnings: [],
         restored: true,
       });

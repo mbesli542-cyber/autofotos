@@ -43,6 +43,12 @@ export class ProcessingNotConnectedError extends ProcessingApiError {}
 class ResultNotReadyError extends ProcessingApiError {}
 
 /**
+ * 404: the processor does not know the job (any more) – it was restarted
+ * (jobs live in its memory) or the job expired (24 h).
+ */
+export class ProcessingJobNotFoundError extends ProcessingApiError {}
+
+/**
  * A full processor queue (503 processing_busy) is retried until this long
  * after the first attempt – with several employees processing at once a
  * photo may have to wait minutes for a free slot.
@@ -96,7 +102,7 @@ async function readError(response: Response): Promise<AppError> {
     return new ResultNotReadyError(status, "unknown", { userMessage: message });
   }
   if (status === 401) return new ProcessingApiError(status, "unauthorized", { userMessage: message });
-  if (status === 404) return new ProcessingApiError(status, "not_found", { userMessage: message });
+  if (status === 404) return new ProcessingJobNotFoundError(status, "not_found", { userMessage: message });
   return new ProcessingApiError(status, "unknown", { userMessage: message });
 }
 
@@ -109,6 +115,18 @@ function isTransientError(error: unknown): boolean {
   if (error instanceof ProcessingNotConnectedError) return false;
   if (error instanceof ProcessingApiError) return error.status >= 500;
   return error instanceof AppError && error.code === "network";
+}
+
+/**
+ * After `error` the processor may still be working on a job it accepted:
+ * the connection or the processor is gone for a while (no connection, 5xx,
+ * not connected) or the access code was refused. Its job id stays worth
+ * polling again later; any other failure ends the job for the app.
+ */
+export function jobMayStillRun(error: unknown): boolean {
+  return (
+    error instanceof ProcessingNotConnectedError || error instanceof AccessCodeRequiredError || isTransientError(error)
+  );
 }
 
 function buildHeaders(options: ProcessingRequestOptions, extra: Record<string, string> = {}): Headers {

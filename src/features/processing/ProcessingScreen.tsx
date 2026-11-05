@@ -21,6 +21,7 @@ import { usePhotoChecks } from "@/hooks/use-photo-checks";
 import { useOnline } from "@/hooks/use-online";
 import { useProcessingAccessCode } from "@/hooks/use-processing-access-code";
 import { useProcessingStatus } from "@/hooks/use-processing-status";
+import { useScreenWakeLock } from "@/hooks/use-screen-wake-lock";
 import { usePendingUploads } from "@/hooks/use-upload-queue";
 import { useVehicleDetail } from "@/hooks/use-vehicle-data";
 import { getAppServices, getShotTemplate } from "@/lib/app-services";
@@ -40,6 +41,7 @@ import { needsResultCheck } from "@/lib/processing/processing-warnings";
 import { getProcessorConnection } from "@/lib/processing/processor-connection";
 import { getRetakeStatus } from "@/lib/processing/quality-gate";
 import { PROCESSING_BLOCKER_MESSAGES, getProcessingBlocker } from "@/lib/processing/run-blockers";
+import { resultsToCheckMessage } from "@/lib/processing/shot-check";
 import { countByTreatment, selectPhotosForProcessing } from "@/lib/processing/shot-treatment";
 import { canStartProcessing } from "@/lib/processing/types";
 import { canProcessVehicle } from "@/lib/vehicles/status";
@@ -53,7 +55,10 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
   const processing = useProcessingStatus();
   const storedAccessCode = useProcessingAccessCode();
   const pendingUploads = usePendingUploads(vehicleId);
-  const run = useProcessingRun(vehicleId);
+  // A run continued after a reload whose stored access code was refused: asked for again.
+  const run = useProcessingRun(vehicleId, (result) => handleRunResult(result, result.preset));
+  // A locked phone suspends the tab and stops the run: the screen stays on while it runs.
+  useScreenWakeLock(run.phase === "running");
   const online = useOnline();
   const [chosenPreset, setChosenPreset] = useState<ProcessingPresetId>(DEFAULT_PROCESSING_PRESET);
   // Only styles the processor implements can ever be the selected one.
@@ -354,7 +359,8 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
                 </div>
                 <ProgressBar value={finished} max={run.items.length} label="Bearbeitungsfortschritt" />
                 <p className="mt-2 text-xs text-ae-subtle">
-                  Bitte lassen Sie die App geöffnet, bis die Bearbeitung abgeschlossen ist.
+                  Bitte lassen Sie die App geöffnet, bis die Bearbeitung abgeschlossen ist. Wird die Seite neu
+                  geladen, geht es automatisch weiter.
                 </p>
               </div>
             )}
@@ -439,9 +445,7 @@ function RunSummary({
       )}
       {toCheck > 0 && (
         <p className="mt-1 text-sm text-ae-muted">
-          {toCheck === 1
-            ? "Bitte ein Ergebnis prüfen – siehe Hinweis in der Liste."
-            : `Bitte ${toCheck} Ergebnisse prüfen – siehe Hinweise in der Liste.`}
+          {resultsToCheckMessage(toCheck, "list")}
         </p>
       )}
       <div className="mt-4 grid w-full max-w-sm gap-2">

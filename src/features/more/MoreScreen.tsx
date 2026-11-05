@@ -16,7 +16,7 @@ import { MockDataProvider } from "@/lib/data/mock/mock-data-provider";
 import { toUserMessage } from "@/lib/errors";
 import { formatStorageSize, requestPersistentStorage, storageUsageBytes } from "@/lib/offline/persistent-storage";
 import { photoChecks } from "@/lib/processing/photo-checks";
-import { processingRuns } from "@/lib/processing/processing-runs";
+import { endProcessingSession, processingRuns } from "@/lib/processing/processing-runs";
 import { getOrderedShots, SHOT_CATEGORY_LABELS } from "@/lib/shots/shot-template";
 import { DELETE_ALL_CONFIRMATION } from "@/lib/workflow/device-data";
 
@@ -56,6 +56,8 @@ export function MoreScreen() {
   }, [isDemo, storageVersion]);
 
   async function handleSignOut() {
+    // Nothing of this user's processing goes on or is continued after a reload on this device.
+    endProcessingSession();
     await getAppServices().authStore.signOut();
     router.replace("/login");
   }
