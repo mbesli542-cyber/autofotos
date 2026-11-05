@@ -531,6 +531,10 @@ class RegionCheck:
     conclusive: bool
     #: How far the region reaches beyond the tile's vehicle instance (mask cells of the tile).
     reach_cells: float = 0.0
+    #: The tile's vehicle instance (bool, VERIFY_PX × VERIFY_PX over ``window``) and its mask
+    #: cells per tile side – where the zoom cut (``mask.zoom_cut``) may not cut.
+    vehicle_mask: np.ndarray | None = field(default=None, compare=False, repr=False)
+    mask_cells: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -586,4 +590,13 @@ def verify_region(
     beyond = cv2.distanceTransform((logits[index] <= 0).astype(np.uint8), cv2.DIST_L2, 5)
     cells = int(np.shape(instances[index].mask)[-1]) or MASK_CELLS
     reach = float(beyond[py, px].max()) * cells / n
-    return RegionCheck(window, vehicle_cover, float(np.mean(other)), labels, True, reach)
+    return RegionCheck(
+        window,
+        vehicle_cover,
+        float(np.mean(other)),
+        labels,
+        True,
+        reach,
+        vehicle_mask=logits[index] > 0,
+        mask_cells=cells,
+    )

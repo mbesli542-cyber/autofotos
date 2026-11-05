@@ -512,3 +512,134 @@ def test_a_region_is_foreign_only_when_it_reaches_beyond_the_coarse_vehicle_outl
     findings = [f for f in info.semantic["findings"] if f["evidence"] == "other_object"]
     assert findings and findings[0]["verify"]["reachCells"] == reach
     assert (_gate(info).failed_code == "mask_low_confidence") is rejected
+
+
+# --------------------------------------------------------------------------- zoom cut
+
+
+def _glued_wheel_scene():
+    """A navy car with the silver wheel of a white car parked behind glued to its front bumper."""
+    car = side_view()
+    wheel = np.zeros_like(car)
+    cv2.circle(wheel.view(np.uint8), (2060, 1010), 55, 1, -1)  # beside the front bumper, merged
+    wheel &= ~car
+    neighbour = np.zeros_like(car)
+    cv2.rectangle(neighbour.view(np.uint8), (1980, 820), (2399, 1130), 1, -1)
+    neighbour &= ~car  # visible part of the car parked behind (includes its wheel)
+    rgb = np.full(car.shape + (3,), 150, np.uint8)
+    rgb[neighbour] = (232, 232, 236)
+    rgb[wheel] = (190, 192, 198)
+    rgb[car] = (24, 34, 78)
+    detector = FakeDetector().add("car", car, 0.95).add("car", neighbour, 0.9)
+    return car, wheel, rgb, detector
+
+
+def _zoom(rgb: np.ndarray, *colours, calls: list | None = None):
+    """A zoom pass that finds pixels of the given colours in the window (a BiRefNet stand-in)."""
+
+    def segment(window):
+        if calls is not None:
+            calls.append(window)
+        x0, y0, x1, y1 = window
+        crop = rgb[y0:y1, x0:x1].astype(np.int16)
+        hit = np.zeros(crop.shape[:2], bool)
+        for colour in colours:
+            hit |= np.abs(crop - np.array(colour, np.int16)).sum(axis=-1) < 30
+        return cv2.GaussianBlur(hit.astype(np.float32), (0, 0), 1.0)
+
+    return segment
+
+
+def test_a_glued_wheel_is_cut_along_the_line_the_zoom_pass_detector_and_colour_edge_agree_on():
+    car, wheel, rgb, detector = _glued_wheel_scene()
+    alpha = (car | wheel).astype(np.float32)
+    calls: list = []
+    result, info = clean_mask(alpha, rgb=rgb, detector=detector, zoom_segment=_zoom(rgb, (24, 34, 78), calls=calls))
+    assert len(calls) == 1  # one zoom pass for the one glued region
+    assert info.foreign_suspected == [] and len(info.foreign_removed) == 1
+    finding = next(f for f in info.semantic["findings"] if f["foreign"])
+    assert finding["action"] == "cut" and finding["verify"]["zoomCut"]["reasons"] == []
+    near_car = cv2.dilate(car.view(np.uint8), np.ones((9, 9), np.uint8)).astype(bool)
+    assert (result[wheel] < 0.5).all() and (result[wheel & ~near_car] == 0).all()
+    assert (result[car] >= 0.5).all()  # every car pixel stays
+    assert (result <= alpha + 1e-6).all()  # alpha only removed, never added
+    assert _gate(info).failed_code is None
+    assert "background_object_removed" in [w.code for w in assess_mask(result, mask_bbox(result), info)]
+
+
+def test_a_zoom_pass_that_merges_more_of_the_neighbour_is_no_reference():
+    car, wheel, rgb, detector = _glued_wheel_scene()
+    alpha = (car | wheel).astype(np.float32)
+    # the pass takes in the whole white car behind – it disagrees with the mask outside the zone
+    zoom = _zoom(rgb, (24, 34, 78), (232, 232, 236))
+    result, info = clean_mask(alpha, rgb=rgb, detector=detector, zoom_segment=zoom)
+    assert len(info.foreign_suspected) == 1 and info.foreign_removed == []
+    finding = next(f for f in info.semantic["findings"] if f["foreign"])
+    assert "zoom_pass_disagrees" in finding["verify"]["zoomCut"]["reasons"]
+    assert np.array_equal(result >= 0.5, alpha >= 0.5)
+    assert _gate(info).failed_code == "mask_low_confidence"
+
+
+def test_a_zoom_pass_that_also_drops_a_piece_of_the_car_is_not_used():
+    car, wheel, rgb, detector = _glued_wheel_scene()
+    alpha = (car | wheel).astype(np.float32)
+    plain = _zoom(rgb, (24, 34, 78))
+
+    def biting(window):  # the pass also loses a bite of the bumper next to the wheel
+        out = plain(window).copy()
+        x0, y0 = window[:2]
+        cv2.circle(out, (1985 - x0, 1000 - y0), 40, 0.0, -1)
+        return out
+
+    result, info = clean_mask(alpha, rgb=rgb, detector=detector, zoom_segment=biting)
+    assert len(info.foreign_suspected) == 1 and info.foreign_removed == []
+    reasons = next(f for f in info.semantic["findings"] if f["foreign"])["verify"]["zoomCut"]["reasons"]
+    assert "vehicle_cut" in reasons or "zoom_pass_disagrees" in reasons
+    assert np.array_equal(result >= 0.5, alpha >= 0.5)
+
+
+def test_no_cut_where_the_photo_shows_no_colour_edge_between_car_and_object():
+    car, wheel, rgb, detector = _glued_wheel_scene()
+    rgb[wheel] = (26, 36, 80)  # the wheel in the car's colour: no edge backs a cut line
+    alpha = (car | wheel).astype(np.float32)
+    car_only = _zoom(rgb, (24, 34, 78))
+
+    def separating(window):  # a pass that separates them anyway (it may be wrong)
+        x0, y0, x1, y1 = window
+        return car_only(window) * (~wheel[y0:y1, x0:x1]).astype(np.float32)
+
+    result, info = clean_mask(alpha, rgb=rgb, detector=detector, zoom_segment=separating)
+    assert len(info.foreign_suspected) == 1 and info.foreign_removed == []
+    reasons = next(f for f in info.semantic["findings"] if f["foreign"])["verify"]["zoomCut"]["reasons"]
+    assert reasons == ["no_colour_edge"]
+    assert np.array_equal(result >= 0.5, alpha >= 0.5)
+
+
+def test_a_region_no_detected_object_claims_is_never_cut():
+    """Without another object's claim the region may hold a part of the car the instance masks
+    miss (a mirror in front of a bollard) – no zoom pass, the photo is rejected as before."""
+    car = side_view()
+    sign = np.zeros_like(car)
+    cv2.rectangle(sign.view(np.uint8), (900, 420), (1250, 680), 1, -1)  # stands on the roof
+    rgb = np.full(car.shape + (3,), 150, np.uint8)
+    rgb[sign] = (200, 30, 30)
+    rgb[car] = (24, 34, 78)
+    calls: list = []
+    detector = FakeDetector().add("car", car, 0.95)  # nothing claims the sign
+    _, info = clean_mask(
+        (car | sign).astype(np.float32), rgb=rgb, detector=detector, zoom_segment=_zoom(rgb, (24, 34, 78), calls=calls)
+    )
+    assert calls == [] and len(info.foreign_suspected) == 1
+    assert _gate(info).failed_code == "mask_low_confidence"
+
+
+def test_more_glued_regions_than_zoom_passes_are_rejected_without_a_pass(monkeypatch):
+    from app.pipeline import mask
+
+    monkeypatch.setattr(mask, "ZOOM_MAX_CUTS", 0)
+    car, wheel, rgb, detector = _glued_wheel_scene()
+    calls: list = []
+    _, info = clean_mask(
+        (car | wheel).astype(np.float32), rgb=rgb, detector=detector, zoom_segment=_zoom(rgb, (24, 34, 78), calls=calls)
+    )
+    assert calls == [] and len(info.foreign_suspected) == 1

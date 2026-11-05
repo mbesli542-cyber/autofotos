@@ -68,7 +68,7 @@ always right. For example, the Passat B8 "front view" is a front-left 3/4 shot.
 | 11 | `front` | front | mask_low_confidence | Toyota Yaris GR Sport, straight front, slushy lot, ~53 %; BiRefNet drops the black left side mirror (right in the photo) in front of the dark car parked behind – `requiredParts`: head and base of each mirror |
 | 12 | `rear` | rear | accept | Toyota Yaris GR Sport (same car), straight rear, ~60 % |
 | 13 | `dark_paint_rl45` | rear_left_45 | accept | Audi A4 Avant allroad (same car as 5), black, ~65 % |
-| 14 | `white_car` | front_left_45 | mask_low_confidence | VW Passat B8 Variant, white car on snow, ~70 %; the rear of a second white car is glued to the Passat's rear |
+| 14 | `white_car` | front_left_45 | accept (hint `background_object_removed`) | VW Passat B8 Variant, white car on snow, ~70 %; the rear of a second white car is glued to the Passat's rear – cut by the zoom cut |
 | 15 | `cropped` | front_left_45 | vehicle_cropped | BMW E46, damaged bumper, too close: the right frame edge cuts the car at the front door |
 | 16 | `showroom_sign_fr45` | front_right_45 | mask_low_confidence | MG5 SW EV, white, MG showroom; the chrome/red MG wall sign stands on the roof in the outline, a side table touches the front fender |
 | 17 | `lot_car_behind_fl45` | front_left_45 | mask_low_confidence | Mitsubishi Lancer (same car as 9), front-left 3/4, snowy lot; the snowy rear of a car parked behind sticks out above the trunk |
@@ -77,9 +77,17 @@ Cases 2, 3, 5, 10, 14, 16 and 17 contain an object of the background that the
 segmentation model (BiRefNet) merges into the car's outline. Before the
 semantic check (`app/pipeline/detection.py`) they were accepted with the object
 in the listing image (audit finding VQ-1; case 5 was found by the semantic
-check itself). They are not cleanly cuttable (the object is glued to the
-outline), so the expected outcome is the rejection with the "freier
-Hintergrund" message. Run them with `--no-detector` to see the composite.
+check itself). A glued object is cut only where a second BiRefNet pass on the
+zoom tile around it, the detector's vehicle instance and a colour edge agree
+on the cut line (`mask.zoom_cut`): case 14 (the second white car behind the
+Passat) is cut and accepted with the hint `background_object_removed`. In the
+others a signal disagrees – the zoom pass keeps the snow cap (17) or merges
+the blue car (10), the bollard together with the coupe's own mirror (2, a
+region no object claims is never cut), part of the wheel (5); the cut would
+leave part of the wheel and touch the vehicle instance (3); the zoom pass keeps
+the sign (16 – its white table on the white fender is then not tried) – so the expected outcome
+stays the rejection with the "freier Hintergrund" message. Run them with
+`--no-detector` to see the composite.
 
 Case 11 is the other direction: BiRefNet's alpha at the black mirror on the
 right of the photo is ≈ 0.01 (the mirror stands in front of the dark car

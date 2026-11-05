@@ -42,9 +42,14 @@ segmenter name). On a hit the model is never loaded. A miss runs the real
 segmenter in a child process under the shared lock
 ``/opt/ae-regression/birefnet.lock`` (one BiRefNet run at a time on the machine;
 its ~7 GB are returned when the child exits). ``--no-cache`` bypasses the cache,
-``--refresh-masks`` recomputes and overwrites it. The second BiRefNet pass of
-portrait/square photos (a window around the vehicle) is cached the same way
-(its key is the window's pixels).
+``--refresh-masks`` recomputes and overwrites it. A hit whose sidecar lacks the segmenter code
+digest of the current code (imported research masks, older cache entries) is reported as stale –
+its provenance is unknown. Zoom passes of the mask step (``mask.zoom_cut``: BiRefNet on the
+verification tile of a glued foreign region) go through the same cache (key: the tile's pixels).
+Photos in the image cache named after a case but holding another photo (an earlier candidate
+left under ``<caseId>.jpg``) are reported at the start – a manual test with them tests another photo.
+The second BiRefNet pass of portrait/square photos (a window around the vehicle) is cached the
+same way (its key is the window's pixels).
 
 Vehicle detector: the semantic check (app/pipeline/detection.py) runs in this
 process (RF-DETR-Seg, a few hundred MB, ≈ 0.5 s per call on idle cores, 4–12 calls per photo),
@@ -154,6 +159,26 @@ def manifest_cases(manifest_path: Path, cache_dir: Path | None) -> list[Case]:
             )
         )
     return cases
+
+
+def misleading_cache_files(cases: list[Case]) -> list[str]:
+    """Warnings for photos in the image cache named after a case that are NOT that case's photo
+    (an earlier candidate left under ``<caseId>.jpg`` while the manifest uses another file) – a
+    manual test with that file tests another photo than the regression run."""
+    by_digest: dict[str, str] = {}
+    for case in cases:
+        if case.path.is_file():
+            by_digest.setdefault(hashlib.sha256(case.path.read_bytes()).hexdigest(), case.id)
+    notes = []
+    for case in cases:
+        named = case.path.with_name(f"{case.id}{case.path.suffix}")
+        if named == case.path or not named.is_file():
+            continue
+        digest = hashlib.sha256(named.read_bytes()).hexdigest()
+        other = by_digest.get(digest)
+        what = f"the photo of case '{other}'" if other else "a photo of no case"
+        notes.append(f"{named} is not the photo of case '{case.id}' (manifest: {case.path.name}) – it is {what}")
+    return notes
 
 
 def legacy_cases(directory: Path) -> list[Case]:
@@ -346,8 +371,13 @@ class CachedSegmenter:
             if mask is not None and mask.dtype == np.uint16 and mask.shape == rgb.shape[:2]:
                 info.update(cache="hit", seconds=0.0)
                 sidecar = _get_sidecar(path)
-                if sidecar.get("segmenterCodeSha256") not in (None, self._seg_source):
-                    info["staleWarning"] = "mask cached with other segmenter code or model (use --refresh-masks)"
+                if self._seg_source is not None and sidecar.get("segmenterCodeSha256") != self._seg_source:
+                    # also a mask without the digest (imported from a research run, older runner):
+                    # its provenance is unknown, the run may not show what production does
+                    info["staleWarning"] = (
+                        "mask cached with other or unknown segmenter code/model (imported or older cache entry)"
+                        " – use --refresh-masks for live masks"
+                    )
                 self.calls.append(info)
                 return mask.astype(np.float32) / MASK_SCALE
             info["cache"] = "corrupt"
@@ -1367,6 +1397,9 @@ def main(argv: list[str] | None = None) -> int:
     if unknown:
         print(f"unknown case ids: {', '.join(unknown)}", file=sys.stderr)
         return 2
+    if not args.legacy_dir:
+        for note in misleading_cache_files(cases):
+            print(f"  warning: {note}")
     if wanted:
         cases = [c for c in cases if c.id in wanted]
     return run_cases(args, cases, out, label, set_name)

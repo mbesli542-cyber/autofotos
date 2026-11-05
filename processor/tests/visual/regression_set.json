@@ -131,7 +131,9 @@
       "category": "lighting",
       "shotKey": "right_side",
       "expected": "accept",
-      "expectedWarnings": ["vehicle_part_uncertain"],
+      "expectedWarnings": [
+        "vehicle_part_uncertain"
+      ],
       "file": "old_hardlight.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8e/Mercedes_W123_parked_by_a_country_road_during_golden_hour_near_a_small_town_in_autumn_landscape.jpg/3840px-Mercedes_W123_parked_by_a_country_road_during_golden_hour_near_a_small_town_in_autumn_landscape.jpg",
       "landingUrl": "https://commons.wikimedia.org/wiki/File:Mercedes_W123_parked_by_a_country_road_during_golden_hour_near_a_small_town_in_autumn_landscape.jpg",
@@ -355,7 +357,7 @@
       "caseId": "white_car",
       "category": "paint",
       "shotKey": "front_left_45",
-      "expected": "mask_low_confidence",
+      "expected": "accept",
       "file": "white_car.jpg",
       "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/88/Volkswagen_Passat_%28B8%29_%E2%80%93_front_view_%282017%29.jpg/3840px-Volkswagen_Passat_%28B8%29_%E2%80%93_front_view_%282017%29.jpg",
       "landingUrl": "https://commons.wikimedia.org/wiki/File:Volkswagen_Passat_%28B8%29_%E2%80%93_front_view_%282017%29.jpg",
@@ -366,14 +368,17 @@
       "width": 3840,
       "height": 2880,
       "sha256": "b69108d4040d8e8b15a62c288ecbcb41e762544f7dc8d5314f2afaba26a58c85",
-      "notes": "Volkswagen Passat B8 Variant (estate), white, front-left 3/4 (front on the left, left flank to the right). White car on a snowy Polish used-car lot, overcast - hard low-contrast segmentation case. Car ~70 % of the frame width, whole car visible, eye height. Commons title says 'front view' but the photo is a front-left 3/4. File is the Wikimedia 3840px-wide rendition of the 4032x3024 original (upload.wikimedia.org rate-limits original downloads). Expected mask_low_confidence (reason foreign_object, check 'foreign'): an object of the background is merged into the car's outline and cannot be cut with a certain cut line (audit VQ-1) – see foreignObjects.",
+      "notes": "Volkswagen Passat B8 Variant (estate), white, front-left 3/4 (front on the left, left flank to the right). White car on a snowy Polish used-car lot, overcast - hard low-contrast segmentation case. Car ~70 % of the frame width, whole car visible, eye height. Commons title says 'front view' but the photo is a front-left 3/4. File is the Wikimedia 3840px-wide rendition of the 4032x3024 original (upload.wikimedia.org rate-limits original downloads). An object of the background is merged into the car's outline (audit VQ-1, see foreignObjects); it was rejected (foreign_object) until the zoom cut (mask.zoom_cut): a second BiRefNet pass on the verification tile separates the second car along the Passat's rear edge, the detector's vehicle instance and a colour edge agree – expected accept with the hint background_object_removed (checked at full resolution: no piece of the other car left, nothing of the Passat cut).",
       "authorUrl": "https://commons.wikimedia.org/wiki/User:Acgskup",
       "bodyStyle": "estate",
       "source": "wikimedia",
       "originalUrl": "https://upload.wikimedia.org/wikipedia/commons/8/88/Volkswagen_Passat_%28B8%29_%E2%80%93_front_view_%282017%29.jpg",
       "originalWidth": 4032,
       "originalHeight": 3024,
-      "foreignObjects": "rear of a second white car with its tail light, glued to the Passat's rear (source x 3228-3351, y 902-1150) – claimed by the detector's instance of that car"
+      "foreignObjects": "rear of a second white car with its tail light, glued to the Passat's rear (source x 3228-3351, y 902-1150) – claimed by the detector's instance of that car – cut along the line of the zoom pass (mask.zoom_cut)",
+      "expectedWarnings": [
+        "background_object_removed"
+      ]
     },
     {
       "id": "cropped",

@@ -221,7 +221,8 @@ def process_photo(
     # dropped when separate; an uncut one fails the quality gate, as does a vehicle part
     # the mask lost)
     progress(0.45, "mask")
-    alpha, edges, mask_info = _vehicle_alpha(decoded.rgb, coarse, detector, detections)
+    zoom = _zoom_segmenter(decoded.rgb, segmenter, segmentation)
+    alpha, edges, mask_info = _vehicle_alpha(decoded.rgb, coarse, detector, detections, zoom)
     if (mask_info.parts_missing or mask_info.parts_partial) and segmentation.get("windowUsed"):
         # the window pass lost (a piece of) a part the detector sees (a dark mirror in front of a
         # dark car, the base of a mirror); the whole-frame pass may have it – taken only inside
@@ -249,7 +250,7 @@ def process_photo(
         }
         if taken:
             coarse = merged
-            alpha, edges, mask_info = _vehicle_alpha(decoded.rgb, coarse, detector, detections)
+            alpha, edges, mask_info = _vehicle_alpha(decoded.rgb, coarse, detector, detections, zoom)
         del merged
         timer.mark("partsFromWholeFrame")
     del coarse
@@ -467,13 +468,34 @@ def process_photo(
     return ProcessResult(jpeg=jpeg, width=width, height=height, warnings=warnings, metadata=metadata)
 
 
-def _vehicle_alpha(rgb: np.ndarray, coarse: np.ndarray, detector, detections):
+def _vehicle_alpha(rgb: np.ndarray, coarse: np.ndarray, detector, detections, zoom=None):
     """(alpha, edge diagnostics, MaskInfo) of the coarse segmentation: snapped onto colour
-    edges, then cleaned up (and semantically checked with the detector)."""
+    edges, then cleaned up (and semantically checked with the detector; ``zoom``: BiRefNet on a
+    window, for the zoom cut of a glued foreign region)."""
     alpha, edges = refine_edges(rgb, coarse)
     model = model_alpha(coarse)
-    alpha, mask_info = clean_mask(alpha, rgb=rgb, model=model, detector=detector, detections=detections)
+    alpha, mask_info = clean_mask(
+        alpha, rgb=rgb, model=model, detector=detector, detections=detections, zoom_segment=zoom
+    )
     return alpha, edges, mask_info
+
+
+def _zoom_segmenter(rgb: np.ndarray, segmenter: VehicleSegmenter, segmentation: dict):
+    """BiRefNet on a window of the ORIGINAL pixels (the zoom pass of ``mask.zoom_cut``), each
+    window run once per job (the mask step may run twice); passes are listed in ``segmentation``."""
+    done: dict[tuple[int, int, int, int], np.ndarray] = {}
+
+    def segment(window: tuple[int, int, int, int]) -> np.ndarray:
+        if window not in done:
+            x0, y0, x1, y1 = window
+            started = time.perf_counter()
+            done[window] = segmenter.segment(np.ascontiguousarray(rgb[y0:y1, x0:x1]))
+            segmentation.setdefault("zoomPasses", []).append(
+                {"window": list(window), "ms": int(round((time.perf_counter() - started) * 1000))}
+            )
+        return done[window]
+
+    return segment
 
 
 def _geometry_overlay(
@@ -484,7 +506,7 @@ def _geometry_overlay(
     segmentation: dict | None = None,
 ) -> np.ndarray:
     """Debug view: dimmed photo, vehicle mask outline, bbox and tyre contacts; the
-    segmentation window (white), semantic regions (red: foreign, cyan: a vehicle part
+    segmentation window (white), semantic regions (red: foreign, green: foreign and cut, cyan: a vehicle part
     the mask lacks, orange: checked and kept as it is) and the detector's vehicle box
     (magenta)."""
     scale = min(1.0, 1600.0 / max(rgb.shape[:2]))
@@ -506,7 +528,11 @@ def _geometry_overlay(
     if vehicle:
         box(vehicle["box"], (255, 0, 255), 1)
     for finding in semantic.get("findings", []):
-        colour = (255, 40, 40) if finding.get("foreign") else (0, 200, 255) if finding.get("missing") else (255, 160, 0)
+        colour = (
+            (60, 220, 60)  # foreign, cut along the line of the zoom pass
+            if finding.get("action") == "cut"
+            else (255, 40, 40) if finding.get("foreign") else (0, 200, 255) if finding.get("missing") else (255, 160, 0)
+        )
         box(finding["box"], colour, 3)
     for c in geometry.candidates:
         colour = (0, 255, 0) if c.confidence >= 0.5 else (255, 60, 60)

@@ -24,10 +24,17 @@ edges). Here:
    instance does not cover them, and they reach beyond it by more than its
    coarse outline's uncertainty). Verified foreign regions are
    dropped when they are a separate part of the mask (nothing of the car is
-   touched); glued to the outline, the cut line between car and object is not
-   certain (the instance masks are coarse), so they are reported
-   (``foreign_suspected``) and the job is rejected. Thin parts (antenna masts,
-   mirror arms, wipers, roof rails, spoilers) are below the thickness limit.
+   touched). Glued to the outline, the instance masks are too coarse for the
+   cut line – the region is cut only when a second BiRefNet pass on the
+   ORIGINAL pixels of its zoom tile gives a cut line every signal agrees on
+   (``zoom_cut``: the pass agrees with the mask outside the contact zone, the
+   cut removes the region, stays out of the core of the tile's vehicle instance
+   and off thin parts, and runs along a colour edge of the photo; only regions
+   another detected object claims, alpha only, nothing added). Otherwise – and
+   for a region no object claims (it may hold a mirror the instance masks miss)
+   – it is reported (``foreign_suspected``) and the job is rejected. Thin parts
+   (antenna masts, mirror arms, wipers, roof rails, spoilers) are below the
+   thickness limit.
    The other direction as well, checked on the cut-out as it will be (after
    step 4, so a see-through window that step 4 fills is no lost part): what the
    zoomed vehicle instance claims beyond the mask – thick and large, in the
@@ -46,7 +53,8 @@ edges). Here:
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -56,7 +64,11 @@ import numpy as np
 from .segmentation import SegmentationError
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .detection import Instance, VehicleDetector
+    from .detection import Instance, RegionCheck, VehicleDetector
+
+#: BiRefNet on a window of the photo (photo px (x0, y0, x1, y1)) → alpha of that window – the
+#: zoom pass of ``zoom_cut`` (the pipeline passes the segmenter on a crop of the ORIGINAL pixels).
+ZoomSegment = Callable[[tuple[int, int, int, int]], np.ndarray]
 
 
 @dataclass(frozen=True)
@@ -578,6 +590,8 @@ class SemanticFinding:
     partial: bool = False
     #: The part as the vehicle instance claims it (bool, working resolution).
     claim: np.ndarray | None = None
+    #: The zoom tile's verdict (window, vehicle instance) – what a zoom cut is checked against.
+    verdict: RegionCheck | None = field(default=None, repr=False)
 
     def as_dict(self) -> dict:
         return {
@@ -712,6 +726,7 @@ def semantic_findings(
                 check=check.as_dict(),
                 foreign=foreign,
                 region=region,
+                verdict=check,
             )
         )
     for evidence, region, other, area in candidates[SEMANTIC_MAX_VERIFY:]:
@@ -757,6 +772,213 @@ def missing_part_findings(binary: np.ndarray, rgb: np.ndarray, detector: Vehicle
     return findings
 
 
+# --------------------------------------------------------------------------- zoom cut
+
+#: A foreign region glued to the outline is cut only along a line every signal agrees on (see
+#: ``zoom_cut``). At most this many glued regions of a photo get a zoom pass (one BiRefNet run
+#: each, ≈ 4–20 s on the CPU) – with more, or once one of them cannot be cut, the photo is
+#: rejected as before without further passes.
+ZOOM_MAX_CUTS = 2
+#: The cut stays inside the region grown by this many mask cells of the semantic grid (the coarse
+#: band between the region and the vehicle instance's outline, where the true cut line lies) plus
+#: SEMANTIC_MARGIN.
+ZOOM_ZONE_CELLS = 3.0
+#: Outside that zone the zoom pass must agree with the mask: at most this share of the mask's
+#: pixels there may differ (zoom-pass parts that do not touch the mask are ignored, like the
+#: unrelated blobs ``clean_mask`` drops). A pass that took in more of the neighbour or lost a part
+#: of the car is no reference for the cut line (measured on the regression photos: a merged blue
+#: car 35 %, a merged bollard 64 %, a merged wheel 4.1 %; agreeing passes 0.1–1.6 %).
+ZOOM_MAX_DISAGREE = 0.03
+#: Margin along the tile border (× tile side) not compared – the crop cuts the scene there.
+ZOOM_BORDER = 0.06
+#: The cut must remove the verified region: at most this share of it may be left …
+ZOOM_MAX_LEFT = 0.1
+#: … and what is left beyond the vehicle instance must be thinner than SEMANTIC_MIN_THICKNESS
+#: (no candidate any more). It may not touch the core of the zoom tile's vehicle instance (the
+#: instance eroded by this many of its mask cells: at most ZOOM_MAX_VEHICLE_CUT of the cut) …
+ZOOM_VEHICLE_CORE_CELLS = 1.5
+ZOOM_MAX_VEHICLE_CUT = 0.02
+#: … nor remove a thin part of the mask (thinner than SEMANTIC_MIN_THICKNESS: antenna, mirror
+#: arm, wiper – the instance masks miss them) outside the region grown by one mask cell (px) …
+ZOOM_MAX_THIN_CUT = 0
+#: … and it must follow a colour edge in the photo: at least this share of the new cut line within
+#: 1 px of a colour edge (CIE ΔE ≥ ZOOM_EDGE_DE between pixels two apart; measured 0.72 for a white
+#: car behind a silver one – the lowest contrast of the set – and 0.84–1.0 elsewhere).
+ZOOM_EDGE_DE = 12.0
+ZOOM_MIN_EDGE_SUPPORT = 0.6
+#: Soft band along the cut (photo px): there the alpha is the zoom pass's own alpha where that is
+#: lower – the cut never adds alpha.
+ZOOM_EDGE_PX = 3
+
+
+@dataclass
+class ZoomCut:
+    """What ``zoom_cut`` removes: ``region`` (bool) and the zoom pass's alpha ``tile`` (float),
+    both of the shape of ``window`` (photo px (x0, y0, x1, y1))."""
+
+    window: tuple[int, int, int, int]
+    region: np.ndarray
+    tile: np.ndarray
+
+    def box(self) -> list[int]:
+        ys, xs = np.nonzero(self.region)
+        x0, y0 = self.window[:2]
+        return [x0 + int(xs.min()), y0 + int(ys.min()), x0 + int(xs.max()) + 1, y0 + int(ys.max()) + 1]
+
+
+def zoom_cut(
+    binary: np.ndarray,
+    rgb: np.ndarray,
+    finding: SemanticFinding,
+    segment: ZoomSegment,
+    *,
+    scale: float,
+    zone_px: float,
+    vehicle_w: int,
+) -> tuple[ZoomCut | None, dict]:
+    """Cut a verified foreign region glued to the vehicle mask ``binary`` (bool, photo size) – or
+    None when the cut line is not certain. Returns the cut and its diagnostics (metadata).
+
+    BiRefNet runs a second time on the ORIGINAL pixels of the finding's zoom tile (``segment``;
+    the region at about 3–8× the resolution of the whole-frame pass, where touching objects
+    separate). Cut is what that pass leaves out of the mask, only inside the region grown by
+    ``zone_px``, and only when all signals agree: the pass agrees with the mask outside that zone
+    (ZOOM_MAX_DISAGREE), the cut removes the region (ZOOM_MAX_LEFT, nothing thick left beyond the
+    vehicle instance), touches neither the core of the tile's vehicle instance nor a thin part of
+    the mask (ZOOM_VEHICLE_CORE_CELLS, ZOOM_MAX_THIN_CUT) and runs along a colour edge
+    (ZOOM_MIN_EDGE_SUPPORT). Alpha only: nothing is added to the vehicle, no pixel colour changes.
+    """
+    check = finding.verdict
+    if check is None or check.vehicle_mask is None or finding.region is None:
+        return None, {"reason": "no_zoom_verdict"}
+    x0, y0, x1, y1 = check.window
+    shape = (y1 - y0, x1 - x0)
+    started = time.perf_counter()
+    try:
+        tile = np.asarray(segment(check.window), np.float32)
+    except SegmentationError:
+        return None, {"reason": "zoom_pass_failed"}
+    diag: dict = {"window": list(check.window), "ms": int(round((time.perf_counter() - started) * 1000))}
+    if tile.shape != shape:
+        return None, {**diag, "reason": "zoom_pass_shape"}
+    cut, measured = zoom_cut_on(binary, rgb, finding, tile, scale=scale, zone_px=zone_px, vehicle_w=vehicle_w)
+    return cut, {**diag, **measured}
+
+
+def zoom_cut_on(
+    binary: np.ndarray,
+    rgb: np.ndarray,
+    finding: SemanticFinding,
+    tile: np.ndarray,
+    *,
+    scale: float,
+    zone_px: float,
+    vehicle_w: int,
+    layers: dict | None = None,
+) -> tuple[ZoomCut | None, dict]:
+    """``zoom_cut`` with the zoom pass's alpha ``tile`` (window of ``finding.verdict``) given;
+    ``layers`` (optional dict) receives the intermediate masks (diagnostics)."""
+    from .matting import thin_parts
+    from .segmentation import _to_photo, colour_edges
+
+    check = finding.verdict
+    assert check is not None and check.vehicle_mask is not None and finding.region is not None
+    x0, y0, x1, y1 = check.window
+    shape = (y1 - y0, x1 - x0)
+    diag: dict = {}
+    height, width = binary.shape
+    mask = binary[y0:y1, x0:x1].astype(bool)
+    region = _to_photo(finding.region, check.window, scale, shape) & mask
+    if not region.any():
+        return None, {**diag, "reason": "empty_region"}
+    cell = shape[1] / max(check.mask_cells or 108, 1)
+    vehicle = cv2.resize(check.vehicle_mask.astype(np.uint8), (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST)
+    core = cv2.erode(vehicle, _ellipse(max(1, int(round(ZOOM_VEHICLE_CORE_CELLS * cell))))) > 0
+    zone = cv2.dilate(region.astype(np.uint8), _ellipse(max(2, int(round(zone_px))))) > 0
+    # the zoom pass: its parts that touch the mask (an unrelated blob of it is no reference)
+    solid = tile >= 0.5
+    count, labels = cv2.connectedComponents(solid.astype(np.uint8), connectivity=8)
+    touching = np.unique(labels[solid & mask])
+    solid = np.isin(labels, touching[touching > 0])
+    # agreement outside the zone (away from the tile border inside the photo)
+    border = max(1, int(round(ZOOM_BORDER * shape[1])))
+    area = ~(cv2.dilate(zone.astype(np.uint8), _ellipse(2)) > 0)
+    if x0 > 0:
+        area[:, :border] = False
+    if x1 < width:
+        area[:, -border:] = False
+    if y0 > 0:
+        area[:border] = False
+    if y1 < height:
+        area[-border:] = False
+    disagree = int(((mask ^ solid) & area).sum()) / max(int((mask & area).sum()), 1)
+    cut = mask & ~solid & zone
+    # pieces the cut leaves inside the zone, cut off from the vehicle: part of the cut
+    rest = mask & ~cut
+    count, labels = cv2.connectedComponents(rest.astype(np.uint8), connectivity=8)
+    attached = np.unique(labels[rest & ~zone])
+    cut |= rest & ~np.isin(labels, attached[attached > 0])
+    rest = mask & ~cut
+    left = int((region & ~cut).sum()) / int(region.sum())
+    vehicle_cut = int((cut & core).sum()) / max(int(cut.sum()), 1)
+    margin = max(1, int(round(SEMANTIC_MARGIN * vehicle_w)))
+    beyond = rest & zone & ~(cv2.dilate(vehicle, _ellipse(margin)) > 0)
+    thick_left = 2.0 * float(cv2.distanceTransform(beyond.astype(np.uint8), cv2.DIST_L2, 5).max()) / max(vehicle_w, 1)
+    thin_radius = max(1, int(round(0.5 * SEMANTIC_MIN_THICKNESS * vehicle_w)))
+    near_region = cv2.dilate(region.astype(np.uint8), _ellipse(max(1, int(round(cell))))) > 0
+    thin_cut = int((cut & thin_parts(mask, thin_radius) & ~near_region).sum())
+    # the new outline where the cut meets the vehicle, against the colour edges of the photo
+    line = rest & (cv2.dilate(cut.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0)
+    edges = colour_edges(rgb[y0:y1, x0:x1], ZOOM_EDGE_DE)
+    support = float(np.mean(edges[line])) if line.any() else 0.0
+    diag.update(
+        disagree=round(disagree, 4),
+        left=round(left, 3),
+        vehicleCut=round(vehicle_cut, 4),
+        thickLeft=round(thick_left, 4),
+        thinCut=thin_cut,
+        edgeSupport=round(support, 3),
+        cutPx=int(cut.sum()),
+        linePx=int(line.sum()),
+    )
+    reasons = []
+    if not cut.any():
+        reasons.append("nothing_cut")
+    if disagree > ZOOM_MAX_DISAGREE:
+        reasons.append("zoom_pass_disagrees")
+    if left > ZOOM_MAX_LEFT or thick_left >= SEMANTIC_MIN_THICKNESS:
+        reasons.append("region_left")
+    if vehicle_cut > ZOOM_MAX_VEHICLE_CUT or thin_cut > ZOOM_MAX_THIN_CUT:
+        reasons.append("vehicle_cut")
+    if support < ZOOM_MIN_EDGE_SUPPORT:
+        reasons.append("no_colour_edge")
+    diag["reasons"] = reasons
+    if layers is not None:
+        layers.update(
+            mask=mask, region=region, vehicle=vehicle > 0, core=core, solid=solid, zone=zone, cut=cut, line=line,
+            edges=edges,
+        )  # fmt: skip
+    if reasons:
+        return None, diag
+    return ZoomCut(window=check.window, region=cut, tile=tile), diag
+
+
+def _apply_zoom_cut(alpha: np.ndarray, cut: ZoomCut) -> np.ndarray:
+    """Alpha only: the cut region goes; along the cut (ZOOM_EDGE_PX) the alpha is the zoom pass's
+    own where that is lower (its anti-aliased edge at the higher resolution) – never higher."""
+    x0, y0, x1, y1 = cut.window
+    local = alpha[y0:y1, x0:x1].copy()
+    region = cut.region
+    band = cv2.dilate(region.astype(np.uint8), _ellipse(ZOOM_EDGE_PX)) > 0
+    local = np.where(band, np.minimum(local, cut.tile), local)
+    rest = (local >= 0.5) & ~region
+    far = cv2.distanceTransform((~rest).astype(np.uint8), cv2.DIST_L2, 3) > ZOOM_EDGE_PX
+    local[region & far] = 0.0
+    out = alpha.copy()
+    out[y0:y1, x0:x1] = local
+    return out
+
+
 def _apply_semantic(
     keep_mask: np.ndarray,
     labels: np.ndarray,
@@ -764,11 +986,18 @@ def _apply_semantic(
     findings: list[SemanticFinding],
     scale: float,
     info: MaskInfo,
-) -> np.ndarray:
+    *,
+    rgb: np.ndarray | None = None,
+    zoom_segment: ZoomSegment | None = None,
+    zone_px: float = 0.0,
+) -> tuple[np.ndarray, list[ZoomCut]]:
     """Foreign findings: a separate part of the mask is dropped (the removed pixels are
-    returned, photo size; nothing of the car is touched), a region glued to the main
-    body is reported as suspected (its cut line is not certain)."""
+    returned, photo size; nothing of the car is touched); a region glued to the main body is cut
+    when a zoom pass (``zoom_segment``) gives a cut line every signal agrees on (``zoom_cut``; the
+    cuts are returned and ``keep_mask`` loses them), otherwise it is reported as suspected (its
+    cut line is not certain)."""
     removed = np.zeros(keep_mask.shape, bool)
+    glued: list[SemanticFinding] = []
     for finding in findings:
         if not finding.foreign or finding.region is None:
             continue
@@ -793,9 +1022,37 @@ def _apply_semantic(
             finding.action = "removed"
             info.foreign_removed.append(finding.box)
         else:
+            glued.append(finding)
+    cuts: list[ZoomCut] = []
+    # only regions another detected object claims (a car behind, a sign, a table): a region nothing
+    # claims may hold a part of the car the instance masks miss (the coupe's mirror in front of a
+    # bollard) – it is never cut
+    trying = (
+        zoom_segment is not None
+        and rgb is not None
+        and len(glued) <= ZOOM_MAX_CUTS
+        and all(f.evidence == "other_object" for f in glued)
+    )
+    ys, xs = np.nonzero(keep_mask)
+    vehicle_w = int(xs.max() - xs.min() + 1) if len(xs) else 0
+    for finding in glued:
+        cut = None
+        if trying:
+            cut, diag = zoom_cut(
+                keep_mask > 0, rgb, finding, zoom_segment, scale=scale, zone_px=zone_px, vehicle_w=vehicle_w
+            )
+            finding.check["zoomCut"] = diag
+            trying = cut is not None  # one region that cannot be cut rejects the photo anyway
+        if cut is None:
             finding.action = "suspected"
             info.foreign_suspected.append(finding.box)
-    return removed
+            continue
+        x0, y0, x1, y1 = cut.window
+        keep_mask[y0:y1, x0:x1][cut.region] = 0
+        finding.action = "cut"
+        info.foreign_removed.append(cut.box())
+        cuts.append(cut)
+    return removed, cuts
 
 
 def _fill_holes(keep_mask: np.ndarray, upper_fill_ratio: float, info: MaskInfo) -> np.ndarray:
@@ -834,13 +1091,16 @@ def clean_mask(
     model: np.ndarray | None = None,
     detector: VehicleDetector | None = None,
     detections: list[Instance] | None = None,
+    zoom_segment: ZoomSegment | None = None,
     upper_fill_ratio: float = 0.62,
 ) -> tuple[np.ndarray, MaskInfo]:
     """Keep the vehicle in ``alpha``. ``rgb`` (the photo) lets a foreign spike be
     cut where the car's outline runs along one of its edges; ``model`` (the
     segmentation model's own alpha) is where ``model_fragments`` are counted
     (default: ``alpha``). With ``detector`` (and ``rgb``) the semantic check runs
-    (step 3; ``detections``: the detector's full-frame instances, if already known)."""
+    (step 3; ``detections``: the detector's full-frame instances, if already known); with
+    ``zoom_segment`` (BiRefNet on a window of ``rgb``) a foreign region glued to the outline is cut
+    where a zoom pass gives a certain cut line (``zoom_cut``)."""
     info = MaskInfo()
     binary = (alpha >= 0.5).astype(np.uint8)
     count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
@@ -924,6 +1184,7 @@ def clean_mask(
     # Semantic check: what the detector does not see as part of THE vehicle (on the mask as the
     # model cut it – a filled window is no foreign object) …
     semantic_removed = None
+    zoom_cuts: list[ZoomCut] = []
     sem = None
     findings: list[SemanticFinding] = []
     if detector is not None and rgb is not None:
@@ -931,7 +1192,13 @@ def clean_mask(
             keep_mask.astype(bool), rgb, detector, detections=detections, protrusions=protrusions
         )
         info.vehicle_detected = sem.vehicle is not None
-        semantic_removed = _apply_semantic(keep_mask, labels, main, findings, sem.scale, info)
+        ys, xs = np.nonzero(keep_mask)
+        zone_px = (ZOOM_ZONE_CELLS * sem.cell / sem.scale if sem.scale > 0 else 0.0) + SEMANTIC_MARGIN * (
+            int(xs.max() - xs.min() + 1) if len(xs) else 0
+        )
+        semantic_removed, zoom_cuts = _apply_semantic(
+            keep_mask, labels, main, findings, sem.scale, info, rgb=rgb, zoom_segment=zoom_segment, zone_px=zone_px
+        )
         info.semantic_scale = sem.scale
 
     filled = _fill_holes(keep_mask, upper_fill_ratio, info)
@@ -960,6 +1227,8 @@ def clean_mask(
     result = np.maximum(result, filled.astype(np.float32))
     for cut in cuts:
         result = _apply_cut(result, cut)
+    for zoom in zoom_cuts:
+        result = _apply_zoom_cut(result, zoom)
     if semantic_removed is not None and semantic_removed.any():
         # a dropped part and its own soft fringe go, the body's fringe stays
         fringe = cv2.dilate(semantic_removed.astype(np.uint8), _ellipse(4)).astype(bool) & ~cv2.dilate(

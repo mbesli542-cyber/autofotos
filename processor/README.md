@@ -126,9 +126,26 @@ roof boxes. A second, small model gives the semantic signal:
    at 14 % cover – kept). Antenna masts, mirror arms, wipers, roof rails and the
    cowl are below the thickness limit;
 4. a foreign region that is a separate part of the mask is dropped (warning
-   `background_object_removed`); one glued to the outline is not cut (the cut
-   line between car and object is not certain) and the job is rejected
-   (`mask_low_confidence`, check `foreign`, see the gate below);
+   `background_object_removed`). One glued to the outline is cut only when the
+   cut line is certain (`mask.zoom_cut`, at most 2 regions per photo): BiRefNet
+   runs a second time on the ORIGINAL pixels of the region's verification tile
+   (≈ 4× the region – the contact zone at 3–8× the resolution of the
+   whole-frame pass, where touching objects separate), and the cut – what that
+   pass leaves out of the mask, only within ≈ 3 mask cells of the region – must
+   satisfy every signal: the pass agrees with the mask outside that zone
+   (≤ 3 % of its pixels differ – a pass that merges more of the neighbour or
+   loses part of the car is no reference), the cut leaves ≤ 10 % of the region
+   and nothing thick beyond the vehicle instance, touches neither the core of
+   the tile's vehicle instance nor a thin part of the mask, and ≥ 60 % of the
+   new outline lies on a colour edge of the photo (ΔE ≥ 12). Alpha only (the
+   pass's own anti-aliased edge where it is lower, never higher); warning
+   `background_object_removed`. Only regions another detected object claims
+   are cut: a region nothing claims may contain a part of the car the instance
+   masks miss (the coupe's mirror in front of a bollard). Otherwise the job is
+   rejected (`mask_low_confidence`, check `foreign`, see the gate below); the
+   diagnostics are in `mask.semantic.findings[].verify.zoomCut`, the passes in
+   `segmentation.zoomPasses` (one BiRefNet run each, about as long as the main
+   pass);
 5. **missing parts** – the other direction, checked on the cut-out as it will
    be: after the window-hole fill (a see-through window or glass roof that the
    fill closes is no lost part) and together with the separate foreign parts
@@ -696,14 +713,19 @@ exists.
   outline meets them – a few pixels of the object can remain at that chord.
   Everything else the vehicle detector does not see as part of the vehicle
   (another car's wheel, hubcap or rear, a sign behind the roof, a side table, a
-  bollard behind a mirror) is only removed when it is a separate part of the
-  mask; glued to the outline it is NOT cut – the detector's masks are too coarse
-  for a certain cut line – and the job is rejected with the "freier
-  Hintergrund" message. With cars parked close together (a dealer lot) this
+  bollard behind a mirror) is removed when it is a separate part of the
+  mask; glued to the outline it is cut only where a zoom pass of BiRefNet, the
+  detector and a colour edge agree on the cut line (step 4 above) – otherwise
+  the job is rejected with the "freier Hintergrund" message. On the regression
+  set the zoom cut separates the second white car glued to `white_car`'s rear;
+  the other glued objects stay rejected because a signal disagrees (the zoom
+  pass keeps a snow cap, merges the blue car or the bollard, or the cut would
+  touch the vehicle instance). With cars parked close together (a dealer lot) this
   asks for a retake more often: of the 21 normally framed real photos of the
-  regression and audit sets (mostly snowy dealer lots), 7 are now rejected for
+  regression and audit sets (mostly snowy dealer lots), 6 are now rejected for
   this – each has a real object glued to the outline (checked by eye) –, 1
-  (`front`) for a mirror the cut-out lost (below), and the other 13 are
+  (`front`) for a mirror the cut-out lost (below), 1 (`white_car`) is accepted
+  with the glued car behind cut by the zoom cut, and the other 13 are
   accepted as before (`old_hardlight` now with a hint, below). Not detected:
   objects the detector neither assigns to another class nor leaves outside its
   vehicle mask (e.g. a grey post exactly behind the car's own silhouette, or a
