@@ -282,7 +282,10 @@ Inter font, each glyph's real advance – is at most 2.5 brand-wall heights
 icons, ISC, `app/showroom/icons.py`), side lines `ruleLength` ≤ 0.4 and
 `ruleGap` ≤ 0.1 (fractions of the wall width), `ruleThickness` ≤ 0.01 (> 0
 when there are lines). Look variants (reference branding, glossier floor,
-car further back): `public/presets/variants/` (README there). Both
+car further back, the dealer's own backdrop as ONE fixed studio plate –
+`autoexperten-haendler.json`, plate set `public/presets/autoexperten-haendler/`,
+built by `showroom3d/dealer_*.py`): `public/presets/variants/` (README there);
+`scripts/visual_regression.py --preset-file <variant.json>` runs one. Both
 placement fields are maxima fitted per photo (`app/pipeline/room_depth.py`,
 metadata `placement.roomFit`): the depth offset, then the width scale, is
 reduced until the floor rule binds no harder than on the plate's spot and the
