@@ -216,53 +216,85 @@ def guarded_correction(
 # ════════════════════════════════════════════════════════════════════════════
 #
 # The owner of the project decided (2026-11-05) that the car may get a Lightroom-like GLOBAL
-# light correction so it matches the bright studio plate: exposure, a contrast S-curve with a
-# highlight ceiling, an optional shadow lift and a white balance towards the studio's light –
-# beyond the conservative limits above. What stays: no generative AI, no relighting model,
-# nothing drawn, removed or retouched; every operation is ONE global mapping of the original
-# pixel values (the same function for every pixel of the vehicle layer, no spatial filter),
-# ratio-preserving for the tone part (every pixel keeps its R:G:B ratio – hue and linear
-# saturation – exactly; only the white balance changes ratios). The paint guard measures the
-# paint (large uniform body areas) before/after and scales the correction back until hue,
-# saturation, tone class and shading of the paint, the car's blacks and highlights stay within
-# the limits.
+# light correction so it matches the bright studio plate: exposure, extra contrast in the upper
+# half of the car's tones, a highlight shoulder, an optional shadow lift and a white balance
+# towards the studio's colour temperature – beyond the conservative limits above. What stays: no
+# generative AI, no relighting model, nothing drawn, removed or retouched; every operation is ONE
+# global mapping of the original pixel values (the same function for every pixel of the vehicle
+# layer, no spatial filter), ratio-preserving for the tone part (every pixel keeps its R:G:B
+# ratio – hue and linear saturation – exactly; only the white balance changes ratios), and the
+# tone part never darkens a pixel (the white balance keeps the luminance of neutral pixels). The
+# paint guard measures the paint (large uniform body areas) before/after and scales the
+# correction back until hue, saturation, colour, tone class and shading of the paint, the car's
+# blacks and highlights stay within the limits.
 
 #: Absolute maxima of the studio light match (presets.py validates the same ranges).
 STUDIO_HARD_LIMITS = STUDIO_LIGHT_RANGES
 
 #: The studio's light is measured on the plate around the car: the brand wall in this share of
-#: the plate height above the car's top (white level and neutral colour of the light) and the
-#: plate behind the car's box (key light: median luminance of wall and floor there).
+#: the plate height above the car's top (white level and colour of the light) and the plate
+#: behind the car's box (key light: median luminance of wall and floor there).
 STUDIO_WALL_BAND = 0.12
-#: Contrast fades out below 2^-4.5 (~4 %) of the car's median luminance (deep blacks are not
-#: crushed) and is complete from 2^-1.5 (35 %) of it.
-CONTRAST_TOE = (-4.5, -1.5)
-#: The exposure lift fades in between these luminances (linear; L* ≈ 3 … 20): the deepest blacks of
-#: the car keep their level (no grey tyres, no grey black trim, black paint keeps its depth).
+#: The exposure (and shadow) lift fades in between these luminances (linear; L* ≈ 3 … 20): the
+#: deepest blacks of the car keep their level (no grey tyres, no grey black trim, black paint keeps
+#: its depth).
 BLACK_ANCHOR = (0.003, 0.03)
 #: Vehicle black guard: the car's darkest 2 % may rise at most this much (L*).
 MAX_VEHICLE_BLACK_LIFT = 2.0
 #: The shadow lift acts between 2^-5 of the median and the median (peak at 2^-2.5 ≈ 1/6).
 SHADOW_RANGE = (-5.0, 0.0)
-#: Paint shading guard: the paint's lightness spread (L* 10th … 90th percentile) keeps this share.
+#: Contrast: the extra slope fades in over the first stop above the car's median (no kink).
+CONTRAST_ONSET = 1.0
+#: Highlight shoulder: width of the rounded corner where the curve meets the highlight ceiling.
+SHOULDER_SOFTNESS = 0.04
+#: The white balance fades out for the brightest pixels (brightest channel, as photographed): a
+#: blown highlight stays neutral white and no channel is pushed into clipping.
+WB_HIGHLIGHT_FADE = (0.88, 0.98)
+#: Paint shading guard: the paint's lightness spread keeps this share over the whole paint (L* 10th
+#: … 90th percentile) and this share on its bright panels (50th … 95th percentile, where the
+#: highlight shoulder of a saturated or light paint acts).
 MIN_PAINT_SHADING = 0.9
-#: Highlight guard (a second line of defence behind the highlight ceiling): the detail (std of the
+MIN_BRIGHT_PANEL_SHADING = 0.85
+#: Highlight guard (a second line of defence behind the shoulder): the detail (std of the
 #: brightest channel, sRGB) of the vehicle's bright pixels (>= 0.6 linear before) keeps this share.
 MIN_HIGHLIGHT_DETAIL = 0.55
+#: … measured only when the bright pixels have detail at all (std of at least 2 sRGB levels).
+MIN_HIGHLIGHT_DETAIL_STD = 2.0 / 255.0
 #: Paint finder: working size and smoothness (local CIELAB standard deviation) of "uniform".
 PAINT_WORK_EDGE = 640
 PAINT_SMOOTH_STD = 3.0
-#: Paint with a mean chroma below this is near-neutral (white, silver, grey, black): its hue is
-#: not defined, its chroma change is limited in absolute CIELAB units instead.
-NEUTRAL_PAINT_CHROMA = 10.0
+#: ONE colour-class decision for finder and guard: the paint is CHROMATIC when at least
+#: PAINT_CHROMATIC_SHARE of its smooth body pixels have C* >= PAINT_CHROMATIC_C, else NEAR-NEUTRAL
+#: (white, silver, grey, black – also grey-blue, sage, champagne-grey …).
+PAINT_CHROMATIC_C = 8.0
+PAINT_CHROMATIC_SHARE = 0.3
+#: A paint pixel's hue is measurable from this chroma on: those pixels enter the per-pixel hue and
+#: saturation guard (weighted by their chroma) in EVERY paint, near-neutral tinted paint included …
+HUE_MIN_C = 5.0
+#: … when they make up at least this share of the paint pixels (else: hue "not measured" – the
+#: a*b* colour guard of near-neutral paint still holds).
+HUE_MIN_SHARE = 0.2
 #: Tone class of the paint: the lift allowance ramps from max_black_lift (median L* <= 25) to
 #: max_paint_lightness_shift (median L* >= 45).
 DARK_PAINT_L = (25.0, 45.0)
+#: White balance reference: the car's neutral parts OUTSIDE the paint (glass, tyres, trim, chrome):
+#: CIELAB chroma below this, L* within this range, at least this share of the car's core.
+WB_NEUTRAL_C = 6.0
+WB_NEUTRAL_L = (15.0, 90.0)
+WB_MIN_REFERENCE_SHARE = 0.02
 #: Guard search: bisection steps of the correction strength.
 GUARD_STEPS = 10
-#: The white balance may use this share of the hue / saturation / chroma limits; the rest is
+#: The white balance may use this share of the hue / saturation / colour limits; the rest is
 #: left for the (ratio-preserving, but not perfectly CIELAB-neutral) tone curve.
 WB_COLOUR_BUDGET = 0.75
+
+#: Linear sRGB (D65) → CIE XYZ.
+_RGB_TO_XYZ = np.array(
+    [[0.4124564, 0.3575761, 0.1804375], [0.2126729, 0.7151522, 0.0721750], [0.0193339, 0.1191920, 0.9503041]]
+)
+_XYZ_TO_RGB = np.linalg.inv(_RGB_TO_XYZ)
+#: Colour temperatures searched for the CCT (mired grid, 1 700 … 25 000 K).
+_MIRED_GRID = np.linspace(1e6 / 25000.0, 1e6 / 1700.0, 2400)
 
 
 @dataclass
@@ -291,12 +323,77 @@ class StudioPlan:
     wb_gains: tuple[float, float, float] = (1.0, 1.0, 1.0)
     #: Pivot of the contrast/shadow curve: the car's median luminance (linear).
     pivot: float = 0.18
-    highlight_slope: float = 0.8
+    highlight_knee: float = 0.85
+    highlight_slope: float = 0.5
     white_limit: float = 0.985
+
+
+@dataclass
+class PaintRegion:
+    """The paint (large uniform body areas) and the car's neutral parts outside it, found on a
+    downscaled copy of the layer."""
+
+    #: Paint pixels (N×3, linear).
+    pixels: np.ndarray
+    info: dict
+    #: The car's neutral parts outside the (dilated) paint: the white balance reference (M×3, linear).
+    neutral_reference: np.ndarray
+    #: Opaque core pixels of the downscaled layer (for the reference's share).
+    core_pixels: int
 
 
 def _luma_normalised(rgb: np.ndarray) -> np.ndarray:
     return rgb / max(float(np.dot(rgb, [0.2126, 0.7152, 0.0722])), 1e-6)
+
+
+# ── colour temperature (CIE 1960 uv, Planckian locus after Krystek 1985) ─────────────────────
+
+
+def _planck_uv(kelvin: np.ndarray) -> np.ndarray:
+    t = np.asarray(kelvin, np.float64)
+    u = (0.860117757 + 1.54118254e-4 * t + 1.28641212e-7 * t**2) / (1.0 + 8.42420235e-4 * t + 7.08145163e-7 * t**2)
+    v = (0.317398726 + 4.22806245e-5 * t + 4.20481691e-8 * t**2) / (1.0 - 2.89741816e-5 * t + 1.61456053e-7 * t**2)
+    return np.stack([u, v], axis=-1)
+
+
+def _locus_normal(kelvin: float) -> np.ndarray:
+    """Unit normal of the locus at ``kelvin``, pointing to positive Duv (greenish, larger v)."""
+    mired = 1e6 / kelvin
+    tangent = _planck_uv(1e6 / (mired + 0.5)) - _planck_uv(1e6 / (mired - 0.5))  # towards warmer
+    normal = np.array([-tangent[1], tangent[0]])
+    return normal / max(float(np.hypot(*normal)), 1e-12)
+
+
+def _uv_from_linear(rgb) -> np.ndarray:
+    x, y, z = _RGB_TO_XYZ @ np.asarray(rgb, np.float64)
+    d = max(x + 15.0 * y + 3.0 * z, 1e-12)
+    return np.array([4.0 * x / d, 6.0 * y / d])
+
+
+def cct_duv(rgb) -> tuple[float, float]:
+    """Correlated colour temperature (K) and Duv (distance from the Planckian locus in CIE 1960
+    uv; > 0 greenish, < 0 magenta/pink) of a linear sRGB colour."""
+    uv = _uv_from_linear(rgb)
+    locus = _planck_uv(1e6 / _MIRED_GRID)
+    i = int(np.argmin(np.hypot(*(locus - uv).T)))
+    fine = np.linspace(_MIRED_GRID[max(i - 1, 0)], _MIRED_GRID[min(i + 1, len(_MIRED_GRID) - 1)], 201)
+    locus = _planck_uv(1e6 / fine)
+    j = int(np.argmin(np.hypot(*(locus - uv).T)))
+    kelvin = float(1e6 / fine[j])
+    duv = float(np.dot(uv - locus[j], _locus_normal(kelvin)))
+    return kelvin, duv
+
+
+def linear_from_cct_duv(kelvin: float, duv: float) -> np.ndarray:
+    """The linear sRGB colour (luminance 1) of a colour temperature with the given Duv."""
+    u, v = _planck_uv(kelvin) + duv * _locus_normal(kelvin)
+    d = 2.0 * u - 8.0 * v + 4.0
+    x, y = 3.0 * u / d, 2.0 * v / d
+    rgb = _XYZ_TO_RGB @ np.array([x / y, 1.0, (1.0 - x - y) / y])
+    return rgb / float(np.dot(rgb, [0.2126, 0.7152, 0.0722]))
+
+
+# ── studio, curve, mapping ───────────────────────────────────────────────────────────────────
 
 
 def measure_studio(showroom_rgb: np.ndarray, box: tuple[float, float, float, float]) -> StudioLight:
@@ -334,19 +431,58 @@ def _smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
 
 
 def tone_curve(y: np.ndarray, plan: StudioPlan, scale_ev: float = 1.0, scale_shape: float = 1.0) -> np.ndarray:
-    """Luminance → luminance: exposure, contrast S-curve around the car's median (fading out in
-    the deep shadows) and shadow lift, in log2 space. Monotone for the allowed parameters."""
+    """Luminance → luminance in log2 space around the car's median ``x = log2(y / pivot)``:
+
+    - exposure lift (fading out in the deepest blacks, ``BLACK_ANCHOR``),
+    - contrast only ABOVE the median: ``c · x · (1 − x / x_white)``, fading in over the first stop
+      (no kink) and back to 0 at white – the upper tones (wheels, chrome, light panels) brighten,
+      nothing below the median and nothing near white is pushed,
+    - optional shadow lift (0 at the median and in the deepest blacks).
+
+    Every term is >= 0, so the result is never darker than the input; monotone for the allowed
+    parameters (slope >= 1 − contrast)."""
     pivot = max(plan.pivot, 1e-4)
-    x = np.log2(np.maximum(y, 1e-6) / pivot)
+    yy = np.maximum(y, 1e-6)
+    x = np.log2(yy / pivot)
+    anchor = _smoothstep(BLACK_ANCHOR[0], BLACK_ANCHOR[1], yy)
+    f = x + plan.exposure_ev * scale_ev * anchor
     contrast = plan.contrast * scale_shape
+    if contrast:
+        x_white = max(float(np.log2(plan.white_limit / pivot)), 0.25)
+        upper = np.clip(x, 0.0, x_white)
+        f = f + contrast * upper * (1.0 - upper / x_white) * _smoothstep(0.0, CONTRAST_ONSET, upper)
     shadows = plan.shadows * scale_shape
-    f = x + contrast * x * _smoothstep(*CONTRAST_TOE, x)
     if shadows:
         u = np.clip((x - SHADOW_RANGE[0]) / (SHADOW_RANGE[1] - SHADOW_RANGE[0]), 0.0, 1.0)
-        f = f + shadows * 4.0 * u * (1.0 - u)
-    # the black point stays: the exposure lift fades out in the deepest blacks (tyres, trim in shadow)
-    lift = plan.exposure_ev * scale_ev * _smoothstep(BLACK_ANCHOR[0], BLACK_ANCHOR[1], np.maximum(y, 0.0))
-    return (pivot * np.exp2(lift + f)).astype(np.float32)
+        f = f + shadows * 4.0 * u * (1.0 - u) * anchor
+    return (pivot * np.exp2(f)).astype(np.float32)
+
+
+def highlight_slope(plan: StudioPlan, scale_ev: float = 1.0, scale_shape: float = 1.0) -> float:
+    """Slope of the highlight ceiling ``W − s·(W − p)`` (p = brightest channel as photographed):
+    chosen so the ceiling meets the curve at the knee (grey axis), at least ``highlight_slope``.
+    Below the knee the curve is untouched; above it the highlights keep ``s`` of their detail."""
+    white, knee = plan.white_limit, min(plan.highlight_knee, plan.white_limit - 1e-3)
+    grid = np.linspace(0.0, white, 4096, dtype=np.float32)
+    mapped = tone_curve(grid, plan, scale_ev, scale_shape)
+    p_knee = float(np.interp(knee, mapped, grid))  # the original value the curve lifts to the knee
+    slope = (white - knee) / max(white - p_knee, 1e-6)
+    return float(np.clip(slope, plan.highlight_slope, 1.0))
+
+
+def _smooth_min(a: np.ndarray, b: np.ndarray, k: float) -> np.ndarray:
+    """Polynomial smooth minimum: min(a, b) where they differ by more than k, a rounded corner in
+    between; monotone in both arguments and never above min(a, b)."""
+    h = np.clip(0.5 + 0.5 * (b - a) / k, 0.0, 1.0)
+    return b * (1.0 - h) + a * h - k * h * (1.0 - h)
+
+
+def wb_gains_per_pixel(linear: np.ndarray, gains, scale_wb: float = 1.0) -> np.ndarray:
+    """White-balance gains of every pixel: the scaled gains, fading out for the brightest pixels
+    (``WB_HIGHLIGHT_FADE`` on the brightest channel as photographed)."""
+    deviation = scale_wb * (np.asarray(gains, np.float32) - 1.0)
+    fade = 1.0 - _smoothstep(WB_HIGHLIGHT_FADE[0], WB_HIGHLIGHT_FADE[1], linear.max(axis=-1))
+    return (1.0 + fade[..., None] * deviation).astype(np.float32)
 
 
 def apply_studio_light(
@@ -354,33 +490,40 @@ def apply_studio_light(
 ) -> np.ndarray:
     """The global mapping (any shape (…, 3), linear light). Same function for every pixel.
     ``scale_*`` shrink the exposure, the curve shape (contrast + shadows) and the white balance."""
-    gains = 1.0 + scale_wb * (np.asarray(plan.wb_gains, np.float32) - 1.0)
-    rgb = (linear * gains).astype(np.float32)
+    rgb = (linear * wb_gains_per_pixel(linear, plan.wb_gains, scale_wb)).astype(np.float32)
     y = np.maximum(luminance(rgb), 1e-6)
     out = rgb * (tone_curve(y, plan, scale_ev, scale_shape) / y)[..., None]
-    # highlights (brightest channel, the pixel's ratios kept): a lifted pixel rises at most to the
-    # highlight ceiling – it keeps ``highlight_slope`` of its distance to ``white_limit`` – so
-    # chrome, headlights and white paint keep their detail instead of being pushed into a flat
-    # white, nothing new clips, and nothing ends darker than it was (min of two monotone maps)
+    # highlight shoulder (brightest channel, the pixel's ratios kept): up to the knee the curve
+    # rules; above, a lifted pixel rises at most to the ceiling W − s·(W − p) – it keeps ``s`` of
+    # its distance to white, so chrome, headlights and white paint keep their detail and nothing
+    # new clips; never below p (nothing ends darker than photographed)
     peak = out.max(axis=-1)
-    original = linear.max(axis=-1)  # as photographed (before the white balance)
+    original = rgb.max(axis=-1)  # as photographed (after the white balance, which keeps luminance)
     white = plan.white_limit
-    ceiling = np.maximum(original, white - (white - original) * plan.highlight_slope)
-    target = np.minimum(peak, ceiling)
+    s = highlight_slope(plan, scale_ev, scale_shape)
+    ceiling = white - (white - original) * s
+    target = np.maximum(_smooth_min(peak, ceiling, SHOULDER_SOFTNESS), np.minimum(original, peak))
     out = out * (target / np.maximum(peak, 1e-6))[..., None]
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
-def find_paint(vehicle_linear: np.ndarray, vehicle_alpha: np.ndarray) -> tuple[np.ndarray, dict]:
-    """Pixels (N×3, linear) of the paint: the large uniform body areas.
+# ── paint ────────────────────────────────────────────────────────────────────────────────────
 
-    On a downscaled copy of the layer: smooth pixels (local CIELAB std < PAINT_SMOOTH_STD) of
-    the opaque core; if at least 30 % of them are chromatic (C* >= 8) the paint is the dominant
-    hue (chroma-weighted histogram, ±25°), else the dominant lightness of the neutral smooth
-    pixels in the upper 80 % of the car (tyres excluded), ±15 L*."""
+
+def analyse_paint(vehicle_linear: np.ndarray, vehicle_alpha: np.ndarray) -> PaintRegion:
+    """The paint (large uniform body areas) and the car's neutral parts outside it.
+
+    On a downscaled copy of the layer: smooth pixels (local CIELAB std < PAINT_SMOOTH_STD) of the
+    opaque core; if at least PAINT_CHROMATIC_SHARE of them have C* >= PAINT_CHROMATIC_C the paint
+    is CHROMATIC – the dominant hue (chroma-weighted histogram, ±25°) at its dominant lightness
+    (±25 L*) – else NEAR-NEUTRAL: the dominant lightness of the low-chroma smooth pixels in the
+    upper 80 % of the car (tyres excluded), ±15 L*. The white-balance reference: neutral core
+    pixels (C* < WB_NEUTRAL_C, L* in WB_NEUTRAL_L) outside the dilated paint – glass, tyres, trim,
+    chrome; never the paint itself (dark navy or brown-black paint is no white reference)."""
+    empty = np.zeros((0, 3), np.float32)
     ys, xs = np.nonzero(vehicle_alpha > 0.5)
     if len(ys) < 100:
-        return np.zeros((0, 3), np.float32), {"kind": "none"}
+        return PaintRegion(empty, {"kind": "none"}, empty, 0)
     y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
     crop, alpha = vehicle_linear[y0:y1, x0:x1], vehicle_alpha[y0:y1, x0:x1]
     s = min(1.0, PAINT_WORK_EDGE / max(crop.shape[:2]))
@@ -393,34 +536,52 @@ def find_paint(vehicle_linear: np.ndarray, vehicle_alpha: np.ndarray) -> tuple[n
     var = sum(cv2.blur(lab[..., i] ** 2, (7, 7)) - mean[i] ** 2 for i in range(3))
     smooth = core & (np.sqrt(np.maximum(var, 0.0)) < PAINT_SMOOTH_STD) & (lab[..., 0] > 3.0)
     n = int(smooth.sum())
-    if n < 200:
-        return np.zeros((0, 3), np.float32), {"kind": "none"}
     chroma = np.hypot(lab[..., 1], lab[..., 2])
-    hue = hue_degrees(lab)
-    chromatic = smooth & (chroma >= 8.0)
-    if chromatic.sum() >= 0.3 * n:
-        hist = np.histogram(hue[chromatic], bins=72, range=(-180, 180), weights=chroma[chromatic])[0]
-        hist = np.convolve(np.concatenate([hist[-2:], hist, hist[:2]]), np.ones(5) / 5, "valid")
-        mode = -180.0 + 5.0 * (int(np.argmax(hist)) + 0.5)
-        paint = smooth & (chroma >= 5.0) & (np.abs((hue - mode + 180.0) % 360.0 - 180.0) < 25.0)
-        # the body, not tinted glass of the same hue: the dominant lightness ±25 L*
-        hist = np.histogram(lab[..., 0][paint], bins=20, range=(0, 100))[0].astype(float)
-        l_mode = 5.0 * int(np.argmax(np.convolve(hist, [0.25, 0.5, 0.25], "same"))) + 2.5
-        paint &= np.abs(lab[..., 0] - l_mode) < 25.0
-        kind = "chromatic"
+    if n < 200:
+        paint = np.zeros_like(smooth)
+        info: dict = {"kind": "none"}
     else:
-        neutral = smooth & (chroma < 8.0)
-        upper = (np.arange(neutral.shape[0]) < 0.8 * neutral.shape[0])[:, None]
-        hist = np.histogram(lab[..., 0][neutral & upper], bins=20, range=(0, 100))[0].astype(float)
-        mode = 5.0 * int(np.argmax(np.convolve(hist, [0.25, 0.5, 0.25], "same"))) + 2.5
-        paint = neutral & (np.abs(lab[..., 0] - mode) < 15.0)
-        kind = "neutral"
-    return small[paint].astype(np.float32), {"kind": kind, "share": round(float(paint.sum() / max(core.sum(), 1)), 3)}
+        hue = hue_degrees(lab)
+        chromatic = smooth & (chroma >= PAINT_CHROMATIC_C)
+        if chromatic.sum() >= PAINT_CHROMATIC_SHARE * n:
+            hist = np.histogram(hue[chromatic], bins=72, range=(-180, 180), weights=chroma[chromatic])[0]
+            hist = np.convolve(np.concatenate([hist[-2:], hist, hist[:2]]), np.ones(5) / 5, "valid")
+            mode = -180.0 + 5.0 * (int(np.argmax(hist)) + 0.5)
+            paint = smooth & (chroma >= HUE_MIN_C) & (np.abs((hue - mode + 180.0) % 360.0 - 180.0) < 25.0)
+            # the body, not tinted glass of the same hue: the dominant lightness ±25 L*
+            hist = np.histogram(lab[..., 0][paint], bins=20, range=(0, 100))[0].astype(float)
+            l_mode = 5.0 * int(np.argmax(np.convolve(hist, [0.25, 0.5, 0.25], "same"))) + 2.5
+            paint &= np.abs(lab[..., 0] - l_mode) < 25.0
+            kind = "chromatic"
+        else:
+            neutral = smooth & (chroma < PAINT_CHROMATIC_C)
+            upper = (np.arange(neutral.shape[0]) < 0.8 * neutral.shape[0])[:, None]
+            hist = np.histogram(lab[..., 0][neutral & upper], bins=20, range=(0, 100))[0].astype(float)
+            mode = 5.0 * int(np.argmax(np.convolve(hist, [0.25, 0.5, 0.25], "same"))) + 2.5
+            paint = neutral & (np.abs(lab[..., 0] - mode) < 15.0)
+            kind = "neutral"
+        info = {"kind": kind, "share": round(float(paint.sum() / max(core.sum(), 1)), 3)}
+    around_paint = cv2.dilate(paint.astype(np.uint8), np.ones((7, 7), np.uint8)) > 0
+    reference = (
+        core & ~around_paint & (chroma < WB_NEUTRAL_C) & (lab[..., 0] > WB_NEUTRAL_L[0]) & (lab[..., 0] < WB_NEUTRAL_L[1])
+    )
+    return PaintRegion(
+        pixels=small[paint].astype(np.float32),
+        info=info,
+        neutral_reference=small[reference].astype(np.float32),
+        core_pixels=int(core.sum()),
+    )
+
+
+def find_paint(vehicle_linear: np.ndarray, vehicle_alpha: np.ndarray) -> tuple[np.ndarray, dict]:
+    """Pixels (N×3, linear) of the paint and the finder's info (see ``analyse_paint``)."""
+    region = analyse_paint(vehicle_linear, vehicle_alpha)
+    return region.pixels, region.info
 
 
 def paint_stats(pixels: np.ndarray) -> dict:
     """Colour of the paint pixels: CIELAB of their mean colour, per-pixel lightness percentiles
-    and (key ``lab``) the per-pixel CIELAB values for the per-pixel hue / saturation guard."""
+    and (key ``lab``) the per-pixel CIELAB values for the per-pixel guards."""
     lab = lab_from_linear(pixels.reshape(-1, 1, 3)).reshape(-1, 3)
     mean = lab_from_linear(pixels.mean(axis=0).reshape(1, 1, 3)).reshape(3)
     return {
@@ -430,6 +591,7 @@ def paint_stats(pixels: np.ndarray) -> dict:
         "L10": float(np.percentile(lab[:, 0], 10)),
         "L50": float(np.percentile(lab[:, 0], 50)),
         "L90": float(np.percentile(lab[:, 0], 90)),
+        "L95": float(np.percentile(lab[:, 0], 95)),
         "lab": lab,
     }
 
@@ -443,6 +605,23 @@ def lift_allowance(l50: float, cfg: StudioLightConfig) -> float:
     return black + t * (max(other, black) - black)
 
 
+def _weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float:
+    order = np.argsort(values)
+    cumulative = np.cumsum(weights[order])
+    return float(np.interp(q * cumulative[-1], cumulative, values[order]))
+
+
+def colour_vector_shift(lab_before: np.ndarray, lab_after: np.ndarray) -> float:
+    """Shift of the paint's colour in the a*b* plane (ΔE units, mean over the pixels) with the
+    exposure removed: a ratio-preserving gain scales a*, b* and L*+16 alike (cube-root range of
+    CIELAB), so (a*, b*) / (L*+16) is compared and expressed at the photographed lightness."""
+    scale_b = lab_before[:, :1] + 16.0
+    normalised_b = lab_before[:, 1:3] / scale_b
+    normalised_a = lab_after[:, 1:3] / (lab_after[:, :1] + 16.0)
+    shift = ((normalised_a - normalised_b) * scale_b).mean(axis=0)
+    return float(np.hypot(*shift))
+
+
 def paint_guard(
     before: dict,
     after: dict,
@@ -450,90 +629,124 @@ def paint_guard(
     vehicle_after: np.ndarray,
     cfg: StudioLightConfig,
     colour_budget: float = 1.0,
+    kind: str = "chromatic",
+    reference: dict | None = None,
 ) -> tuple[list[str], dict]:
-    """Failed guard names + the measured changes (``colour_budget`` scales the hue, saturation
-    and neutral-chroma limits)."""
+    """Failed guard names + the measured changes (``colour_budget`` scales the hue, saturation and
+    colour limits; ``kind`` is the paint finder's class). A value that could not be measured is
+    None (e.g. the hue of an almost colourless paint)."""
     hard = STUDIO_HARD_LIMITS
     failed: list[str] = []
     m: dict = {}
     if before:
-        neutral = before["C"] < NEUTRAL_PAINT_CHROMA
         lab_b, lab_a = before["lab"], after["lab"]
         chroma_b = np.hypot(lab_b[:, 1], lab_b[:, 2])
         # per pixel: the tone curve keeps every pixel's R:G:B ratio, so only a real colour change
-        # (white balance) moves these – not a different mix of bright and dark paint pixels
-        chromatic = (chroma_b >= 8.0) & (lab_b[:, 0] >= 5.0)
-        if not neutral and chromatic.sum() >= 50:
-            dh = (hue_degrees(lab_a[chromatic]) - hue_degrees(lab_b[chromatic]) + 180.0) % 360.0 - 180.0
+        # (white balance) moves these – not a different mix of bright and dark paint pixels. Every
+        # paint pixel with a measurable hue counts, weighted by its chroma (near-neutral tinted
+        # paint such as grey-blue or sage included).
+        hued = (chroma_b >= HUE_MIN_C) & (lab_b[:, 0] >= 5.0)
+        m["hueMeasuredShare"] = float(hued.mean()) if len(hued) else 0.0
+        if hued.sum() >= 50 and m["hueMeasuredShare"] >= HUE_MIN_SHARE:
+            weight = chroma_b[hued]
+            dh = np.abs((hue_degrees(lab_a[hued]) - hue_degrees(lab_b[hued]) + 180.0) % 360.0 - 180.0)
             # saturation C*/(L*+16): exactly invariant to an exposure gain (cube-root range of
             # CIELAB), so a brighter car does not count as a more or less saturated one
-            sat_b = chroma_b[chromatic] / (lab_b[chromatic, 0] + 16.0)
-            sat_a = np.hypot(lab_a[chromatic, 1], lab_a[chromatic, 2]) / (lab_a[chromatic, 0] + 16.0)
-            m["hueShiftDeg"] = float(np.median(np.abs(dh)))
-            m["hueShiftP90Deg"] = float(np.percentile(np.abs(dh), 90))
-            m["saturationChange"] = float(np.median(sat_a / sat_b) - 1.0)
+            sat_b = chroma_b[hued] / (lab_b[hued, 0] + 16.0)
+            sat_a = np.hypot(lab_a[hued, 1], lab_a[hued, 2]) / (lab_a[hued, 0] + 16.0)
+            m["hueShiftDeg"] = _weighted_quantile(dh, weight, 0.5)
+            m["hueShiftP90Deg"] = _weighted_quantile(dh, weight, 0.9)
+            m["saturationChange"] = _weighted_quantile(sat_a / sat_b, weight, 0.5) - 1.0
         else:
-            m["hueShiftDeg"] = m["hueShiftP90Deg"] = 0.0
-            m["saturationChange"] = 0.0
+            m["hueShiftDeg"] = m["hueShiftP90Deg"] = m["saturationChange"] = None  # not measured
+        # near-neutral paint: its colour (a*b*) may move at most max_neutral_colour_shift
+        m["colourShift"] = colour_vector_shift(lab_b, lab_a) if kind == "neutral" else None
         m["chromaShift"] = after["C"] - before["C"]
         m["lightnessShift"] = after["L50"] - before["L50"]
         m["blackPointShift"] = after["L10"] - before["L10"]
         budget = colour_budget
         max_hue = budget * min(cfg.max_hue_shift_deg, hard["max_hue_shift_deg"][1])
         # the paint's hue (median) and no larger part of it (90th percentile, 2× the limit)
-        if not neutral and (m["hueShiftDeg"] > max_hue or m["hueShiftP90Deg"] > 2.0 * max_hue):
+        if m["hueShiftDeg"] is not None and (m["hueShiftDeg"] > max_hue or m["hueShiftP90Deg"] > 2.0 * max_hue):
             failed.append("hue")
-        if neutral:
-            limit = budget * min(cfg.max_neutral_chroma_shift, hard["max_neutral_chroma_shift"][1])
-            if abs(m["chromaShift"]) > limit:
-                failed.append("neutralChroma")
-        elif abs(m["saturationChange"]) > budget * min(cfg.max_saturation_change, hard["max_saturation_change"][1]):
+        max_sat = budget * min(cfg.max_saturation_change, hard["max_saturation_change"][1])
+        if m["saturationChange"] is not None and abs(m["saturationChange"]) > max_sat:
             failed.append("saturation")
+        max_colour = budget * min(cfg.max_neutral_colour_shift, hard["max_neutral_colour_shift"][1])
+        if m["colourShift"] is not None and m["colourShift"] > max_colour:
+            failed.append("neutralColour")
         allowance = lift_allowance(before["L50"], cfg)
         m["lightnessAllowance"] = allowance
         if abs(m["lightnessShift"]) > allowance:
             failed.append("toneClass")
         if before["L50"] < DARK_PAINT_L[1] and m["blackPointShift"] > allowance:
             failed.append("blackPoint")
-        # the paint keeps its shading (a saturated paint lifted against the highlight ceiling
-        # would otherwise flatten): spread of its lightness, 10th to 90th percentile
-        spread = before["L90"] - before["L10"]
-        if spread > 5.0:
-            m["paintShading"] = (after["L90"] - after["L10"]) / spread
-            if m["paintShading"] < MIN_PAINT_SHADING:
-                failed.append("paintShading")
+        # the paint keeps its shading (a paint lifted against the highlight shoulder would
+        # otherwise flatten): spread of its lightness, 10th to 90th percentile, and on its bright
+        # panels (50th to 95th percentile)
+        for name, lo, hi, minimum in (
+            ("paintShading", "L10", "L90", MIN_PAINT_SHADING),
+            ("brightPanelShading", "L50", "L95", MIN_BRIGHT_PANEL_SHADING),
+        ):
+            spread = before[hi] - before[lo]
+            if spread > 3.0:
+                m[name] = (after[hi] - after[lo]) / spread
+                if m[name] < minimum:
+                    failed.append(name)
+    ref = reference if reference is not None else vehicle_reference(vehicle_before)
     white = 0.995
-    peak_b, peak_a = vehicle_before.max(axis=-1), vehicle_after.max(axis=-1)
+    peak_b, peak_a = ref["peak"], vehicle_after.max(axis=-1)
     clipped = (peak_a >= white) & (peak_b < white)
     m["newClippedFraction"] = float(clipped.mean()) if len(clipped) else 0.0
     if m["newClippedFraction"] > min(cfg.max_new_clipped, hard["max_new_clipped"][1]):
         failed.append("clipping")
-    if len(vehicle_before) >= 200:
-        l_b = lab_from_linear(vehicle_before.reshape(-1, 1, 3)).reshape(-1, 3)[:, 0]
+    if ref["black"] is not None:
         l_a = lab_from_linear(vehicle_after.reshape(-1, 1, 3)).reshape(-1, 3)[:, 0]
-        m["vehicleBlackShift"] = float(np.percentile(l_a, 2) - np.percentile(l_b, 2))
+        m["vehicleBlackShift"] = float(np.percentile(l_a, 2) - ref["black"])
         if m["vehicleBlackShift"] > MAX_VEHICLE_BLACK_LIFT:
             failed.append("blacks")
-    bright = peak_b >= 0.6
-    if bright.sum() >= 200:
-        detail_b = float(np.std(linear_to_srgb(peak_b[bright])))
-        detail_a = float(np.std(linear_to_srgb(peak_a[bright])))
-        m["highlightDetail"] = detail_a / max(detail_b, 1e-4)
+    m["highlightDetail"] = None
+    if ref["detail"] is not None:  # None: too few bright pixels, or uniform ones (no detail to lose)
+        detail_a = float(np.std(linear_to_srgb(peak_a[ref["bright"]])))
+        m["highlightDetail"] = detail_a / ref["detail"]
         if m["highlightDetail"] < MIN_HIGHLIGHT_DETAIL:
             failed.append("highlights")
     return failed, m
 
 
+def vehicle_reference(vehicle_before: np.ndarray) -> dict:
+    """The vehicle-wide values of the guard measured once on the photographed pixels: brightest
+    channel, darkest 2 % (L*) and the detail of the bright pixels (>= 0.6 linear)."""
+    peak = vehicle_before.max(axis=-1)
+    black = None
+    if len(vehicle_before) >= 200:
+        black = float(np.percentile(lab_from_linear(vehicle_before.reshape(-1, 1, 3)).reshape(-1, 3)[:, 0], 2))
+    bright = peak >= 0.6
+    detail = None
+    if bright.sum() >= 200:
+        detail = float(np.std(linear_to_srgb(peak[bright])))
+        if detail < MIN_HIGHLIGHT_DETAIL_STD:
+            detail = None
+    return {"peak": peak, "black": black, "bright": bright, "detail": detail}
+
+
 def plan_studio_light(
-    vehicle_linear: np.ndarray, vehicle_alpha: np.ndarray, studio: StudioLight, cfg: StudioLightConfig
+    vehicle_linear: np.ndarray,
+    vehicle_alpha: np.ndarray,
+    studio: StudioLight,
+    cfg: StudioLightConfig,
+    neutral_reference: np.ndarray | None = None,
+    core_pixels: int = 0,
 ) -> tuple[StudioPlan, dict]:
-    """Full-strength plan from the ORIGINAL vehicle pixels and the studio's light (measurement)."""
+    """Full-strength plan from the ORIGINAL vehicle pixels and the studio's light (measurement).
+    ``neutral_reference``: the car's neutral parts outside the paint (``analyse_paint``); without
+    enough of them (at least WB_MIN_REFERENCE_SHARE of the core) the white balance stays off."""
     hard = STUDIO_HARD_LIMITS
     core = vehicle_alpha > 0.97
     sample = _sample(vehicle_linear[core]) if core.any() else vehicle_linear.reshape(-1, 3)
     y = luminance(sample)
     median = float(np.median(y)) if len(y) else 0.18
-    measured = {
+    measured: dict = {
         "carMedian": median,
         "carP95": float(np.percentile(y, 95)) if len(y) else 0.0,
         "carP99": float(np.percentile(y, 99)) if len(y) else 0.0,
@@ -544,28 +757,50 @@ def plan_studio_light(
     target = min(cfg.key_target, hard["key_target"][1]) * studio.key
     raw_ev = float(np.log2(max(target, 1e-4) / max(median, 1e-4)))
     ev = float(np.clip(strength * raw_ev, 0.0, min(cfg.max_exposure_ev, hard["max_exposure_ev"][1])))
-    # white balance: the car's neutral parts (tyres, glass, chrome, neutral paint) towards the
-    # colour of the studio's white light, ``white_balance_strength`` of it, luminance kept
+    # white balance: only the colour TEMPERATURE of the car's neutral parts (glass, tyres, trim –
+    # never the paint) moves towards the studio's light (``white_balance_strength`` of the mired
+    # difference); the car's own green–magenta tint (Duv) stays, so a tinted wall never tints the
+    # car; luminance kept, at most max_white_balance per channel
     gains = (1.0, 1.0, 1.0)
-    lab = lab_from_linear(sample.reshape(-1, 1, 3)).reshape(-1, 3)
-    chroma = np.hypot(lab[:, 1], lab[:, 2])
-    neutral = (chroma < 6.0) & (lab[:, 0] > 15.0) & (lab[:, 0] < 90.0)
     limit = min(cfg.max_white_balance, hard["max_white_balance"][1])
-    if limit > 0 and neutral.sum() > max(200, 0.02 * len(sample)):
-        car_neutral = _luma_normalised(sample[neutral].mean(axis=0))
-        measured["carNeutral"] = [round(float(v), 4) for v in car_neutral]
-        raw = _luma_normalised(np.asarray(studio.neutral) / np.maximum(car_neutral, 1e-5))
-        deviation = min(cfg.white_balance_strength, hard["white_balance_strength"][1]) * (raw - 1.0)
+    wb: dict = {"reference": "neutralPartsOutsidePaint"}
+    reference = neutral_reference if neutral_reference is not None else np.zeros((0, 3), np.float32)
+    needed = max(200, int(WB_MIN_REFERENCE_SHARE * core_pixels))
+    wb["referencePixels"] = int(len(reference))
+    if limit <= 0 or cfg.white_balance_strength <= 0:
+        wb["skipped"] = "off"
+    elif len(reference) < needed:
+        wb["skipped"] = "noNeutralReference"  # no white balance rather than the paint as reference
+    else:
+        car_neutral = _luma_normalised(reference.mean(axis=0))
+        car_k, car_duv = cct_duv(car_neutral)
+        studio_k, studio_duv = cct_duv(np.asarray(studio.neutral))
+        share = min(cfg.white_balance_strength, hard["white_balance_strength"][1])
+        target_k = 1e6 / (1e6 / car_k + share * (1e6 / studio_k - 1e6 / car_k))
+        goal = linear_from_cct_duv(target_k, car_duv)
+        # the same Duv on the car's own temperature reproduces its neutral (up to the locus model):
+        # the gains are the ratio of the two locus colours, i.e. a pure temperature change
+        here = linear_from_cct_duv(car_k, car_duv)
+        raw = _luma_normalised(goal / np.maximum(here, 1e-6))
+        deviation = raw - 1.0
         largest = float(np.max(np.abs(deviation)))
         if largest > limit:
             deviation *= limit / largest  # keeps the luminance (Σ w·dev = 0)
         gains = tuple(float(1.0 + d) for d in deviation)
+        wb.update(
+            carNeutral=[round(float(v), 4) for v in car_neutral],
+            carCct=round(car_k), carDuv=round(car_duv, 4),
+            studioCct=round(studio_k), studioDuv=round(studio_duv, 4),
+            targetCct=round(target_k),
+        )  # fmt: skip
+    measured["whiteBalance"] = wb
     plan = StudioPlan(
         exposure_ev=ev,
         contrast=float(min(cfg.contrast, hard["contrast"][1])),
         shadows=float(min(cfg.shadows, hard["shadows"][1])),
         wb_gains=gains,
         pivot=max(median, 1e-4),
+        highlight_knee=float(np.clip(cfg.highlight_knee, *hard["highlight_knee"])),
         highlight_slope=float(np.clip(cfg.highlight_slope, *hard["highlight_slope"])),
         white_limit=float(np.clip(cfg.white_limit, *hard["white_limit"])),
     )
@@ -574,22 +809,37 @@ def plan_studio_light(
     return plan, measured
 
 
+def _rounded(value):
+    if isinstance(value, float):
+        return round(value, 4)
+    if isinstance(value, dict):
+        return {k: _rounded(v) for k, v in value.items() if k != "lab"}
+    return value
+
+
 def studio_light_correction(
     vehicle_linear: np.ndarray, vehicle_alpha: np.ndarray, studio: StudioLight, cfg: StudioLightConfig
 ) -> tuple[np.ndarray, dict]:
     """Plan, guard (scale back until the paint stays within its limits), apply. Returns the
-    corrected layer and the metadata of what was measured and applied."""
-    plan, measured = plan_studio_light(vehicle_linear, vehicle_alpha, studio, cfg)
-    paint, paint_info = find_paint(vehicle_linear, vehicle_alpha)
-    paint = _sample(paint, 60_000)
+    corrected layer and the metadata of what was measured and applied. Without a measurable paint
+    nothing is corrected (its colour could not be checked)."""
+    region = analyse_paint(vehicle_linear, vehicle_alpha)
+    plan, measured = plan_studio_light(
+        vehicle_linear, vehicle_alpha, studio, cfg, region.neutral_reference, region.core_pixels
+    )
+    paint = _sample(region.pixels, 60_000)
+    kind = region.info.get("kind", "none")
     mask = vehicle_alpha > 0.9
     vehicle = _sample(vehicle_linear[mask], 200_000) if mask.any() else vehicle_linear.reshape(-1, 3)[:0]
     before = paint_stats(paint) if len(paint) >= 100 else {}
+    reference = vehicle_reference(vehicle)
 
     def check(ev: float, shape: float, wb: float, budget: float = 1.0) -> tuple[list[str], dict, dict]:
         after = paint_stats(apply_studio_light(paint, plan, ev, shape, wb)) if before else {}
         vehicle_after = apply_studio_light(vehicle, plan, ev, shape, wb)
-        failed, metrics = paint_guard(before, after, vehicle, vehicle_after, cfg, colour_budget=budget)
+        failed, metrics = paint_guard(
+            before, after, vehicle, vehicle_after, cfg, colour_budget=budget, kind=kind, reference=reference
+        )
         return failed, metrics, after
 
     def largest(passes) -> float:
@@ -601,44 +851,50 @@ def studio_light_correction(
             low, high = (mid, high) if passes(mid) else (low, mid)
         return low
 
-    colour_guards = {"hue", "saturation", "neutralChroma"}
     limited: dict[str, list[str]] = {}
-    # 1) white balance alone: hue / saturation of the paint
-    failed = check(0.0, 0.0, 1.0, WB_COLOUR_BUDGET)[0]
-    wb_fails = set(failed) & colour_guards
-    scale_wb = largest(lambda w: not (set(check(0.0, 0.0, w, WB_COLOUR_BUDGET)[0]) & colour_guards)) if wb_fails else 1.0
-    if scale_wb < 1.0:
-        limited["whiteBalance"] = sorted(wb_fails)
-    # 2) curve shape (contrast, shadow lift) with that white balance
-    failed = check(0.0, 1.0, scale_wb)[0]
-    scale_shape = largest(lambda t: not check(0.0, t, scale_wb)[0]) if failed else 1.0
-    if scale_shape < 1.0:
-        limited["shape"] = failed
-    # 3) exposure on top: as far as the paint's tone class, saturation and highlights allow
-    failed = check(1.0, scale_shape, scale_wb)[0]
-    scale_ev = largest(lambda t: not check(t, scale_shape, scale_wb)[0]) if failed else 1.0
-    if scale_ev < 1.0:
-        limited["exposure"] = failed
+    if not before:  # no paint found: its colour cannot be guarded – no correction at all
+        scale_ev = scale_shape = scale_wb = 0.0
+        limited["all"] = ["paintNotFound"]
+    else:
+        colour_guards = {"hue", "saturation", "neutralColour"}
+        # 1) white balance alone: hue / saturation / colour of the paint
+        failed = check(0.0, 0.0, 1.0, WB_COLOUR_BUDGET)[0]
+        wb_fails = set(failed) & colour_guards
+        scale_wb = (
+            largest(lambda w: not (set(check(0.0, 0.0, w, WB_COLOUR_BUDGET)[0]) & colour_guards)) if wb_fails else 1.0
+        )
+        if scale_wb < 1.0:
+            limited["whiteBalance"] = sorted(wb_fails)
+        # 2) curve shape (contrast, shadow lift) with that white balance
+        failed = check(0.0, 1.0, scale_wb)[0]
+        scale_shape = largest(lambda t: not check(0.0, t, scale_wb)[0]) if failed else 1.0
+        if scale_shape < 1.0:
+            limited["shape"] = failed
+        # 3) exposure on top: as far as the paint's tone class, saturation and highlights allow
+        failed = check(1.0, scale_shape, scale_wb)[0]
+        scale_ev = largest(lambda t: not check(t, scale_shape, scale_wb)[0]) if failed else 1.0
+        if scale_ev < 1.0:
+            limited["exposure"] = failed
     failed, metrics, after = check(scale_ev, scale_shape, scale_wb)
     if failed:  # even the white balance alone fails (e.g. clipping) – no correction at all
         scale_ev = scale_shape = scale_wb = 0.0
         failed, metrics, after = check(0.0, 0.0, 0.0)
-    corrected = apply_studio_light(vehicle_linear, plan, scale_ev, scale_shape, scale_wb)
+    if scale_ev == scale_shape == scale_wb == 0.0:
+        corrected = vehicle_linear.astype(np.float32, copy=True)  # no correction: the original pixels
+    else:
+        corrected = apply_studio_light(vehicle_linear, plan, scale_ev, scale_shape, scale_wb)
     gains = 1.0 + scale_wb * (np.asarray(plan.wb_gains) - 1.0)
-
-    def rounded(d: dict) -> dict:
-        return {k: (round(v, 4) if isinstance(v, float) else v) for k, v in d.items() if k != "lab"}
-
     info = {
         "mode": "studioLight",
         "studio": studio.as_dict(),
-        "measured": rounded(measured),
+        "measured": _rounded(measured),
         "planned": {
             "exposureEv": round(plan.exposure_ev, 4),
             "contrast": round(plan.contrast, 4),
             "shadows": round(plan.shadows, 4),
             "wbGains": [round(g, 4) for g in plan.wb_gains],
             "pivot": round(plan.pivot, 4),
+            "highlightKnee": plan.highlight_knee,
             "highlightSlope": plan.highlight_slope,
             "whiteLimit": plan.white_limit,
         },
@@ -650,8 +906,9 @@ def studio_light_correction(
             "contrast": round(plan.contrast * scale_shape, 4),
             "shadows": round(plan.shadows * scale_shape, 4),
             "wbGains": [round(float(g), 4) for g in gains],
+            "highlightSlope": round(highlight_slope(plan, scale_ev, scale_shape), 4),
         },
-        "paint": {**paint_info, "before": rounded(before), "after": rounded(after)},
-        "guard": {**rounded(metrics), "limitedBy": limited, "passed": not failed},
+        "paint": {**region.info, "before": _rounded(before), "after": _rounded(after)},
+        "guard": {**_rounded(metrics), "limitedBy": limited, "passed": not failed},
     }
     return corrected, info

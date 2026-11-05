@@ -316,45 +316,87 @@ on the plate around the car's spot:
 1. **Studio light** (`measure_studio`): key = median luminance of the plate
    behind/around the car (dealer plate ≈ 0.49 linear), white = 95th percentile of
    the brand wall above the car (≈ 0.69), neutral = colour of the bright wall
-   (≈ R 1.06 : G 1 : B 1.0, warm).
-2. **Plan**: exposure = `exposureStrength` × log2(`keyTarget` × key / car median
-   luminance), 0 … `maxExposureEv` (never darker); white balance: the car's neutral
-   parts (tyres, glass, chrome, neutral paint) towards the studio neutral,
-   `whiteBalanceStrength` of it, ≤ `maxWhiteBalance` per channel, luminance kept.
-3. **One global mapping** (`apply_studio_light`, the same function for every
-   pixel, no spatial filter): white balance, then a luminance curve in log2 space
-   around the car's median – exposure (fading out below L* ≈ 3 … 20: the deepest
-   blacks keep their level), contrast S-curve (`contrast`, fading out in the deep
-   shadows), optional `shadows` lift – applied ratio-preserving (every pixel keeps
-   its R:G:B ratio, i.e. hue and linear saturation), then the highlight ceiling:
-   a lifted pixel's brightest channel keeps at least `highlightSlope` of its
-   distance to `whiteLimit` (chrome, headlights and white paint keep their
-   detail, nothing new clips, nothing ends darker than photographed). Monotone.
-4. **Paint guard** (`find_paint`, `paint_guard`): the paint = smooth pixels of the
-   opaque core (local CIELAB std < 3) of the dominant hue (chromatic paint) or
-   of the dominant lightness (white/silver/grey/black), measured before/after.
-   Bisection scales back first the white balance (75 % of the colour budget),
-   then the curve shape, then the exposure until every limit holds; metadata
-   `adjustments` (mode `studioLight`) lists what was measured, planned, applied,
-   the paint before/after and which guard limited what (`guard.limitedBy`).
+   (≈ 6200–6450 K).
+2. **Paint and white-balance reference** (`analyse_paint`): the paint = smooth
+   pixels of the opaque core (local CIELAB std < 3). ONE class decision, used by
+   the finder and the guard: *chromatic* when ≥ 30 % of them have C* ≥ 8 (then
+   the dominant hue at its dominant lightness), else *near-neutral* (white,
+   silver, grey, black – also grey-blue, sage, champagne-grey …: the dominant
+   lightness). The white-balance reference is the car's neutral parts OUTSIDE the
+   (dilated) paint – glass, tyres, trim, chrome; never the paint itself (a navy
+   or brown-black paint photographed at C* < 6 is no white reference). With less
+   than 2 % of the car as reference the white balance stays off
+   (`whiteBalance.skipped: noNeutralReference`); without a measurable paint
+   nothing is corrected (`limitedBy.all: paintNotFound`).
+3. **Plan**: exposure = `exposureStrength` × log2(`keyTarget` × key / car median
+   luminance), 0 … `maxExposureEv`. White balance = colour **temperature only**:
+   the reference's CCT moves `whiteBalanceStrength` of the way (mired) to the
+   studio's CCT; its green–magenta tint (Duv, CIE 1960) stays the car's own, so a
+   slightly magenta wall never tints a white car pink; ≤ `maxWhiteBalance` per
+   channel, luminance of neutral pixels kept (`cct_duv`, Planckian locus after
+   Krystek). Metadata `measured.whiteBalance`: carCct/carDuv, studioCct, targetCct.
+4. **One global mapping** (`apply_studio_light`, the same function for every
+   pixel, no spatial filter): white balance (fading out for the brightest pixels,
+   brightest channel 0.88 … 0.98: blown highlights stay neutral white), then a
+   luminance curve in log2 space around the car's median – exposure (fading out
+   below L* ≈ 3 … 20: the deepest blacks keep their level), `contrast` **only
+   above the median** (`c·x·(1 − x/x_white)`, fading in over the first stop and
+   back to 0 at white: wheels, chrome and light panels brighten, nothing below the
+   median and nothing near white is pushed), optional `shadows` lift (also
+   anchored) – applied ratio-preserving (every pixel keeps its R:G:B ratio, i.e.
+   hue and linear saturation). Then the **highlight shoulder** on the brightest
+   channel: up to `highlightKnee` the curve rules; above, a lifted pixel rises at
+   most to the ceiling `W − s·(W − p)` (`W` = `whiteLimit`, `p` as photographed),
+   with `s` chosen so the ceiling meets the curve at the knee and never below
+   `highlightSlope` (a strong lift moves the knee down instead of flattening the
+   highlights more); rounded corner, monotone, nothing new clips. The tone part
+   never darkens a pixel (every term ≥ 0, the shoulder never goes below `p`); the
+   white balance keeps the luminance of neutral pixels, a coloured pixel's moves
+   by at most its channel gains.
+5. **Paint guard** (`paint_guard`), paint before/after: hue (chroma-weighted
+   median of the per-pixel hue shift, 90th percentile ≤ 2×) and saturation
+   C*/(L*+16) of EVERY paint pixel with a measurable hue (C* ≥ 5, ≥ 20 % of the
+   paint – else reported as `null` = not measured, never 0); for near-neutral paint
+   additionally its colour in the a*b* plane (exposure-normalised: (a*, b*)/(L*+16)
+   compared at the photographed lightness); tone class (median and black point);
+   shading (L* 10–90 % spread ≥ 90 %, bright panels L* 50–95 % ≥ 85 %); the car's
+   darkest 2 %; newly clipped pixels; highlight detail (skipped when the bright
+   pixels are uniform). Bisection scales back first the white balance (75 % of the
+   colour budget), then the curve shape, then the exposure until every limit
+   holds; metadata `adjustments` (mode `studioLight`) lists what was measured,
+   planned, applied (incl. the effective highlight slope), the paint before/after
+   and which guard limited what (`guard.limitedBy`).
 
 | Limit (dealer variant / hard maximum) | |
 | --- | --- |
 | Exposure | 0 … +0.8 EV / +1.0 EV, never darker |
-| Contrast / shadow lift | 0.2 / 0.3 · 0 / 0.5 EV |
-| White balance | ±6 % / ±8 % per channel, towards the studio neutral |
-| Paint hue (chromatic paint, per-pixel median; 90th pct ≤ 2×) | 2.5° / 3° |
-| Paint saturation C*/(L*+16) (exposure-invariant) | ±10 % / ±10 % |
-| Near-neutral paint (C* < 10) chroma | ±3 / ±4 C* |
+| Contrast above the median / shadow lift | 0.3 / 0.3 · 0 / 0.5 EV |
+| Highlight shoulder: knee / minimum detail slope | 0.85 / 0.6 … 0.95 · 0.65 / ≥ 0.4 |
+| White balance (colour temperature only) | ±6 % / ±8 % per channel |
+| Paint hue (every paint pixel with C* ≥ 5, chroma-weighted median; 90th pct ≤ 2×) | 2.5° / 3° |
+| Paint saturation C*/(L*+16) (same pixels, exposure-invariant) | ±10 % / ±10 % |
+| Near-neutral paint (finder class): colour shift in a*b*, exposure-normalised | 1.5 / 2.0 ΔE |
 | Tone class: paint median L* (and black point of dark paint) | +4 L* for L* ≤ 25 ramping to +6 L* from L* 45 / +5 … +10 |
+| Paint shading: whole paint / bright panels | ≥ 90 % / ≥ 85 % |
 | The car's darkest 2 % (tyres, trim) | +2 L* |
 | Newly clipped vehicle pixels | 0.2 % / 0.3 % |
 | Highlight detail (std of bright pixels, sRGB) | ≥ 55 % |
 
 Never: local retouching (damage, scratches, dirt, badges stay), removing
-reflections, relighting, generative models. Measured on the 12 dealer test
-cases (incl. his S63): exposure +0 … +0.8 EV, paint hue ≤ 1.9°, saturation within ±8 %, black
-paint ≤ +4 L*, no new clipping (`processor/tests/test_light.py` covers the guards).
+reflections, relighting, generative models. A global mapping cannot change the
+light direction (a backlit car keeps its shaded side) and cannot brighten a
+saturated paint much without changing it (its brightest channel is already
+near white), so those cars change little. Measured on
+the 12 dealer test cases (incl. his S63): exposure 0 … +0.51 EV (limited by the
+paint's tone class on every dark car), contrast 0.3, white balance off on the
+black A4 (no neutral reference outside the paint); paint hue (chroma-weighted
+median) ≤ 1.7°, saturation −8 … +7 %, near-neutral paint colour ≤ 1.1 ΔE (the
+white A5: a* within +0.3), black paint ≤ +4 L*, no new clipping, no pixel of the
+car darker than photographed (at most −0.3 L* from the white balance on coloured
+pixels).
+(`processor/tests/test_light.py` covers the guards, incl. grey-blue, sage,
+plum-grey, champagne, dark navy and dark green paint, a magenta studio wall and
+navy paint as its own "white" reference).
 
 **Showroom plates** – ONE physical 3D showroom (Blender,
 `processor/showroom3d/render_plates.py`, CC0 assets) rendered from eight
@@ -770,7 +812,8 @@ exists.
   or – the dealer's decision, `vehicleAdjustments.studioLight` – the guarded
   global studio light match, and the light wrap at the silhouette. A global
   mapping cannot change the light DIRECTION: a backlit car (the S63 photo) keeps
-  its shaded side; dark paint is lifted only as far as its tone class allows. Outdoor reflections in the paint stay –
+  its shaded side; dark paint is lifted only as far as its tone class allows,
+  saturated paint only as far as its brightest channel allows. Outdoor reflections in the paint stay –
   they are part of the photographed car. A tested showroom relighting
   (exposure target from the plate, contrast, white balance, floor bounce, edge
   reflection) lightened correctly exposed dark paint, needed a second colour

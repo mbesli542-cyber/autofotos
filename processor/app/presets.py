@@ -130,20 +130,22 @@ class ReflectionConfig:
 #: Ranges of vehicleAdjustments.studioLight (the dealer's decision, 2026-11-05: the car may get a
 #: Lightroom-like GLOBAL light correction towards the studio). Values outside are configuration
 #: errors; app/pipeline/light.py clamps to the same maxima again. The paint guard limits can only
-#: be made stricter: hue <= 3 degrees, saturation <= ±10 %, black paint lifted by <= 5 L*, …
+#: be made stricter: hue <= 3 degrees, saturation <= ±10 %, the colour of near-neutral paint
+#: <= 2 ΔE(a*b*), black paint lifted by <= 5 L*, …
 STUDIO_LIGHT_RANGES: dict[str, tuple[float, float]] = {
     "exposure_strength": (0.0, 1.0),
     "key_target": (0.5, 1.5),
     "max_exposure_ev": (0.0, 1.0),
     "contrast": (0.0, 0.3),
     "shadows": (0.0, 0.5),
-    "highlight_slope": (0.6, 1.0),
+    "highlight_knee": (0.6, 0.95),
+    "highlight_slope": (0.4, 1.0),
     "white_limit": (0.9, 0.995),
     "white_balance_strength": (0.0, 1.0),
     "max_white_balance": (0.0, 0.08),
     "max_hue_shift_deg": (0.0, 3.0),
     "max_saturation_change": (0.0, 0.10),
-    "max_neutral_chroma_shift": (0.0, 4.0),
+    "max_neutral_colour_shift": (0.0, 2.0),
     "max_black_lift": (0.0, 5.0),
     "max_paint_lightness_shift": (0.0, 10.0),
     "max_new_clipped": (0.0, 0.003),
@@ -155,10 +157,11 @@ class StudioLightConfig:
     """Global light match of the VEHICLE layer to the studio plate (app/pipeline/light.py).
 
     Off unless a preset sets ``vehicleAdjustments.studioLight`` – then with EVERY field written
-    out (nothing silently defaulted). Exposure towards the studio's key light, a contrast
-    S-curve with a highlight ceiling, an optional shadow lift and a white balance towards the
-    studio's measured neutral – all global, ratio-preserving tone/colour mappings of the
-    original pixels, scaled back automatically by the paint guard.
+    out (nothing silently defaulted). Exposure towards the studio's key light, extra contrast in
+    the upper half of the car's tones, a highlight shoulder, an optional shadow lift and a white
+    balance towards the studio's colour temperature – all global tone/colour mappings of the
+    original pixels (the tone part ratio-preserving, never darkening), scaled back automatically by
+    the paint guard.
     """
 
     enabled: bool = False
@@ -168,23 +171,32 @@ class StudioLightConfig:
     key_target: float = 1.0
     #: Exposure lift at most (EV). The car is never darkened.
     max_exposure_ev: float = 0.0
-    #: Contrast around the car's own median luminance (log-space slope − 1); fades out in deep shadows.
+    #: Extra contrast in the upper half of the car's tones (log-space slope − 1 just above the
+    #: car's median luminance, back to 0 at white). Never below the median: nothing is darkened.
     contrast: float = 0.0
-    #: Lift of the shadow tones (EV at 1/6 of the median; 0 at the median and at the black point).
+    #: Lift of the shadow tones (EV at 1/6 of the median; 0 at the median and in the deepest blacks).
     shadows: float = 0.0
-    #: Highlights: a lifted pixel's brightest channel keeps at least this share of its distance
-    #: to ``white_limit`` (1 = highlights not lifted at all; no flat white, nothing new clips).
-    highlight_slope: float = 0.8
+    #: Highlight shoulder: the curve's result stays untouched up to ``highlight_knee`` (brightest
+    #: channel, linear); above, highlights are compressed towards ``white_limit`` with at least
+    #: ``highlight_slope`` of their tonal detail (the knee moves down when a strong lift would
+    #: otherwise compress them more). Nothing new clips, nothing ends darker than photographed.
+    highlight_knee: float = 0.85
+    highlight_slope: float = 0.5
     white_limit: float = 0.985
-    #: Fraction of the white balance towards the studio's measured neutral applied …
+    #: Fraction of the colour TEMPERATURE difference (mired) between the car's neutral parts
+    #: (glass, tyres, trim – never the paint) and the studio's light that is applied; the car's own
+    #: green–magenta tint stays …
     white_balance_strength: float = 0.0
     #: … at most this much per channel (relative gain, luminance kept).
     max_white_balance: float = 0.0
-    #: Paint guard (measured on the paint: large uniform body areas, before vs after).
+    #: Paint guard (measured on the paint: large uniform body areas, before vs after): hue and
+    #: saturation C*/(L*+16) of every paint pixel with a measurable hue (C* >= 5, weighted by its
+    #: chroma) – also in near-neutral tinted paint …
     max_hue_shift_deg: float = 2.5
     max_saturation_change: float = 0.10
-    #: Near-neutral paint (white, silver, grey, black): chroma change at most (CIELAB units).
-    max_neutral_chroma_shift: float = 3.0
+    #: … and for near-neutral paint (white, silver, grey, black) the shift of its colour in the
+    #: a*b* plane (exposure-normalised, ΔE units).
+    max_neutral_colour_shift: float = 1.5
     #: Tone class of the paint: black / very dark paint (median L* <= 25) is lifted at most
     #: ``max_black_lift`` (median AND 10th percentile L*), paint from L* 45 at most
     #: ``max_paint_lightness_shift``, linear in between (no step at a class boundary).

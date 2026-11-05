@@ -64,21 +64,27 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
   **Dealer decision (2026-11-05):** a preset may enable
   `vehicleAdjustments.studioLight` (the dealer variant does, every field written
   out) – a Lightroom-like GLOBAL light match towards the studio plate: exposure
-  towards the studio's key light (0 … +1 EV, never darker; the deepest blacks
-  keep their level), contrast S-curve around the car's median (≤ 0.3), highlight
-  ceiling (highlights keep their detail, nothing new clips), shadow lift
-  (≤ 0.5 EV), white balance towards the studio's measured neutral (≤ ±8 % per
-  channel). It is ONE global mapping of the original pixel values (tone part
-  ratio-preserving: hue and saturation of every pixel unchanged) – no spatial
-  or local operation, no relighting model. The paint guard (measured on the
-  paint = large uniform body areas, before/after) scales it back automatically:
-  paint hue ≤ 2.5° (max 3°), saturation ±10 %, near-neutral paint chroma ±3 C*
-  (max 4), tone class (median and black point L* of black/very dark paint
-  +4 (max 5), from mid tones +6 (max 10)), the car's darkest 2 % ≤ +2 L*,
-  ≤ 0.2 % newly clipped pixels (max 0.3 %), highlight detail ≥ 55 %. These
-  maxima (`STUDIO_LIGHT_RANGES`, `app/presets.py`) are the dealer's limits –
-  never loosen them further, never add local retouching (damage, scratches,
-  dirt, badges, reflections stay; mobile.de: photos show the actual condition).
+  towards the studio's key light (0 … +1 EV; the deepest blacks keep their
+  level), contrast only ABOVE the car's median (≤ 0.3, back to 0 at white),
+  highlight shoulder (knee ≤ 0.95, highlights keep ≥ 40 % of their detail,
+  nothing new clips), shadow lift (≤ 0.5 EV), white balance = colour temperature
+  only towards the studio (≤ ±8 % per channel; the car's green–magenta tint stays;
+  reference = glass/tyres/trim outside the paint, never the paint). The tone part
+  never darkens a pixel. It is ONE global mapping of the original pixel values
+  (tone part ratio-preserving: hue and saturation of every pixel unchanged) – no
+  spatial or local operation, no relighting model. The paint guard (measured on
+  the paint = large uniform body areas, before/after) scales it back
+  automatically: paint hue ≤ 2.5° (max 3°) and saturation ±10 % on EVERY paint
+  pixel with C* ≥ 5 (chroma-weighted; near-neutral tinted paint such as grey-blue
+  or sage included; "not measured" is reported as null, never 0), near-neutral
+  paint colour shift in a*b* ≤ 1.5 ΔE (max 2, exposure-normalised), tone class
+  (median and black point L* of black/very dark paint +4 (max 5), from mid tones
+  +6 (max 10)), paint shading ≥ 90 % (bright panels ≥ 85 %), the car's darkest
+  2 % ≤ +2 L*, ≤ 0.2 % newly clipped pixels (max 0.3 %), highlight detail
+  ≥ 55 %. These maxima (`STUDIO_LIGHT_RANGES`, `app/presets.py`) are the dealer's
+  limits – never loosen them further, never add local retouching (damage,
+  scratches, dirt, badges, reflections stay; mobile.de: photos show the actual
+  condition).
   Beyond that, lighting harmonisation is only the light wrap; see-through
   windows and outdoor reflections in the paint stay (vehicle pixels –
   window/relight treatments were evaluated and removed).
