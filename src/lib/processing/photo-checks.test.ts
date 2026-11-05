@@ -12,6 +12,7 @@ import {
   MAX_PARALLEL_JOBS,
   PhotoChecks,
   checkOnOpen,
+  isKeptOutcome,
   knownOutcomeOf,
   shouldPollAvailability,
   type PhotoCheck,
@@ -311,6 +312,38 @@ describe("PhotoChecks", () => {
     await vi.waitFor(() => expect(statusOf(checks, "p_new_front")).toBe("ok"));
     expect(vi.mocked(processPhoto).mock.calls.map(([photo]) => photo.id)).toEqual(["p_fail_rear", "p_new_front"]);
     expect(statusOf(checks, "p_fail_rear")).toBe("error");
+  });
+
+  it("keeps a failed check after a reload – it is not sent again on every page load, only by 'Fotos bearbeiten'", async () => {
+    vi.mocked(processPhoto).mockRejectedValue(new ProcessingJobFailedError("processing_failed", "Bearbeitung fehlgeschlagen."));
+    const checks = started();
+    save(savedPhoto("p_failed_rear", "rear"));
+    await vi.waitFor(() => expect(statusOf(checks, "p_failed_rear")).toBe("error"));
+
+    for (let load = 0; load < 3; load += 1) {
+      const reloaded = started();
+      expect(reloaded.getSnapshot().checks.get("p_failed_rear")).toMatchObject({
+        status: "error",
+        message: "Bearbeitung fehlgeschlagen.",
+        errorCode: "processing_failed",
+        restored: true,
+      });
+      await reloaded.checkVehicle("veh_1");
+      await flush();
+    }
+    expect(processPhoto).toHaveBeenCalledTimes(1);
+    // Only shown: "Fotos bearbeiten" processes it.
+    const photo = { ...savedPhoto("p_failed_rear", "rear"), urls: { original: "", thumbnail: "", processed: null } };
+    expect(started().knownOutcome(photo, CHECK_PRESET)).toBeNull();
+  });
+
+  it("keeps rejections and failures by the photo, but not a refused access code", () => {
+    expect(isKeptOutcome({ status: "retake", errorCode: "vehicle_cropped" })).toBe(true);
+    expect(isKeptOutcome({ status: "retake", errorCode: null })).toBe(false); // result saved with the photo
+    expect(isKeptOutcome({ status: "error", errorCode: "processing_failed" })).toBe(true);
+    expect(isKeptOutcome({ status: "error", errorCode: null })).toBe(true);
+    expect(isKeptOutcome({ status: "error", errorCode: ACCESS_CODE_INVALID_CODE })).toBe(false);
+    expect(isKeptOutcome({ status: "ok", errorCode: null })).toBe(false);
   });
 
   it("repeats a check that could not run when the checks come on again", async () => {

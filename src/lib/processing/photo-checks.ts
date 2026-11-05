@@ -30,10 +30,13 @@
  * - A check that could not run because the processor is gone (connection,
  *   5xx, not connected) waits again instead of reporting an error; the
  *   camera then shows that the check is off.
- * - Rejections are kept on this device (localStorage, best effort) so the
- *   red state survives a reload. They are only shown: a stored rejection
- *   never stops "Fotos bearbeiten" from sending the photo again (the quality
- *   gate may have changed meanwhile); results are saved with the photo anyway.
+ * - Rejections and failed checks are kept on this device (localStorage,
+ *   best effort) so the red state – and "Prüfung nicht möglich" – survives a
+ *   reload, and a failed photo is not sent again on every page load. They
+ *   are only shown: a stored outcome never stops "Fotos bearbeiten" from
+ *   sending the photo again (the quality gate may have changed meanwhile);
+ *   results are saved with the photo anyway. A refused access code is not
+ *   kept (it is about the code, not the photo).
  * - Jobs survive a reload: every submitted job is kept on this device
  *   (job-journal.ts) until its outcome is known. After a reload or a
  *   discarded tab its photo is checked again – by polling that job, not by
@@ -198,10 +201,17 @@ interface SharedJob {
   steps: Set<(step: PhotoStep, progress?: number) => void>;
 }
 
-type StoredRejection = Pick<
+/** A rejection or a failed check kept on this device (`status` missing: a rejection kept before failures were). */
+type StoredOutcome = Pick<
   PhotoCheck,
   "photoId" | "vehicleId" | "shotKey" | "shotOrder" | "title" | "takenAt" | "preset" | "message" | "errorCode"
->;
+> & { status?: "retake" | "error" };
+
+/** Whether the outcome of a check is kept on this device (pure): a rejection by its code, or a failed check. */
+export function isKeptOutcome(check: Pick<PhotoCheck, "status" | "errorCode">): boolean {
+  if (check.status === "retake") return check.errorCode !== null;
+  return check.status === "error" && check.errorCode !== ACCESS_CODE_INVALID_CODE;
+}
 
 const EMPTY: PhotoChecksSnapshot = { availability: "unknown", checks: new Map(), captures: new Map() };
 
@@ -466,7 +476,7 @@ export class PhotoChecks {
     };
   }
 
-  /** Ends every check (signed out / another user). Stored rejections stay with their photo ids. */
+  /** Ends every check (signed out / another user). Stored outcomes stay with their photo ids. */
   stopAll(): void {
     // The jobs of the previous user are not resumed after a reload.
     clearJobJournal();
@@ -970,12 +980,12 @@ export class PhotoChecks {
     }
   }
 
-  /** Rejected photos (by the processor's code) are kept on this device. */
+  /** Rejected photos (by the processor's code) and failed checks are kept on this device (isKeptOutcome). */
   private persist(): void {
-    const rejections: StoredRejection[] = [...this.snapshot.checks.values()]
-      .filter((check) => check.status === "retake" && check.errorCode !== null)
+    const rejections: StoredOutcome[] = [...this.snapshot.checks.values()]
+      .filter(isKeptOutcome)
       .slice(-MAX_STORED)
-      .map(({ photoId, vehicleId, shotKey, shotOrder, title, takenAt, preset, message, errorCode }) => ({
+      .map(({ photoId, vehicleId, shotKey, shotOrder, title, takenAt, preset, status, message, errorCode }) => ({
         photoId,
         vehicleId,
         shotKey,
@@ -983,6 +993,7 @@ export class PhotoChecks {
         title,
         takenAt,
         preset,
+        status: status === "error" ? "error" : "retake",
         message,
         errorCode,
       }));
@@ -1003,16 +1014,18 @@ export class PhotoChecks {
     }
     if (!Array.isArray(stored)) return;
     const checks = new Map(this.snapshot.checks);
-    for (const entry of stored as Partial<StoredRejection>[]) {
+    for (const entry of stored as Partial<StoredOutcome>[]) {
+      const failed = entry?.status === "error";
       if (
         typeof entry?.photoId !== "string" ||
         typeof entry.vehicleId !== "string" ||
         typeof entry.shotKey !== "string" ||
-        typeof entry.errorCode !== "string" ||
+        !(typeof entry.errorCode === "string" || (failed && entry.errorCode === null)) ||
         checks.has(entry.photoId)
       ) {
         continue;
       }
+      const errorCode = entry.errorCode ?? null;
       checks.set(entry.photoId, {
         photoId: entry.photoId,
         vehicleId: entry.vehicleId,
@@ -1021,9 +1034,14 @@ export class PhotoChecks {
         title: typeof entry.title === "string" ? entry.title : entry.shotKey,
         takenAt: typeof entry.takenAt === "string" ? entry.takenAt : "",
         preset: isProcessingPresetId(entry.preset) ? entry.preset : CHECK_PRESET,
-        status: "retake",
-        message: typeof entry.message === "string" ? entry.message : retakeFallbackMessage(entry.errorCode),
-        errorCode: entry.errorCode,
+        status: failed ? "error" : "retake",
+        message:
+          typeof entry.message === "string"
+            ? entry.message
+            : failed
+              ? GENERIC_FAILURE
+              : retakeFallbackMessage(errorCode ?? ""),
+        errorCode,
         warnings: [],
         restored: true,
       });
