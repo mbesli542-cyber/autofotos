@@ -7,7 +7,8 @@ export interface CheckBannerState {
   /** Changes with every finished check (restarts the banner's timer). */
   id: string;
   shotKey: string;
-  kind: "ok" | "retake" | "error";
+  /** hint: passed, but the processor asks to look at the result. */
+  kind: "ok" | "hint" | "retake" | "error";
   text: string;
 }
 

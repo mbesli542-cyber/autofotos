@@ -83,7 +83,7 @@ function leaveCamera(router: Router, href: string) {
 }
 
 /** How long the banner of a finished check stays (ms): a rejection longer than an OK. */
-const CHECK_BANNER_MS = { ok: 3_500, retake: 9_000, error: 6_000 } as const;
+const CHECK_BANNER_MS = { ok: 3_500, hint: 6_000, retake: 9_000, error: 6_000 } as const;
 
 /**
  * The banner for a finished check of the camera's vehicle – null when the
@@ -99,7 +99,9 @@ function bannerFor(check: PhotoCheck, slots: readonly PhotoSlot[]): CheckBannerS
   const state = isPassThroughCategory(slot.category) ? passThroughState(checked, true) : checked;
   const text = checkResultMessage(slot, state);
   if (!text || (state.kind !== "ok" && state.kind !== "retake" && state.kind !== "error")) return null;
-  return { id: `${check.photoId}-${check.status}`, shotKey: slot.key, kind: state.kind, text };
+  // A result with a processor hint is not a plain "passt": amber, like its segment.
+  const kind = state.kind === "ok" && state.hint ? "hint" : state.kind;
+  return { id: `${check.photoId}-${check.status}`, shotKey: slot.key, kind, text };
 }
 
 const UNKNOWN_SHOT_HINT = "Diese Aufnahme gibt es in der Kamera nicht. Es geht mit den Pflichtfotos weiter.";

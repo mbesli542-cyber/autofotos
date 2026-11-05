@@ -739,6 +739,28 @@ describe("<CameraCapture /> automatic check", () => {
     expect(within(header).queryByText(/passt/)).toBeNull();
   });
 
+  it("shows a finished check with a processor hint in amber – and nothing for an interior shot", () => {
+    let settled: ((entry: PhotoCheck) => void) | null = null;
+    const spy = vi.spyOn(photoChecks, "onSettled").mockImplementation((listener) => {
+      settled = listener;
+      return () => {};
+    });
+    try {
+      setChecks("on", []);
+      const view = render(camera({ photos: photosOf(15), initialShotKey: "left_side" }));
+      const header = view.container.querySelector("header") as HTMLElement;
+      const hint = { code: "vehicle_part_uncertain", message: "Ein Fahrzeugteil ist unsicher – bitte prüfen." };
+      act(() => settled?.(check("front", { status: "ok", warnings: [hint] })));
+      const line = within(header).getByRole("button", { name: /^02 Vorne: Geprüft – bitte Ergebnis ansehen/ });
+      expect(line).toHaveAttribute("data-tone", "hint");
+      fireEvent.click(screen.getByRole("button", { name: /^4\. Linke Fahrzeugseite – / }));
+      act(() => settled?.(check("cockpit", { status: "ok" })));
+      expect(within(header).queryByText(/Cockpit/)).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("goes on to the next red shot after a retake instead of leaving – and leaves when none is red", async () => {
     setChecks("on", [
       check("front", { status: "retake", message: TOO_SMALL, errorCode: "vehicle_too_small" }),
