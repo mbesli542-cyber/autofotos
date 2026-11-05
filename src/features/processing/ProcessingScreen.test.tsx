@@ -163,6 +163,30 @@ describe("<ProcessingScreen />", () => {
     }
   });
 
+  it("keeps the screen on while the photos are processed and lets it turn off at the end", async () => {
+    const vehicleId = await createCompleteVehicle("WakeLock");
+    const release = vi.fn(async () => undefined);
+    const request = vi.fn(async () => ({ released: false, release }));
+    Object.defineProperty(navigator, "wakeLock", { configurable: true, value: { request } });
+    const jobs = gate();
+    vi.mocked(processPhoto).mockImplementation(async (photo, preset, deps) => {
+      await jobs.opened;
+      return saveResult(photo, preset, deps);
+    });
+    try {
+      renderScreen(vehicleId);
+      fireEvent.click(await startButton());
+      await screen.findByText("Fotos werden verarbeitet…");
+      await waitFor(() => expect(request).toHaveBeenCalledWith("screen"));
+      expect(release).not.toHaveBeenCalled();
+      await act(async () => jobs.open());
+      await screen.findByText("Bearbeitung abgeschlossen");
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      Reflect.deleteProperty(navigator, "wakeLock");
+    }
+  });
+
   it("waits until new photos of the vehicle are saved before processing", async () => {
     const vehicleId = await createCompleteVehicle("Upload");
     const { backend, uploads } = getAppServices();

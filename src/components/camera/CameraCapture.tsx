@@ -226,17 +226,6 @@ export function CameraCapture({
     [vehicle.id],
   );
 
-  // The checks are on again (connection back, code entered, processor answering):
-  // photos of this vehicle taken while they were off are checked now.
-  const availabilityRef = useRef(checkSnapshot.availability);
-  useEffect(() => {
-    const previous = availabilityRef.current;
-    availabilityRef.current = checkSnapshot.availability;
-    if (checkSnapshot.availability === "on" && previous !== "on" && previous !== "unknown") {
-      void photoChecks.checkVehicle(vehicle.id);
-    }
-  }, [checkSnapshot.availability, vehicle.id]);
-
   useEffect(() => {
     if (!banner) return;
     const timer = setTimeout(() => setBanner(null), CHECK_BANNER_MS[banner.kind]);

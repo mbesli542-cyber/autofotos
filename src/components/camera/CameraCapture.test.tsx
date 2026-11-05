@@ -60,11 +60,14 @@ vi.mock("@/lib/app-services", async (importOriginal) => ({
   getAppServices: () => ({ uploads }),
 }));
 vi.mock("@/hooks/use-upload-queue", () => ({ usePendingUploads: () => queue.items }));
-vi.mock("@/hooks/use-photo-checks", async () => {
+vi.mock("@/hooks/use-photo-checks", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-photo-checks")>();
   const { getShotCheckStates } = await import("@/lib/processing/shot-check");
   return {
+    ...actual,
     useShotCheckStates: (vehicleId: string, slots: Parameters<typeof getShotCheckStates>[0]) => {
       const snapshot = checks.snapshot as PhotoChecksSnapshot;
+      actual.useVehicleChecks(vehicleId, snapshot.availability);
       return { states: getShotCheckStates(slots, vehicleId, snapshot), snapshot };
     },
   };
@@ -674,6 +677,20 @@ describe("<CameraCapture /> automatic check", () => {
       setChecks("on", []);
       rerender(camera({ photos: photosOf(2) }));
       expect(checkVehicle).toHaveBeenCalledTimes(1);
+      expect(checkVehicle).toHaveBeenCalledWith(VEHICLE.id);
+    } finally {
+      checkVehicle.mockRestore();
+    }
+  });
+
+  it("checks the photos when the camera opens and the check comes on for the first time (after a reload)", () => {
+    const checkVehicle = vi.spyOn(photoChecks, "checkVehicle").mockResolvedValue();
+    try {
+      setChecks("unknown", []);
+      const { rerender } = render(camera({ photos: photosOf(2) }));
+      expect(checkVehicle).not.toHaveBeenCalled();
+      setChecks("on", []);
+      rerender(camera({ photos: photosOf(2) }));
       expect(checkVehicle).toHaveBeenCalledWith(VEHICLE.id);
     } finally {
       checkVehicle.mockRestore();

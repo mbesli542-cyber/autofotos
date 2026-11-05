@@ -32,6 +32,13 @@
  * Runs belong to the signed-in user: when the session ends or another user
  * signs in (shared devices), every run is stopped – its uploads and polls
  * are aborted – and the next person starts with the style selection.
+ *
+ * A run survives a reload or a discarded tab (iPhone Safari): it is kept on
+ * the device while it runs (stored-runs.ts) and `resume` – called when its
+ * processing page is shown – continues it: finished rows stay as they were,
+ * the other rows are processed again, and a photo whose job was submitted
+ * before the reload is not sent again – its job is polled (job-journal.ts,
+ * photo-checks.ts).
  */
 import { getAppServices } from "@/lib/app-services";
 import type { AuthState } from "@/lib/auth/auth-store";
@@ -40,11 +47,13 @@ import { toUserMessage } from "@/lib/errors";
 import { isOlderCapture } from "@/lib/photos/capture-order";
 import { sortPhotosByShotOrder } from "@/lib/shots/shot-progress";
 import { markProcessedIfDone } from "@/lib/workflow/vehicle-workflow";
+import { readStoredAccessCode, storeAccessCode } from "./access-code-storage";
 import { ProcessingJobFailedError, type PhotoStep } from "./photo-processing";
 import { photoChecks, type PhotoCheck } from "./photo-checks";
 import { PRESET_UNAVAILABLE_MESSAGE, isProcessingPresetAvailable } from "./presets";
 import { AccessCodeRequiredError } from "./processing-client";
 import { getShotTreatment, selectPhotosForProcessing, type ShotTreatment } from "./shot-treatment";
+import { forgetRun, readStoredRun, storeRun, type StoredRunItem } from "./stored-runs";
 
 export type PhotoRunStatus = "waiting" | PhotoStep;
 
@@ -98,13 +107,16 @@ export interface StartOptions {
  * What a run does with photos whose outcome is known (photo-checks.ts):
  * - skip_known:   not sent again (a new run)
  * - skip_results: only saved results count, rejections are sent again (`retry`)
+ * - skip_checked: only outcomes of this visit count (a `reprocess` run resumed
+ *                 after a reload: results saved before it are sent again)
  * - all:          everything is sent again (`reprocess`)
  */
-type KnownPolicy = "skip_known" | "skip_results" | "all";
+type KnownPolicy = "skip_known" | "skip_results" | "skip_checked" | "all";
 
 const CONCURRENCY = 3;
 
 const GENERIC_FAILURE = "Bearbeitung fehlgeschlagen.";
+const RESUME_FAILED_MESSAGE = "Die Bearbeitung wurde unterbrochen. Bitte erneut versuchen.";
 
 interface VehicleRun {
   vehicleId: string;
@@ -115,10 +127,30 @@ interface VehicleRun {
   generation: number;
   /** Aborts the uploads and polls of the current generation (`reset`, sign-out). */
   controller: AbortController;
+  /** Started with `reprocess` (kept on the device for `resume`). */
+  reprocess: boolean;
+  /** When the run started (ISO). */
+  startedAt: string;
+  /** What was last kept on the device (storedKey) – rewritten only when a row finished. */
+  storedKey: string | null;
 }
 
 function isFinished(item: PhotoRunState): boolean {
   return item.status === "complete" || item.status === "failed";
+}
+
+/** The run's rows as kept on the device: rows on their way are processed again after a reload. */
+function toStoredItems(items: readonly PhotoRunState[]): StoredRunItem[] {
+  return items.map(({ photoId, shotKey, title, shotOrder, treatment, status, error, errorCode, warnings }) =>
+    status === "complete" || status === "failed"
+      ? { photoId, shotKey, title, shotOrder, treatment, status, error, errorCode, warnings }
+      : { photoId, shotKey, title, shotOrder, treatment, status: "open", error: null, errorCode: null, warnings: [] },
+  );
+}
+
+/** Changes when a row is added, removed, follows another photo or finishes (not with its progress). */
+function storedKey(snapshot: ProcessingRunSnapshot): string {
+  return snapshot.items.map((item) => `${item.photoId}:${isFinished(item) ? item.status : "open"}`).join("|");
 }
 
 /** A row of the run for `photo`, waiting to be processed. */
@@ -197,6 +229,8 @@ export class ProcessingRuns {
     const generation = run.generation;
     run.controller = new AbortController();
     run.active = 1;
+    run.reprocess = options.reprocess ?? false;
+    run.startedAt = new Date().toISOString();
     const toItems = (list: readonly VehiclePhotoWithUrls[]) =>
       list.map((photo) => waitingItem(photo, getShotTreatment(template, photo.shotKey) ?? "original_environment"));
     this.set(run, { phase: "running", preset, items: toItems(shown) });
@@ -285,6 +319,66 @@ export class ProcessingRuns {
     return this.complete(run, generation, accessDenied);
   }
 
+  /**
+   * Continues the vehicle's run that was going on before the page was
+   * reloaded (or the tab discarded): kept on the device while it ran. Its
+   * finished rows stay as they were; every other row is processed again with
+   * the shot's current photo – a job submitted before the reload is polled,
+   * not sent again (photo-checks.ts). null: nothing to continue (no stored
+   * run, or a run of the vehicle is shown already).
+   */
+  async resume(vehicleId: string): Promise<RunResult | null> {
+    const run = this.run(vehicleId);
+    if (run.active > 0 || run.snapshot.phase !== "idle") return null;
+    const stored = readStoredRun(vehicleId);
+    if (!stored) return null;
+    if (!isProcessingPresetAvailable(stored.preset)) {
+      forgetRun(vehicleId);
+      return null;
+    }
+    this.watchSession();
+    run.generation += 1;
+    const generation = run.generation;
+    run.controller = new AbortController();
+    run.active = 1;
+    run.reprocess = stored.reprocess;
+    run.startedAt = stored.startedAt;
+    this.set(run, {
+      phase: "running",
+      preset: stored.preset,
+      items: stored.items.map((item) => ({
+        ...item,
+        status: item.status === "open" ? "waiting" : item.status,
+        progress: item.status === "complete" ? 1 : 0,
+      })),
+    });
+
+    // The shots' current photos: a retake may have been saved meanwhile.
+    let current: readonly VehiclePhotoWithUrls[] | null = null;
+    try {
+      const { backend } = getAppServices();
+      current = await backend.data.resolvePhotoUrls(await backend.data.listPhotos(vehicleId));
+    } catch {
+      // Not readable right now: the open rows fail (they can be processed again from the list).
+    }
+    if (run.generation !== generation) return { outcome: "cancelled" };
+    const photos: VehiclePhotoWithUrls[] = [];
+    const items = run.snapshot.items.flatMap((item): PhotoRunState[] => {
+      if (isFinished(item)) return [item];
+      if (current === null) return [{ ...item, status: "failed", error: RESUME_FAILED_MESSAGE }];
+      const photo = current.find((entry) => entry.shotKey === item.shotKey);
+      if (!photo) return []; // deleted meanwhile
+      photos.push(photo);
+      return [{ ...item, photoId: photo.id, title: photo.title }];
+    });
+    this.set(run, { ...run.snapshot, items });
+    const policy: KnownPolicy = stored.reprocess ? "skip_checked" : "skip_known";
+    const accessDenied = await this.processAll(run, generation, photos, stored.preset, readStoredAccessCode(), policy);
+    // The stored code is no longer valid: the processing page asks for it again.
+    if (accessDenied !== null && run.generation === generation) storeAccessCode(null);
+    return this.complete(run, generation, accessDenied);
+  }
+
   /** Back to the style selection; uploads and polls still on their way are aborted. */
   reset(vehicleId: string): void {
     const run = this.runs.get(vehicleId);
@@ -319,7 +413,16 @@ export class ProcessingRuns {
   private run(vehicleId: string): VehicleRun {
     let run = this.runs.get(vehicleId);
     if (!run) {
-      run = { vehicleId, snapshot: IDLE_RUN, active: 0, generation: 0, controller: new AbortController() };
+      run = {
+        vehicleId,
+        snapshot: IDLE_RUN,
+        active: 0,
+        generation: 0,
+        controller: new AbortController(),
+        reprocess: false,
+        startedAt: new Date().toISOString(),
+        storedKey: null,
+      };
       this.runs.set(vehicleId, run);
     }
     return run;
@@ -469,7 +572,11 @@ export class ProcessingRuns {
     const update = (patch: Partial<PhotoRunState>) => this.updateItem(run, generation, photo.id, patch);
     // Checked automatically after the capture (or processed before): not sent again.
     const known =
-      policy === "all" ? null : photoChecks.knownOutcome(photo, preset, { ignoreFailures: policy === "skip_results" });
+      policy === "all"
+        ? null
+        : policy === "skip_checked"
+          ? photoChecks.knownOutcome({ ...photo, processedStoragePath: null }, preset)
+          : photoChecks.knownOutcome(photo, preset, { ignoreFailures: policy === "skip_results" });
     if (known?.status === "complete") {
       update({ status: "complete", progress: 1, error: null, errorCode: null, warnings: known.warnings });
       return;
@@ -529,7 +636,28 @@ export class ProcessingRuns {
 
   private set(run: VehicleRun, snapshot: ProcessingRunSnapshot): void {
     run.snapshot = snapshot;
+    this.store(run);
     for (const listener of this.listeners) listener();
+  }
+
+  /** Keeps a running run on the device (for `resume` after a reload); a finished or reset one is forgotten. */
+  private store(run: VehicleRun): void {
+    const { snapshot } = run;
+    if (snapshot.phase !== "running" || snapshot.preset === null) {
+      if (run.storedKey !== null) forgetRun(run.vehicleId);
+      run.storedKey = null;
+      return;
+    }
+    const key = storedKey(snapshot);
+    if (key === run.storedKey) return;
+    run.storedKey = key;
+    storeRun({
+      vehicleId: run.vehicleId,
+      preset: snapshot.preset,
+      reprocess: run.reprocess,
+      startedAt: run.startedAt,
+      items: toStoredItems(snapshot.items),
+    });
   }
 }
 

@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthState } from "@/lib/auth/auth-store";
 import type { VehiclePhotoWithUrls } from "@/lib/domain/types";
 import { AppError } from "@/lib/errors";
+import { recordJob } from "@/lib/processing/job-journal";
 import { ProcessingJobFailedError, processPhoto, type PhotoProcessingResult } from "@/lib/processing/photo-processing";
+import { AccessCodeRequiredError } from "@/lib/processing/processing-client";
+import { readStoredRun, storeRun, type StoredRunItem } from "@/lib/processing/stored-runs";
 import { AUTOEXPERTEN_STANDARD_TEMPLATE } from "@/lib/shots/shot-template";
 import { markProcessedIfDone } from "@/lib/workflow/vehicle-workflow";
 import { useProcessingRun, type RunResult } from "./use-processing-run";
@@ -93,6 +96,7 @@ function photo(id: string, shotKey: string, shotOrder: number, vehicleId = "veh_
 
 describe("useProcessingRun", () => {
   beforeEach(() => {
+    window.localStorage.clear();
     vi.mocked(processPhoto).mockReset();
     vi.mocked(markProcessedIfDone).mockClear();
     saved.listPhotos.mockClear();
@@ -569,5 +573,137 @@ describe("useProcessingRun", () => {
     });
     expect(vi.mocked(processPhoto).mock.calls.map(([target]) => target.id).sort()).toEqual(["p_r_done", "p_r_rejected"]);
     expect(result.current.items.every((item) => item.status === "complete")).toBe(true);
+  });
+});
+
+describe("useProcessingRun after a reload", () => {
+  const JOB = "0123456789abcdef0123456789abcdef";
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.mocked(processPhoto).mockReset();
+    vi.mocked(processPhoto).mockResolvedValue(DONE);
+    saved.listPhotos.mockReset();
+    saved.listPhotos.mockImplementation(async () => {
+      throw new Error("offline");
+    });
+  });
+
+  function storedItem(target: VehiclePhotoWithUrls, status: StoredRunItem["status"], patch: Partial<StoredRunItem> = {}) {
+    return {
+      photoId: target.id,
+      shotKey: target.shotKey,
+      title: target.title,
+      shotOrder: target.shotOrder,
+      treatment: "showroom" as const,
+      status,
+      error: null,
+      errorCode: null,
+      warnings: [],
+      ...patch,
+    };
+  }
+
+  it("keeps a running run on the device and forgets it once it is done", async () => {
+    const jobs = gate();
+    vi.mocked(processPhoto).mockImplementation(async (target) => {
+      if (target.id === "p_k2") await jobs.opened;
+      return DONE;
+    });
+    const photos = [photo("p_k1", "front_left_45", 1, "veh_keep"), photo("p_k2", "front", 2, "veh_keep")];
+    const { result } = renderHook(() => useProcessingRun("veh_keep"));
+    let running: Promise<RunResult> | undefined;
+    act(() => {
+      running = result.current.start(photos, "autoexperten_standard", null);
+    });
+    await vi.waitFor(() => expect(readStoredRun("veh_keep")?.items.map((item) => item.status)).toEqual(["complete", "open"]));
+    expect(readStoredRun("veh_keep")).toMatchObject({ preset: "autoexperten_standard", reprocess: false });
+    await act(async () => {
+      jobs.open();
+      await running;
+    });
+    expect(result.current.phase).toBe("done");
+    expect(readStoredRun("veh_keep")).toBeNull();
+  });
+
+  it("continues the run: finished rows stay, the others are processed with the shot's current photo", async () => {
+    const done = photo("p_c1", "front_left_45", 1, "veh_cont");
+    const replaced = photo("p_c2_old", "front", 2, "veh_cont");
+    const retake = photo("p_c2_new", "front", 2, "veh_cont");
+    const open = photo("p_c3", "front_right_45", 3, "veh_cont");
+    storeRun({
+      vehicleId: "veh_cont",
+      preset: "autoexperten_standard",
+      reprocess: false,
+      startedAt: new Date().toISOString(),
+      items: [storedItem(done, "complete"), storedItem(replaced, "open"), storedItem(open, "open")],
+    });
+    // The job of p_c3 was submitted before the reload.
+    recordJob({
+      vehicleId: "veh_cont",
+      photoId: "p_c3",
+      jobId: JOB,
+      preset: "autoexperten_standard",
+      startedAt: new Date().toISOString(),
+      shotKey: open.shotKey,
+      shotOrder: open.shotOrder,
+      title: open.title,
+      takenAt: open.takenAt,
+    });
+    saved.listPhotos.mockImplementation(async () => [done, retake, open]);
+
+    const { result } = renderHook(() => useProcessingRun("veh_cont"));
+    expect(result.current.phase).toBe("running");
+    await vi.waitFor(() => expect(result.current.phase).toBe("done"));
+    expect(vi.mocked(processPhoto).mock.calls.map(([target]) => target.id).sort()).toEqual(["p_c2_new", "p_c3"]);
+    const resumed = vi.mocked(processPhoto).mock.calls.find(([target]) => target.id === "p_c3");
+    expect(resumed?.[2].resumeJobId).toBe(JOB);
+    expect(result.current.items.map(({ photoId, status }) => ({ photoId, status }))).toEqual([
+      { photoId: "p_c1", status: "complete" },
+      { photoId: "p_c2_new", status: "complete" },
+      { photoId: "p_c3", status: "complete" },
+    ]);
+    expect(readStoredRun("veh_cont")).toBeNull();
+  });
+
+  it("sends again photos with an older result when the run re-processes everything", async () => {
+    const processed = {
+      ...photo("p_rp1", "front_left_45", 1, "veh_reproc"),
+      processedStoragePath: "vehicle-processed/veh_reproc/front_left_45/p_rp1.jpg",
+      processedPreset: "autoexperten_standard" as const,
+    };
+    storeRun({
+      vehicleId: "veh_reproc",
+      preset: "autoexperten_standard",
+      reprocess: true,
+      startedAt: new Date().toISOString(),
+      items: [storedItem(processed, "open")],
+    });
+    saved.listPhotos.mockImplementation(async () => [processed]);
+    const { result } = renderHook(() => useProcessingRun("veh_reproc"));
+    await vi.waitFor(() => expect(result.current.phase).toBe("done"));
+    expect(vi.mocked(processPhoto).mock.calls.map(([target]) => target.id)).toEqual(["p_rp1"]);
+  });
+
+  it("does nothing without a stored run and forgets a run whose access code is refused", async () => {
+    const none = renderHook(() => useProcessingRun("veh_none"));
+    await act(async () => {});
+    expect(none.result.current.phase).toBe("idle");
+
+    window.localStorage.setItem("ae-photo.processing-access-code", "falsch");
+    const target = photo("p_ad1", "front", 2, "veh_denied");
+    storeRun({
+      vehicleId: "veh_denied",
+      preset: "autoexperten_standard",
+      reprocess: false,
+      startedAt: new Date().toISOString(),
+      items: [storedItem(target, "open")],
+    });
+    saved.listPhotos.mockImplementation(async () => [target]);
+    vi.mocked(processPhoto).mockRejectedValue(new AccessCodeRequiredError(401, "unauthorized"));
+    const { result } = renderHook(() => useProcessingRun("veh_denied"));
+    await vi.waitFor(() => expect(readStoredRun("veh_denied")).toBeNull());
+    expect(result.current.phase).toBe("idle");
+    expect(window.localStorage.getItem("ae-photo.processing-access-code")).toBeNull();
   });
 });

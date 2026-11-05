@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import type { ProcessingPresetId, VehiclePhotoWithUrls } from "@/lib/domain/types";
 import {
   IDLE_RUN,
@@ -24,10 +24,16 @@ const getServerSnapshot = (): ProcessingRunSnapshot => IDLE_RUN;
  * The processing run of a vehicle (src/lib/processing/processing-runs.ts).
  * The run lives outside the component, so a re-created screen shows the
  * run still in progress (or its result) and cannot start it a second time.
+ * A run that was going on before the page was reloaded continues when the
+ * screen is shown (`processingRuns.resume`).
  */
 export function useProcessingRun(vehicleId: string) {
   const getSnapshot = useCallback(() => processingRuns.getSnapshot(vehicleId), [vehicleId]);
   const { phase, items, preset } = useSyncExternalStore(processingRuns.subscribe, getSnapshot, getServerSnapshot);
+
+  useEffect(() => {
+    void processingRuns.resume(vehicleId);
+  }, [vehicleId]);
 
   const start = useCallback(
     (

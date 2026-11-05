@@ -20,6 +20,7 @@ import { PageLoading } from "@/components/ui/Spinner";
 import { usePhotoChecks } from "@/hooks/use-photo-checks";
 import { useProcessingAccessCode } from "@/hooks/use-processing-access-code";
 import { useProcessingStatus } from "@/hooks/use-processing-status";
+import { useScreenWakeLock } from "@/hooks/use-screen-wake-lock";
 import { usePendingUploads } from "@/hooks/use-upload-queue";
 import { useVehicleDetail } from "@/hooks/use-vehicle-data";
 import { getAppServices, getShotTemplate } from "@/lib/app-services";
@@ -52,6 +53,8 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
   const storedAccessCode = useProcessingAccessCode();
   const pendingUploads = usePendingUploads(vehicleId);
   const run = useProcessingRun(vehicleId);
+  // A locked phone suspends the tab and stops the run: the screen stays on while it runs.
+  useScreenWakeLock(run.phase === "running");
   const [chosenPreset, setChosenPreset] = useState<ProcessingPresetId>(DEFAULT_PROCESSING_PRESET);
   // Only styles the processor implements can ever be the selected one.
   const preset = isProcessingPresetAvailable(chosenPreset) ? chosenPreset : DEFAULT_PROCESSING_PRESET;
@@ -351,7 +354,8 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
                 </div>
                 <ProgressBar value={finished} max={run.items.length} label="Bearbeitungsfortschritt" />
                 <p className="mt-2 text-xs text-ae-subtle">
-                  Bitte lassen Sie die App geöffnet, bis die Bearbeitung abgeschlossen ist.
+                  Bitte lassen Sie die App geöffnet, bis die Bearbeitung abgeschlossen ist. Wird die Seite neu
+                  geladen, geht es automatisch weiter.
                 </p>
               </div>
             )}
