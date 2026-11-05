@@ -510,10 +510,13 @@ never caches API calls or Supabase requests.
   instruction and the light bulb that opens "Tipps für perfekte Fotos" (with
   the current shot's hint first) – a sheet that also opens by itself once
   per device (again after a sign-out) when the camera opens for a vehicle
-  without photos. The shot's short `tip` is in the header's status line, and
-  the box sits at the viewfinder's bottom edge but is as wide as the stage,
-  so its text keeps few lines and stays below the framing guide – also in
-  the narrow 9:16 portrait viewfinder of a small phone.
+  without photos. The shot's short `tip` is in the header's status line. The
+  box is as wide as the stage (in the narrow 9:16 portrait viewfinder of a
+  small phone its text keeps few lines) and sits where the framing guide
+  leaves room: above it for exterior shots (the guides leave the top third
+  free – sky above the car), below it for interior and detail shots;
+  compact in landscape, where the 16:10 guide fills the viewfinder's height
+  (there the cockpit and wheel guides reach the box's band).
   Other short messages (toasts, e.g. a failed capture) appear in the middle
   of the viewfinder while the camera is open; elsewhere they appear at the
   top.

@@ -109,7 +109,7 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Area | Location |
 | --- | --- |
 | Shot standard (15 shots, overlays, instructions) | `src/lib/shots/shot-template.ts` |
-| Shooting guide ("Tipps für perfekte Fotos" – by itself once per device and again after a sign-out, from the light bulb with the current shot's hint first; per-shot `tip` in the header's status line until the shot is captured – the instruction box holds only the instruction; "Bitte Smartphone quer halten" for exterior shots in portrait, briefly in the header's status line, then in the instruction box) | `src/lib/shots/shooting-guide.ts`, `src/components/camera/ShootingTips.tsx`, `InstructionPanel.tsx` |
+| Shooting guide ("Tipps für perfekte Fotos" – by itself once per device and again after a sign-out, from the light bulb with the current shot's hint first; per-shot `tip` in the header's status line until the shot is captured – the instruction box holds only the instruction, as wide as the stage, above the guide for exterior shots and below it for interior/detail shots; "Bitte Smartphone quer halten" for exterior shots in portrait, briefly in the header's status line, then in the instruction box) | `src/lib/shots/shooting-guide.ts`, `src/components/camera/ShootingTips.tsx`, `InstructionPanel.tsx` |
 | Shot completion / ordering / navigation (pure) | `src/lib/shots/shot-progress.ts` |
 | Vehicle validation & status rules (pure) | `src/lib/vehicles/` |
 | File & storage naming (`AE_{ref}_{nn}_{shot}.jpg`) | `src/lib/naming/file-naming.ts` |
