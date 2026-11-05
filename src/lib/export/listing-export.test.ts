@@ -4,16 +4,19 @@ import type { UploadItem } from "@/lib/offline/upload-queue";
 import { buildPhotoSlots } from "@/lib/photos/photo-slots";
 import type { ShotCheckState } from "@/lib/processing/shot-check";
 import { AUTOEXPERTEN_STANDARD_TEMPLATE as T, getOrderedShots } from "@/lib/shots/shot-template";
+import { getShotCheckStates } from "@/lib/processing/shot-check";
+import { rejectionWarning } from "@/lib/processing/processing-warnings";
 import {
   buildExportPlan,
   describeExportPlan,
-  exportableItems,
   exportFileNameFor,
   exportItemLabel,
+  exportOrderOf,
   formatShotNumbers,
   itemsToReview,
   reviewRows,
   selectExportItems,
+  withOriginal,
   type ExportVehicle,
 } from "./listing-export";
 
@@ -115,7 +118,86 @@ describe("buildExportPlan", () => {
     expect(confirmed.find((item) => item.key === "rear")?.version).toBe("original");
     expect(confirmed.map((item) => item.order)).toEqual(SHOTS.map((shot) => shot.order));
     expect(result.items.find((item) => item.key === "rear")?.note).toBe("Das Fahrzeug ist angeschnitten.");
-    expect(exportableItems(result)).toHaveLength(15);
+  });
+
+  describe("a rejection kept with the photo (known on every device)", () => {
+    const REJECTED = rejectionWarning(
+      "vehicle_cropped",
+      "Das Fahrzeug ist im Foto angeschnitten. Bitte das ganze Fahrzeug mit etwas Abstand neu fotografieren.",
+    );
+
+    it("is a retake without any check of this device – left out unless confirmed", () => {
+      // Another device: no checks at all, only what is saved with the photos.
+      const list = photos({ rear: { processed: false, warnings: [REJECTED] }, cockpit: { processed: false } });
+      const result = buildExportPlan({ template: T, vehicle: VEHICLE, slots: buildPhotoSlots(T, list) });
+      expect(describeExportPlan(result)).toBe("13 bearbeitet · 1 noch nicht bearbeitet · 1 muss neu aufgenommen werden");
+      expect(result.items.find((item) => item.key === "rear")).toMatchObject({
+        status: "retake",
+        version: "original",
+        note: REJECTED.message,
+      });
+      expect(selectExportItems(result).map((item) => item.key)).not.toContain("rear");
+      expect(selectExportItems(result, { includeRetakes: true }).map((item) => item.key)).toContain("rear");
+    });
+
+    it("is read the same way through the shot check states the vehicle page passes", () => {
+      const list = photos({ rear: { processed: false, warnings: [REJECTED] } });
+      const slots = buildPhotoSlots(T, list);
+      // A fresh device: no checks, checks even off.
+      const checks = getShotCheckStates([...slots.required, ...slots.extras], VEHICLE.id, {
+        availability: "no_processor",
+        checks: new Map(),
+        captures: new Map(),
+      });
+      expect(checks.get("rear")).toEqual({ kind: "retake", reason: REJECTED.message });
+      const result = buildExportPlan({ template: T, vehicle: VEHICLE, slots, checks });
+      expect(result.items.find((item) => item.key === "rear")?.status).toBe("retake");
+    });
+
+    it("also covers a result whose hint says the photo itself is the problem", () => {
+      const mirrored = { code: "plate_mirrored", message: "Das Foto zeigt das Fahrzeug von der anderen Seite." };
+      const list = photos({ front_right_45: { warnings: [mirrored] } });
+      const result = buildExportPlan({ template: T, vehicle: VEHICLE, slots: buildPhotoSlots(T, list) });
+      expect(result.items.find((item) => item.key === "front_right_45")).toMatchObject({
+        status: "retake",
+        version: "processed",
+        note: mirrored.message,
+      });
+    });
+
+    it("a newer check of this device wins (e.g. the photo is being checked again)", () => {
+      const list = photos({ rear: { processed: false, warnings: [REJECTED] } });
+      const checks = new Map<string, ShotCheckState>([["rear", { kind: "checking" }]]);
+      const result = plan(list, { checks });
+      expect(result.items.find((item) => item.key === "rear")).toMatchObject({
+        status: "original",
+        note: "Wird gerade geprüft.",
+      });
+    });
+  });
+
+  it("leaves out shots the employee chose to leave out, and uses the original where chosen", () => {
+    const result = plan(photos({ front: { extension: "png" } }));
+    const selected = selectExportItems(result, { leaveOut: new Set(["cockpit"]), useOriginal: new Set(["front"]) });
+    expect(selected).toHaveLength(14);
+    expect(selected.map((item) => item.key)).not.toContain("cockpit");
+    expect(selected.find((item) => item.key === "front")).toMatchObject({
+      version: "original",
+      fileName: "AE_FZ-2041_02_front.png",
+      originalInstead: true,
+    });
+    // Every other shot keeps its processed result, in shot order.
+    expect(selected.filter((item) => item.version === "processed")).toHaveLength(13);
+    expect(selected.map((item) => item.order)).toEqual(SHOTS.filter((shot) => shot.key !== "cockpit").map((s) => s.order));
+  });
+
+  it("withOriginal changes only items that export a processed result", () => {
+    const result = plan(photos({ cockpit: { processed: false } }));
+    const cockpit = result.items.find((item) => item.key === "cockpit")!;
+    expect(withOriginal(cockpit)).toBe(cockpit);
+    const front = result.items.find((item) => item.key === "front")!;
+    expect(front.originalFileName).toBe("AE_FZ-2041_02_front.jpg");
+    expect(withOriginal(front)).toMatchObject({ version: "original", fileName: "AE_FZ-2041_02_front.jpg" });
   });
 
   it("matches the example of a mixed set", () => {
@@ -160,13 +242,18 @@ describe("buildExportPlan", () => {
     expect(selectExportItems(result)).toHaveLength(15);
   });
 
-  it("adds extra photos as originals after the template shots", () => {
-    const extra = { ...photo("extra_01", 101, { processed: false }), title: "Zusatzfoto 1" };
-    const result = plan([...photos(), extra]);
-    expect(describeExportPlan(result)).toBe("15 Fotos bereit · 1 Zusatzfoto");
-    const last = selectExportItems(result).at(-1);
-    expect(last).toMatchObject({ key: "extra_01", status: "extra", version: "original" });
-    expect(last?.fileName).toBe("AE_FZ-2041_101_extra_01.jpg");
+  it("adds extra photos as originals after the template shots, numbered 16, 17, …", () => {
+    const extras = [
+      { ...photo("extra_01", 101, { processed: false }), title: "Zusatzfoto 1" },
+      { ...photo("extra_02", 102, { processed: false, extension: "png" }), title: "Zusatzfoto 2" },
+    ];
+    const result = plan([...photos(), ...extras]);
+    expect(describeExportPlan(result)).toBe("15 Fotos bereit · 2 Zusatzfotos");
+    const names = selectExportItems(result).map((item) => item.fileName ?? "");
+    expect(names.slice(-2)).toEqual(["AE_FZ-2041_16_extra_01.jpg", "AE_FZ-2041_17_extra_02.png"]);
+    expect(selectExportItems(result).at(-1)).toMatchObject({ key: "extra_02", status: "extra", version: "original", order: 17 });
+    // Plain name order (as file pickers sort) is the listing order.
+    expect([...names].sort()).toEqual(names);
   });
 
   it("names files by the vehicle id when there is no internal reference", () => {
@@ -178,11 +265,26 @@ describe("buildExportPlan", () => {
 describe("exportFileNameFor", () => {
   it("names a processed result .jpg and an original by its own type", () => {
     const front = photo("front", 2, { extension: "png" });
-    expect(exportFileNameFor(VEHICLE, front, "processed")).toBe("AE_FZ-2041_02_front.jpg");
-    expect(exportFileNameFor(VEHICLE, front, "original")).toBe("AE_FZ-2041_02_front.png");
-    expect(exportFileNameFor(VEHICLE, photo("front", 2, { extension: "jpeg" }), "original")).toBe(
+    expect(exportFileNameFor(T, VEHICLE, front, "processed")).toBe("AE_FZ-2041_02_front.jpg");
+    expect(exportFileNameFor(T, VEHICLE, front, "original")).toBe("AE_FZ-2041_02_front.png");
+    expect(exportFileNameFor(T, VEHICLE, photo("front", 2, { extension: "jpeg" }), "original")).toBe(
       "AE_FZ-2041_02_front.jpg",
     );
+  });
+
+  it("numbers an extra photo after the template – the same name as in the whole set", () => {
+    expect(exportFileNameFor(T, VEHICLE, photo("extra_03", 103, { processed: false }), "original")).toBe(
+      "AE_FZ-2041_18_extra_03.jpg",
+    );
+  });
+});
+
+describe("exportOrderOf", () => {
+  it("keeps the template's order and puts extra photos right after it", () => {
+    expect(exportOrderOf(T, { shotKey: "front_left_45", shotOrder: 1 })).toBe(1);
+    expect(exportOrderOf(T, { shotKey: "special_detail", shotOrder: 15 })).toBe(15);
+    expect(exportOrderOf(T, { shotKey: "extra_01", shotOrder: 101 })).toBe(16);
+    expect(exportOrderOf(T, { shotKey: "extra_12", shotOrder: 112 })).toBe(27);
   });
 });
 

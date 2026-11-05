@@ -8,6 +8,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { installDialogPolyfill } from "@/components/ui/dialog-test-polyfill";
 import { getAppServices } from "@/lib/app-services";
 import type { Vehicle } from "@/lib/domain/types";
+import { AppError } from "@/lib/errors";
 import { buildExportPlan } from "@/lib/export/listing-export";
 import { buildPhotoSlots } from "@/lib/photos/photo-slots";
 import type { ShotCheckState } from "@/lib/processing/shot-check";
@@ -81,6 +82,14 @@ function setTouchDevice(touch: boolean) {
   })) as unknown as typeof window.matchMedia;
 }
 
+const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1";
+const PIXEL = "Mozilla/5.0 (Linux; Android 15; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36";
+const JSDOM_AGENT = window.navigator.userAgent;
+
+function setUserAgent(agent: string) {
+  Object.defineProperty(window.navigator, "userAgent", { configurable: true, value: agent });
+}
+
 function setShare(share: ((data: ShareData) => Promise<void>) | undefined, canShare: (data: ShareData) => boolean = () => true) {
   Object.defineProperty(window.navigator, "share", { configurable: true, value: share });
   Object.defineProperty(window.navigator, "canShare", { configurable: true, value: share ? canShare : undefined });
@@ -131,11 +140,13 @@ afterEach(() => {
   vi.restoreAllMocks();
   setShare(undefined);
   setTouchDevice(false);
+  setUserAgent(JSDOM_AGENT);
 });
 
 describe("<ExportSheet /> on a phone (share sheet)", () => {
   it("shares the listing set in shot order, in parts of at most 10 files, one tap each", async () => {
     setTouchDevice(true);
+    setUserAgent(IPHONE);
     const shared: { name: string; type: string; size: number }[][] = [];
     setShare(async (data) => {
       shared.push((data.files ?? []).map((file) => ({ name: file.name, type: file.type, size: file.size })));
@@ -144,7 +155,9 @@ describe("<ExportSheet /> on a phone (share sheet)", () => {
     render(<ExportSheet open vehicle={vehicle} plan={await planFor(vehicle)} onClose={() => {}} />);
 
     expect(within(sheet()).getByTestId("export-summary")).toHaveTextContent("15 Fotos bereit · 1 Zusatzfoto");
-    expect(within(sheet()).getByText(/Bilder sichern/)).toBeInTheDocument();
+    expect(within(sheet()).getByTestId("export-method")).toHaveTextContent(
+      "Im Teilen-Menü „Bilder sichern“ wählen – dann liegen die Fotos in der App „Fotos“.",
+    );
     fireEvent.click(await ready("16 Fotos speichern"));
     await waitFor(() => expect(shared).toHaveLength(1));
 
@@ -158,10 +171,28 @@ describe("<ExportSheet /> on a phone (share sheet)", () => {
       ...getOrderedShots(getAppServices().template).map(
         (shot) => `AE_${ref}_${String(shot.order).padStart(2, "0")}_${shot.key}.jpg`,
       ),
-      `AE_${ref}_101_extra_01.jpg`,
+      `AE_${ref}_16_extra_01.jpg`,
     ]);
     expect(shared.flat().every((file) => file.type === "image/jpeg" && file.size > 0)).toBe(true);
-    expect(await within(sheet()).findByText("16 Fotos übergeben")).toBeInTheDocument();
+    // Neutral: a finished share only means a target took the files.
+    expect(await within(sheet()).findByText("16 Fotos an das Teilen-Menü übergeben")).toBeInTheDocument();
+    expect(
+      within(sheet()).getByText(`AE_${ref}_01_front_left_45.jpg bis AE_${ref}_16_extra_01.jpg – in Aufnahme-Reihenfolge.`),
+    ).toBeInTheDocument();
+    expect(within(sheet()).queryByText(/Galerie/)).toBeNull();
+  });
+
+  it("names Android targets instead of the iPhone's „Bilder sichern“", async () => {
+    setTouchDevice(true);
+    setUserAgent(PIXEL);
+    setShare(async () => {});
+    const vehicle = await vehicleWithPhotos({ extra: false });
+    render(<ExportSheet open vehicle={vehicle} plan={await planFor(vehicle)} onClose={() => {}} />);
+    expect(within(sheet()).getByTestId("export-method")).toHaveTextContent(
+      "Im Teilen-Menü wählen, wohin die Fotos sollen – z. B. Google Fotos oder „Dateien“.",
+    );
+    expect(within(sheet()).queryByText(/Bilder sichern/)).toBeNull();
+    expect(await ready("15 Fotos speichern")).toBeInTheDocument();
   });
 
   it("stays quiet when the share sheet is closed (AbortError) and the files can be shared again", async () => {
@@ -200,16 +231,25 @@ describe("<ExportSheet /> on a phone (share sheet)", () => {
     expect(downloads[0]?.name).toBe(`AE_${vehicle.internalReference}_Fotos.zip`);
   });
 
-  it("falls back to the ZIP on a phone whose browser cannot share files", async () => {
+  it("says ZIP from the start on a phone whose browser cannot share these files", async () => {
     setTouchDevice(true);
-    setShare(async () => {}, () => false);
+    setUserAgent(PIXEL);
+    const share = vi.fn(async () => {});
+    setShare(share, () => false);
     const downloads = captureDownloads();
     const vehicle = await vehicleWithPhotos({ extra: false });
     render(<ExportSheet open vehicle={vehicle} plan={await planFor(vehicle)} onClose={() => {}} />);
 
-    fireEvent.click(await ready("15 Fotos speichern"));
+    // Before any file is loaded: no share icon, no share hint.
+    expect(within(sheet()).getByTestId("export-method")).toHaveTextContent(
+      `Dieser Browser kann die Fotos nicht teilen – sie werden als ZIP-Datei „AE_${vehicle.internalReference}_Fotos.zip“ heruntergeladen.`,
+    );
+    expect(within(sheet()).queryByText(/Teilen-Menü/)).toBeNull();
+    expect(within(sheet()).getAllByRole("button", { name: "Als ZIP-Datei herunterladen", hidden: true })).toHaveLength(1);
+    fireEvent.click(await ready("Als ZIP-Datei herunterladen"));
     await waitFor(() => expect(downloads).toHaveLength(1));
     expect(await zipNames(downloads[0]!.blob)).toHaveLength(15);
+    expect(share).not.toHaveBeenCalled();
   });
 });
 
@@ -273,6 +313,94 @@ describe("<ExportSheet /> on a desktop (ZIP)", () => {
     fireEvent.click(await ready("Trotzdem speichern"));
     await waitFor(() => expect(downloads).toHaveLength(1));
     expect(await zipNames(downloads[0]!.blob)).toContain(`AE_${vehicle.internalReference}_02_front.jpg`);
+  });
+
+  it("loads rejected shots only once they are ticked", async () => {
+    const vehicle = await vehicleWithPhotos({ extra: false });
+    const getPhotoFile = vi.spyOn(getAppServices().backend.data, "getPhotoFile");
+    const checks = new Map<string, ShotCheckState>([["front", { kind: "retake", reason: "Bitte quer halten." }]]);
+    render(<ExportSheet open vehicle={vehicle} plan={await planFor(vehicle, checks)} onClose={() => {}} />);
+
+    await ready("Trotzdem speichern");
+    expect(getPhotoFile).toHaveBeenCalledTimes(14);
+    expect(getPhotoFile.mock.calls.some(([photo]) => photo.shotKey === "front")).toBe(false);
+    fireEvent.click(within(sheet()).getByRole("checkbox", { name: /abgelehnte Foto trotzdem mitspeichern/, hidden: true }));
+    await waitFor(() => expect(getPhotoFile).toHaveBeenCalledTimes(15));
+    expect(getPhotoFile.mock.calls.at(-1)?.[0].shotKey).toBe("front");
+  });
+
+  it("knows rejections saved with the photo – also without any check of this device", async () => {
+    const downloads = captureDownloads();
+    const vehicle = await vehicleWithPhotos({ unprocessed: ["rear"], extra: false });
+    const data = getAppServices().backend.data;
+    const rear = (await data.listPhotos(vehicle.id)).find((photo) => photo.shotKey === "rear")!;
+    await data.recordPhotoRejection({
+      photoId: rear.id,
+      errorCode: "vehicle_cropped",
+      message: "Das Fahrzeug ist im Foto angeschnitten.",
+    });
+    render(<ExportSheet open vehicle={vehicle} plan={await planFor(vehicle)} onClose={() => {}} />);
+
+    expect(within(sheet()).getByTestId("export-summary")).toHaveTextContent("14 bearbeitet · 1 muss neu aufgenommen werden");
+    expect(within(sheet()).getByText("Das Fahrzeug ist im Foto angeschnitten.")).toBeInTheDocument();
+    expect(within(sheet()).getByRole("checkbox", { name: /abgelehnte Foto trotzdem mitspeichern/, hidden: true })).not.toBeChecked();
+    fireEvent.click(await ready("Trotzdem speichern"));
+    await waitFor(() => expect(downloads).toHaveLength(1));
+    const names = await zipNames(downloads[0]!.blob);
+    expect(names).toHaveLength(14);
+    expect(names.some((name) => name.includes("_07_rear"))).toBe(false);
+  });
+
+  it("does not let a missing file block the others: use the original instead", async () => {
+    const downloads = captureDownloads();
+    const vehicle = await vehicleWithPhotos({ extra: false });
+    const data = getAppServices().backend.data;
+    const real = data.getPhotoFile.bind(data);
+    // The processed file of 09 Cockpit is gone (e.g. never written to Storage).
+    vi.spyOn(data, "getPhotoFile").mockImplementation(async (photo, version) => {
+      if (photo.shotKey === "cockpit" && version === "processed") {
+        throw new AppError("not_found", { userMessage: "Diese Version des Fotos ist nicht mehr vorhanden." });
+      }
+      return real(photo, version);
+    });
+    render(<ExportSheet open vehicle={vehicle} plan={await planFor(vehicle)} onClose={() => {}} />);
+
+    const alert = await within(sheet()).findByRole("alert", { hidden: true });
+    expect(alert).toHaveTextContent("Das Showroom-Bild von 09 Cockpit fehlt.");
+    expect(within(alert).queryByRole("button", { name: "Erneut versuchen", hidden: true })).toBeNull();
+    expect(within(sheet()).getByRole("button", { name: "ZIP herunterladen", hidden: true })).toBeDisabled();
+
+    fireEvent.click(within(alert).getByRole("button", { name: "Original verwenden", hidden: true }));
+    expect(within(sheet()).getByText("Original statt Showroom-Bild: 09 Cockpit")).toBeInTheDocument();
+    fireEvent.click(await ready("ZIP herunterladen"));
+    await waitFor(() => expect(downloads).toHaveLength(1));
+    const names = await zipNames(downloads[0]!.blob);
+    expect(names).toHaveLength(15);
+    expect(names[8]).toBe(`AE_${vehicle.internalReference}_09_cockpit.jpg`);
+  });
+
+  it("does not let a missing file block the others: save without it", async () => {
+    const downloads = captureDownloads();
+    const vehicle = await vehicleWithPhotos({ unprocessed: ["cockpit"], extra: false });
+    const data = getAppServices().backend.data;
+    const real = data.getPhotoFile.bind(data);
+    // An evicted original: nothing to fall back to.
+    vi.spyOn(data, "getPhotoFile").mockImplementation(async (photo, version) => {
+      if (photo.shotKey === "cockpit") throw new AppError("not_found", { userMessage: "Diese Version des Fotos ist nicht mehr vorhanden." });
+      return real(photo, version);
+    });
+    render(<ExportSheet open vehicle={vehicle} plan={await planFor(vehicle)} onClose={() => {}} />);
+
+    const alert = await within(sheet()).findByRole("alert", { hidden: true });
+    expect(alert).toHaveTextContent("09 Cockpit konnte nicht geladen werden.");
+    expect(within(alert).queryByRole("button", { name: "Original verwenden", hidden: true })).toBeNull();
+    fireEvent.click(within(alert).getByRole("button", { name: "Ohne dieses Foto speichern", hidden: true }));
+    expect(within(sheet()).getByText("Ohne: 09 Cockpit")).toBeInTheDocument();
+    fireEvent.click(await ready("Trotzdem speichern"));
+    await waitFor(() => expect(downloads).toHaveLength(1));
+    const names = await zipNames(downloads[0]!.blob);
+    expect(names).toHaveLength(14);
+    expect(names.some((name) => name.includes("cockpit"))).toBe(false);
   });
 
   it("says which photo could not be loaded and loads it again on request", async () => {

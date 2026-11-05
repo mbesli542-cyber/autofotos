@@ -4,12 +4,19 @@ import { Download, Share } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Spinner } from "@/components/ui/Spinner";
 import { useTouchDevice } from "@/hooks/use-touch-device";
-import { getAppServices } from "@/lib/app-services";
+import { getAppServices, getShotTemplate } from "@/lib/app-services";
 import { cn } from "@/lib/cn";
 import type { PhotoVersion, VehiclePhoto } from "@/lib/domain/types";
 import { toUserMessage } from "@/lib/errors";
-import { canShareFiles, downloadBlob, hasFreshTap, ShareFailedError, shareFiles } from "@/lib/export/device-save";
-import { loadExportFile } from "@/lib/export/export-files";
+import {
+  canShareFiles,
+  canShareFileTypes,
+  downloadBlob,
+  hasFreshTap,
+  ShareFailedError,
+  shareFiles,
+} from "@/lib/export/device-save";
+import { exportMimeType, loadExportFile } from "@/lib/export/export-files";
 import { exportFileNameFor, type ExportVehicle } from "@/lib/export/listing-export";
 
 /**
@@ -28,8 +35,9 @@ const MESSAGE_MS = 4000;
 
 /**
  * "Speichern" in the large view: the version shown (original or processed)
- * as AE_{ref}_{nn}_{shot}.{ext} – the share sheet on phones ("Bilder
- * sichern"), a download with that file name on desktops.
+ * as AE_{ref}_{nn}_{shot}.{ext} – the same name as in "Alle Fotos speichern"
+ * – through the share sheet on phones whose browser can share it, as a
+ * download with that file name everywhere else.
  */
 export function SavePhotoButton({
   vehicle,
@@ -43,6 +51,9 @@ export function SavePhotoButton({
   className?: string;
 }) {
   const touch = useTouchDevice();
+  const fileName = exportFileNameFor(getShotTemplate(), vehicle, photo, version);
+  // Share icon only where the share sheet will open (known from the name and type).
+  const canShare = touch && canShareFileTypes([{ name: fileName, type: exportMimeType({ version, fileName }) }]);
   const target = `${photo.id}:${version}`;
   const [state, setState] = useState<State>({ kind: "idle" });
   const [stateFor, setStateFor] = useState(target);
@@ -64,7 +75,11 @@ export function SavePhotoButton({
     setState({ kind: "sharing" });
     try {
       const outcome = await shareFiles([file]);
-      setState(outcome === "shared" ? { kind: "idle", message: { text: "Foto übergeben.", tone: "info" } } : { kind: "idle" });
+      setState(
+        outcome === "shared"
+          ? { kind: "idle", message: { text: `${file.name} an das Teilen-Menü übergeben.`, tone: "info" } }
+          : { kind: "idle" },
+      );
     } catch (error) {
       // The share sheet refused: the download is the way out.
       downloadBlob(file, file.name);
@@ -87,16 +102,12 @@ export function SavePhotoButton({
     setState({ kind: "loading" });
     let file: File;
     try {
-      file = await loadExportFile(getAppServices().backend.data, {
-        photo,
-        version,
-        fileName: exportFileNameFor(vehicle, photo, version),
-      });
+      file = await loadExportFile(getAppServices().backend.data, { photo, version, fileName });
     } catch (error) {
       setState({ kind: "idle", message: { text: toUserMessage(error), tone: "error" } });
       return;
     }
-    if (touch && canShareFiles([file])) {
+    if (canShare && canShareFiles([file])) {
       // Loading took too long for the tap: one more tap opens the share sheet.
       if (!hasFreshTap()) {
         setState({ kind: "ready", file });
@@ -110,7 +121,7 @@ export function SavePhotoButton({
   }
 
   const busy = state.kind === "loading" || state.kind === "sharing";
-  const Icon = touch ? Share : Download;
+  const Icon = canShare ? Share : Download;
 
   return (
     <div className={cn("relative", className)}>

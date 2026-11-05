@@ -1,11 +1,16 @@
 /**
  * Handing photo files to the device: the share sheet on phones
- * (navigator.share – iOS "Bilder sichern", Android "In Galerie speichern" or
- * any app), a download everywhere else.
+ * (navigator.share – on iOS "Bilder sichern" puts them into the Photos app;
+ * Android's sheet has no such entry, the employee picks a target such as
+ * Google Photos or "Dateien"), a download everywhere else.
  *
  * - Phones (touch screen) share when the browser can share these files
  *   (navigator.canShare({ files })); desktops always download – a ZIP for a
- *   whole vehicle, the file itself for one photo.
+ *   whole vehicle, the file itself for one photo. Whether a phone can share
+ *   is known before the files are loaded (canShareFileTypes), so the screen
+ *   never promises the share sheet and then downloads a ZIP.
+ * - A resolved share only means a target took the files – the texts never
+ *   claim they are in the gallery.
  * - A share needs a fresh tap (transient user activation): the files are
  *   loaded BEFORE the share button is tapped, and the share is started
  *   without waiting for anything in between.
@@ -68,6 +73,35 @@ function currentNavigator(): ShareNavigator | undefined {
   return typeof navigator === "undefined" ? undefined : (navigator as ShareNavigator);
 }
 
+/** The phone's system for the share hints: iPhone/iPad (iPadOS also reports a Mac with touch), Android, other. */
+export type SharePlatform = "ios" | "android" | "other";
+
+export function sharePlatform(
+  nav: Pick<Navigator, "userAgent" | "maxTouchPoints"> | undefined = typeof navigator === "undefined"
+    ? undefined
+    : navigator,
+): SharePlatform {
+  const agent = nav?.userAgent ?? "";
+  if (/iPhone|iPad|iPod/.test(agent) || (/Macintosh/.test(agent) && (nav?.maxTouchPoints ?? 0) > 1)) return "ios";
+  if (/Android/.test(agent)) return "android";
+  return "other";
+}
+
+/** German hint before the share sheet opens: where the photos can be saved on this system. */
+export function shareTargetHint(platform: SharePlatform, count: number): string {
+  const one = count === 1;
+  switch (platform) {
+    case "ios":
+      return one
+        ? "Im Teilen-Menü „Bild sichern“ wählen – dann liegt das Foto in der App „Fotos“."
+        : "Im Teilen-Menü „Bilder sichern“ wählen – dann liegen die Fotos in der App „Fotos“.";
+    case "android":
+      return `Im Teilen-Menü wählen, wohin ${one ? "das Foto soll" : "die Fotos sollen"} – z. B. Google Fotos oder „Dateien“.`;
+    case "other":
+      return `Im Teilen-Menü wählen, wohin ${one ? "das Foto soll" : "die Fotos sollen"}.`;
+  }
+}
+
 /** The browser can share exactly these files (type and count). */
 export function canShareFiles(files: readonly File[], nav: ShareNavigator | undefined = currentNavigator()): boolean {
   if (!nav || typeof nav.share !== "function" || typeof nav.canShare !== "function" || files.length === 0) return false;
@@ -76,6 +110,22 @@ export function canShareFiles(files: readonly File[], nav: ShareNavigator | unde
   } catch {
     return false;
   }
+}
+
+/**
+ * The browser can share files of these names and types – asked BEFORE the
+ * files are loaded, with empty stand-ins in parts of `limits.maxFiles`
+ * (canShare looks at the number and the types of the files). false without
+ * file sharing.
+ */
+export function canShareFileTypes(
+  files: readonly { name: string; type: string }[],
+  nav: ShareNavigator | undefined = currentNavigator(),
+  limits: ShareBatchLimits = SHARE_BATCH_LIMITS,
+): boolean {
+  if (files.length === 0 || typeof File === "undefined") return false;
+  const standIns = files.map((file) => new File([], file.name, { type: file.type }));
+  return splitIntoShareBatches(standIns, limits).every((batch) => canShareFiles(batch, nav));
 }
 
 /**

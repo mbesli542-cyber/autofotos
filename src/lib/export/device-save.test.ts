@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   canShareFiles,
+  canShareFileTypes,
   chooseSaveMethod,
   downloadBlob,
   hasFreshTap,
@@ -8,6 +9,8 @@ import {
   SHARE_BATCH_LIMITS,
   ShareFailedError,
   shareFiles,
+  sharePlatform,
+  shareTargetHint,
   splitIntoShareBatches,
 } from "./device-save";
 
@@ -131,5 +134,56 @@ describe("downloadBlob", () => {
     vi.advanceTimersByTime(60_000);
     expect(revoked).toEqual(created);
     click.mockRestore();
+  });
+});
+
+describe("canShareFileTypes – before the files are loaded", () => {
+  it("asks with empty stand-ins of the same names and types, in parts of at most 10", () => {
+    const seen: { names: string[]; sizes: number[] }[] = [];
+    const nav = {
+      share: vi.fn(),
+      canShare: vi.fn((data?: ShareData) => {
+        const files = data?.files ?? [];
+        seen.push({ names: files.map((f) => f.name), sizes: files.map((f) => f.size) });
+        return files.every((f) => f.type === "image/jpeg");
+      }),
+    };
+    const items = Array.from({ length: 12 }, (_, i) => ({
+      name: `AE_X_${String(i + 1).padStart(2, "0")}_a.jpg`,
+      type: "image/jpeg",
+    }));
+    expect(canShareFileTypes(items, nav)).toBe(true);
+    expect(seen.map((part) => part.names.length)).toEqual([10, 2]);
+    expect(seen.flatMap((part) => part.sizes).every((size) => size === 0)).toBe(true);
+    // A type this browser does not share (e.g. HEIC or SVG on Chrome for Android): the ZIP.
+    expect(canShareFileTypes([...items, { name: "AE_X_13_b.heic", type: "image/heic" }], nav)).toBe(false);
+  });
+
+  it("is false without file sharing or without files", () => {
+    expect(canShareFileTypes([{ name: "a.jpg", type: "image/jpeg" }], {})).toBe(false);
+    expect(canShareFileTypes([], { share: vi.fn(), canShare: () => true })).toBe(false);
+  });
+});
+
+describe("sharePlatform / shareTargetHint", () => {
+  it("tells iPhone/iPad (also iPadOS reporting a Mac), Android and other systems apart", () => {
+    const mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)";
+    expect(sharePlatform({ userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X)", maxTouchPoints: 5 })).toBe("ios");
+    expect(sharePlatform({ userAgent: mac, maxTouchPoints: 5 })).toBe("ios");
+    expect(sharePlatform({ userAgent: mac, maxTouchPoints: 0 })).toBe("other");
+    expect(sharePlatform({ userAgent: "Mozilla/5.0 (Linux; Android 15; Pixel 7)", maxTouchPoints: 5 })).toBe("android");
+    expect(sharePlatform(undefined)).toBe("other");
+  });
+
+  it("names „Bilder sichern“ only on iOS – Android's share sheet has no such entry", () => {
+    expect(shareTargetHint("ios", 15)).toBe(
+      "Im Teilen-Menü „Bilder sichern“ wählen – dann liegen die Fotos in der App „Fotos“.",
+    );
+    expect(shareTargetHint("ios", 1)).toBe("Im Teilen-Menü „Bild sichern“ wählen – dann liegt das Foto in der App „Fotos“.");
+    expect(shareTargetHint("android", 15)).toBe(
+      "Im Teilen-Menü wählen, wohin die Fotos sollen – z. B. Google Fotos oder „Dateien“.",
+    );
+    expect(shareTargetHint("android", 15)).not.toMatch(/sichern|Galerie/);
+    expect(shareTargetHint("other", 1)).toBe("Im Teilen-Menü wählen, wohin das Foto soll.");
   });
 });

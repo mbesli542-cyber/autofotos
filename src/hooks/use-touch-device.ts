@@ -1,7 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { isTouchDevice } from "@/lib/export/device-save";
+import { isTouchDevice, sharePlatform, type SharePlatform } from "@/lib/export/device-save";
 
 const QUERIES = ["(pointer: coarse)", "(hover: none)"] as const;
 
@@ -20,4 +20,12 @@ function subscribe(onChange: () => void): () => void {
  */
 export function useTouchDevice(): boolean {
   return useSyncExternalStore(subscribe, () => isTouchDevice(), () => false);
+}
+
+/** The system never changes while the page is open. */
+const subscribeNever = () => () => {};
+
+/** The phone's system for the share hints (iOS / Android / other); "other" on the server. */
+export function useSharePlatform(): SharePlatform {
+  return useSyncExternalStore(subscribeNever, () => sharePlatform(), () => "other");
 }

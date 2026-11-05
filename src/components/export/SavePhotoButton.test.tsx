@@ -134,6 +134,51 @@ describe("<SavePhotoButton />", () => {
     expect(downloads.map((download) => download.name)).toEqual([`AE_${vehicle.internalReference}_01_front_left_45.jpg`]);
   });
 
+  it("says neutrally that the share sheet took the photo", async () => {
+    setTouchDevice(true);
+    setNavigator({ share: vi.fn(async () => {}), canShare: () => true, userActivation: { isActive: true } });
+    const { vehicle, photo } = await photoWithResult();
+    render(<SavePhotoButton vehicle={vehicle} photo={photo} version="processed" />);
+    fireEvent.click(screen.getByRole("button", { name: "Foto speichern" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      `AE_${vehicle.internalReference}_01_front_left_45.jpg an das Teilen-Menü übergeben.`,
+    );
+  });
+
+  it("downloads on a phone whose browser cannot share the file – never promising the share sheet", async () => {
+    setTouchDevice(true);
+    const share = vi.fn(async () => {});
+    setNavigator({ share, canShare: () => false, userActivation: { isActive: true } });
+    const downloads = captureDownloads();
+    const { vehicle, photo } = await photoWithResult();
+    render(<SavePhotoButton vehicle={vehicle} photo={photo} version="original" />);
+    fireEvent.click(screen.getByRole("button", { name: "Foto speichern" }));
+    await waitFor(() => expect(downloads).toHaveLength(1));
+    expect(share).not.toHaveBeenCalled();
+    expect(downloads[0]?.name).toBe(`AE_${vehicle.internalReference}_01_front_left_45.png`);
+  });
+
+  it("names an extra photo as in the whole set (after the template shots)", async () => {
+    const downloads = captureDownloads();
+    const { vehicle, photo } = await photoWithResult();
+    const extra = await getAppServices().backend.data.savePhoto({
+      photoId: crypto.randomUUID(),
+      vehicleId: vehicle.id,
+      shotKey: "extra_02",
+      shotOrder: 102,
+      title: "Zusatzfoto 2",
+      file: new Blob(["extra"], { type: "image/jpeg" }),
+      thumbnail: null,
+      width: 4000,
+      height: 3000,
+      takenAt: photo.takenAt,
+    });
+    render(<SavePhotoButton vehicle={vehicle} photo={extra} version="original" />);
+    fireEvent.click(screen.getByRole("button", { name: "Foto speichern" }));
+    await waitFor(() => expect(downloads).toHaveLength(1));
+    expect(downloads[0]?.name).toBe(`AE_${vehicle.internalReference}_17_extra_02.jpg`);
+  });
+
   it("says in German why a photo could not be loaded", async () => {
     const { vehicle, photo } = await photoWithResult();
     render(<SavePhotoButton vehicle={vehicle} photo={{ ...photo, processedStoragePath: null }} version="processed" />);

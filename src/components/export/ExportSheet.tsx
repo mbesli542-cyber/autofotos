@@ -5,21 +5,28 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import { Button } from "@/components/ui/Button";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { ProgressBar } from "@/components/ui/ProgressBar";
-import { useTouchDevice } from "@/hooks/use-touch-device";
+import { useSharePlatform, useTouchDevice } from "@/hooks/use-touch-device";
 import { getAppServices } from "@/lib/app-services";
 import { cn } from "@/lib/cn";
 import { toUserMessage } from "@/lib/errors";
 import {
   canShareFiles,
+  canShareFileTypes,
   downloadBlob,
   ShareFailedError,
   shareFiles,
+  shareTargetHint,
   splitIntoShareBatches,
 } from "@/lib/export/device-save";
-import { buildExportZip, ExportFileLoader, exportFileKey } from "@/lib/export/export-files";
+import {
+  buildExportZip,
+  ExportFileLoader,
+  exportFileKey,
+  exportMimeType,
+  type ExportFileError,
+} from "@/lib/export/export-files";
 import {
   describeExportPlan,
-  exportableItems,
   photoCount,
   reviewRows,
   selectExportItems,
@@ -45,6 +52,7 @@ type Phase =
   | { kind: "failed"; message: string; offerZip: boolean };
 
 const IDLE: Phase = { kind: "idle" };
+const NONE: ReadonlySet<string> = new Set();
 
 const STATUS_TONE: Record<ExportItem["status"], string> = {
   processed: "text-ae-warning",
@@ -62,14 +70,32 @@ function zipErrorMessage(error: unknown): string {
   return toUserMessage(error, "Die ZIP-Datei konnte nicht erstellt werden. Bitte versuchen Sie es erneut.");
 }
 
+/** "09 Cockpit". */
+function shotName(item: Pick<ExportItem, "order" | "title">): string {
+  return `${String(item.order).padStart(2, "0")} ${item.title}`;
+}
+
+/** "AE_…_01_….jpg" or "AE_…_01_….jpg bis AE_…_15_….jpg". */
+function fileRange(files: readonly File[]): string {
+  const first = files[0]?.name ?? "";
+  const last = files.at(-1)?.name ?? "";
+  return files.length > 1 ? `${first} bis ${last}` : first;
+}
+
+function withKey(set: ReadonlySet<string>, key: string): ReadonlySet<string> {
+  return new Set([...set, key]);
+}
+
 /**
  * "Alle Fotos speichern": a short summary of the listing set (what is
  * processed, what is still the original, what must be retaken), then the
  * files in shot order named AE_{ref}_{nn}_{shot}: the share sheet on phones
- * ("Bilder sichern"), a ZIP download on desktops and as the fallback.
- * Rejected shots are only saved when the employee ticks them. The files are
+ * whose browser can share them, a ZIP download on desktops and as the
+ * fallback – the screen says which before the tap. Rejected shots are only
+ * saved when the employee ticks them. The files that will be saved are
  * loaded as soon as the sheet opens, so the share sheet opens straight from
- * the tap.
+ * the tap; a file that is gone can be left out (or replaced by the original)
+ * instead of blocking the others.
  */
 export function ExportSheet({
   open,
@@ -87,9 +113,14 @@ export function ExportSheet({
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const touch = useTouchDevice();
+  const platform = useSharePlatform();
   const [loader] = useState(() => new ExportFileLoader(() => getAppServices().backend.data));
   const snapshot = useSyncExternalStore(loader.subscribe, loader.getSnapshot, loader.getSnapshot);
   const [includeRetakes, setIncludeRetakes] = useState(false);
+  /** Shots left out because their file could not be loaded. */
+  const [leaveOut, setLeaveOut] = useState<ReadonlySet<string>>(NONE);
+  /** Shots whose processed file is gone: the original instead. */
+  const [useOriginal, setUseOriginal] = useState<ReadonlySet<string>>(NONE);
   const [phase, setPhase] = useState<Phase>(IDLE);
   const [openedBefore, setOpenedBefore] = useState(open);
 
@@ -98,6 +129,8 @@ export function ExportSheet({
     setOpenedBefore(open);
     if (open) {
       setIncludeRetakes(false);
+      setLeaveOut(NONE);
+      setUseOriginal(NONE);
       setPhase(IDLE);
     }
   }
@@ -109,10 +142,13 @@ export function ExportSheet({
     if (!open && dialog.open) dialog.close();
   }, [open]);
 
-  // Load the files in the background while the summary is read.
+  const selected = selectExportItems(plan, { includeRetakes, leaveOut, useOriginal });
+
+  // Load the files that will be saved in the background while the summary is
+  // read (rejected shots only once they are ticked).
   useEffect(() => {
-    if (open) loader.want(exportableItems(plan));
-  }, [open, plan, loader]);
+    if (open) loader.want(selected);
+  }, [open, selected, loader]);
 
   // Routes stay mounted: close and free the files when the page gets hidden.
   useLayoutEffect(
@@ -123,12 +159,18 @@ export function ExportSheet({
     [loader],
   );
 
-  const selected = selectExportItems(plan, { includeRetakes });
   const files = selected.flatMap((item) => {
     const file = snapshot.files.get(exportFileKey(item));
     return file ? [file] : [];
   });
-  const failedItems = selected.filter((item) => snapshot.errors.has(exportFileKey(item)));
+  const failures = selected.flatMap((item) => {
+    const error = snapshot.errors.get(exportFileKey(item));
+    return error ? [{ item, error }] : [];
+  });
+  /** Files that are gone: leave them out or use the original. */
+  const missing = failures.filter((failure) => failure.error.missing);
+  /** Files that could not be loaded right now: try again. */
+  const transient = failures.filter((failure) => !failure.error.missing);
   const ready = selected.length > 0 && files.length === selected.length;
   const selection = selected.map(exportFileKey).join("|");
   const batches = splitIntoShareBatches(files);
@@ -138,6 +180,19 @@ export function ExportSheet({
   const exampleName = selected[0]?.fileName ?? null;
   const busy = phase.kind === "busy";
   const finished = phase.kind === "done";
+  /** Sharing failed on this phone: the ZIP is the way out. */
+  const zipInstead = phase.kind === "failed" && phase.offerZip;
+  // Whether this browser can share the files – known before they are loaded
+  // (their names and types), confirmed with the loaded files.
+  const canShare =
+    touch &&
+    selected.length > 0 &&
+    (ready
+      ? batches.every((batch) => canShareFiles(batch))
+      : canShareFileTypes(selected.map((item) => ({ name: item.fileName ?? "", type: exportMimeType(item) }))));
+  const method: "share" | "zip" = canShare && !zipInstead ? "share" : "zip";
+  const leftOut = plan.items.filter((item) => leaveOut.has(item.key));
+  const originals = selected.filter((item) => item.originalInstead);
 
   function close() {
     if (busy) return;
@@ -173,10 +228,11 @@ export function ExportSheet({
         setPhase({ kind: "shared", next: index + 1, total: batches.length, selection });
         return;
       }
+      // A finished share only means a target took the files – where they are now is up to it.
       setPhase({
         kind: "done",
-        title: `${photoCount(files.length)} übergeben`,
-        message: "Mit „Bilder sichern“ liegen die Fotos jetzt in der Galerie – in Aufnahme-Reihenfolge.",
+        title: `${photoCount(files.length)} an das Teilen-Menü übergeben`,
+        message: `${fileRange(files)} – in Aufnahme-Reihenfolge.`,
       });
     } catch (error) {
       setPhase({
@@ -187,15 +243,12 @@ export function ExportSheet({
     }
   }
 
-  /** Sharing failed on this phone: the ZIP is the way out. */
-  const zipInstead = phase.kind === "failed" && phase.offerZip;
-
   function handleSave() {
     if (!ready || busy) return;
-    if (touch && !zipInstead) {
+    if (method === "share") {
       const index = progress?.next ?? 0;
       const batch = batches[index];
-      if (batch && canShareFiles(batch)) {
+      if (batch) {
         void share(batch, index);
         return;
       }
@@ -203,15 +256,17 @@ export function ExportSheet({
     void saveZip(files);
   }
 
-  const saveLabel = zipInstead
-    ? "Als ZIP-Datei herunterladen"
-    : progress
+  const saveLabel = progress
     ? `Teil ${progress.next + 1} von ${progress.total} sichern`
-    : !plan.complete
-      ? "Trotzdem speichern"
-      : touch
-        ? `${photoCount(selected.length)} speichern`
-        : "ZIP herunterladen";
+    : zipInstead
+      ? "Als ZIP-Datei herunterladen"
+      : !plan.complete
+        ? "Trotzdem speichern"
+        : method === "share"
+          ? `${photoCount(selected.length)} speichern`
+          : touch
+            ? "Als ZIP-Datei herunterladen"
+            : "ZIP herunterladen";
 
   return (
     <dialog
@@ -254,9 +309,9 @@ export function ExportSheet({
             {phase.kind === "done" ? (
               <div className="mb-4 flex items-start gap-3 rounded-xl border border-ae-success/30 bg-ae-success/10 p-3" role="status">
                 <CircleCheck className="mt-0.5 size-5 shrink-0 text-ae-success" aria-hidden />
-                <div>
+                <div className="min-w-0">
                   <p className="font-semibold">{phase.title}</p>
-                  <p className="mt-0.5 text-sm text-ae-muted">{phase.message}</p>
+                  <p className="mt-0.5 text-sm [overflow-wrap:anywhere] text-ae-muted">{phase.message}</p>
                 </div>
               </div>
             ) : (
@@ -274,13 +329,27 @@ export function ExportSheet({
                     .
                   </p>
                 )}
-                {touch && selected.length > 0 && (
-                  <p className="mt-1.5">
-                    Im Teilen-Menü „Bilder sichern“ wählen – dann liegen die Fotos in der Galerie.
-                    {batches.length > 1 && ` Die Fotos werden in ${batches.length} Teilen übergeben (je ein Tippen).`}
+                {selected.length > 0 && method === "share" && (
+                  <p className="mt-1.5" data-testid="export-method">
+                    {shareTargetHint(platform, selected.length)}
+                    {ready && batches.length > 1 && ` Die Fotos werden in ${batches.length} Teilen übergeben (je ein Tippen).`}
                   </p>
                 )}
-                {!touch && selected.length > 0 && <p className="mt-1.5">Als ZIP-Datei „{archiveName}“.</p>}
+                {selected.length > 0 && method === "zip" && !zipInstead && (
+                  <p className="mt-1.5" data-testid="export-method">
+                    {touch
+                      ? `Dieser Browser kann die Fotos nicht teilen – sie werden als ZIP-Datei „${archiveName}“ heruntergeladen.`
+                      : `Als ZIP-Datei „${archiveName}“.`}
+                  </p>
+                )}
+                {leftOut.length > 0 && (
+                  <p className="mt-1.5 text-ae-text">Ohne: {leftOut.map(shotName).join(", ")}</p>
+                )}
+                {originals.length > 0 && (
+                  <p className="mt-1.5 text-ae-text">
+                    Original statt Showroom-Bild: {originals.map(shotName).join(", ")}
+                  </p>
+                )}
                 {plan.counts.original > 0 && (
                   <p className="mt-1.5">
                     Tipp: Mit „Fotos bearbeiten“ entstehen zuerst die Showroom-Bilder – sonst werden die Originale gespeichert.
@@ -289,7 +358,7 @@ export function ExportSheet({
               </div>
             )}
 
-            {selected.length > 0 && !ready && failedItems.length === 0 && (
+            {selected.length > 0 && !ready && failures.length === 0 && (
               <div className="mb-3" role="status">
                 <p className="mb-1.5 text-xs text-ae-muted">
                   Fotos werden vorbereitet… {files.length} / {selected.length}
@@ -298,24 +367,46 @@ export function ExportSheet({
               </div>
             )}
 
-            {failedItems.length > 0 && (
+            {!finished &&
+              missing.map(({ item, error }) => (
+                <MissingFileNotice
+                  key={item.key}
+                  item={item}
+                  error={error}
+                  disabled={busy || progress !== null}
+                  onUseOriginal={() => setUseOriginal((current) => withKey(current, item.key))}
+                  onLeaveOut={() => setLeaveOut((current) => withKey(current, item.key))}
+                />
+              ))}
+
+            {transient.length > 0 && !finished && (
               <div role="alert" className="mb-3 rounded-xl border border-ae-danger/30 bg-ae-danger/8 p-3 text-sm">
                 <p className="font-semibold text-ae-danger">
-                  {failedItems.length === 1
-                    ? `${failedItems[0]?.title ?? "Ein Foto"} konnte nicht geladen werden.`
-                    : `${failedItems.length} Fotos konnten nicht geladen werden.`}
+                  {transient.length === 1 && transient[0]
+                    ? `${shotName(transient[0].item)} konnte nicht geladen werden.`
+                    : `${transient.length} Fotos konnten nicht geladen werden.`}
                 </p>
-                <p className="mt-0.5 text-xs text-ae-muted">
-                  {snapshot.errors.get(exportFileKey(failedItems[0] as ExportItem))}
-                </p>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="mt-2"
-                  onClick={() => loader.want(failedItems, { retry: true })}
-                >
-                  Erneut versuchen
-                </Button>
+                <p className="mt-0.5 text-xs text-ae-muted">{transient[0]?.error.message}</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => loader.want(transient.map((failure) => failure.item), { retry: true })}
+                  >
+                    Erneut versuchen
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy || progress !== null}
+                    onClick={() =>
+                      setLeaveOut((current) => new Set([...current, ...transient.map((failure) => failure.item.key)]))
+                    }
+                  >
+                    {transient.length === 1 ? "Ohne dieses Foto speichern" : "Ohne diese Fotos speichern"}
+                  </Button>
+                </div>
               </div>
             )}
 
@@ -405,7 +496,7 @@ export function ExportSheet({
                     loading={busy}
                     loadingText={phase.kind === "busy" ? phase.text : undefined}
                     icon={
-                      touch && !zipInstead ? <Share className="size-5" aria-hidden /> : <Download className="size-5" aria-hidden />
+                      method === "share" ? <Share className="size-5" aria-hidden /> : <Download className="size-5" aria-hidden />
                     }
                   >
                     {saveLabel}
@@ -413,13 +504,13 @@ export function ExportSheet({
                   <div
                     className={cn(
                       "grid grid-cols-1 gap-2 short:flex short:shrink-0",
-                      touch && !zipInstead && "sm:grid-cols-2",
+                      method === "share" && "sm:grid-cols-2",
                     )}
                   >
                     <Button variant="secondary" onClick={close} disabled={busy}>
                       Zurück
                     </Button>
-                    {touch && !zipInstead && (
+                    {method === "share" && (
                       <Button
                         variant="ghost"
                         onClick={() => void saveZip(files)}
@@ -438,5 +529,48 @@ export function ExportSheet({
         </div>
       )}
     </dialog>
+  );
+}
+
+/**
+ * A file that is gone (e.g. a processed result that was never stored): the
+ * other photos stay saveable – leave this one out, or take its original
+ * instead of the missing showroom image (the employee's explicit choice).
+ */
+function MissingFileNotice({
+  item,
+  error,
+  disabled,
+  onUseOriginal,
+  onLeaveOut,
+}: {
+  item: ExportItem;
+  error: ExportFileError;
+  disabled: boolean;
+  onUseOriginal: () => void;
+  onLeaveOut: () => void;
+}) {
+  const processed = item.version === "processed" && item.originalFileName !== null;
+  return (
+    <div role="alert" className="mb-3 rounded-xl border border-ae-danger/30 bg-ae-danger/8 p-3 text-sm">
+      <p className="font-semibold text-ae-danger">
+        {processed
+          ? `Das Showroom-Bild von ${shotName(item)} fehlt.`
+          : `${shotName(item)} konnte nicht geladen werden.`}
+      </p>
+      <p className="mt-0.5 text-xs text-ae-muted">
+        {processed ? `${error.message} Stattdessen das Original speichern – oder das Foto weglassen.` : error.message}
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {processed && (
+          <Button variant="secondary" size="sm" disabled={disabled} onClick={onUseOriginal}>
+            Original verwenden
+          </Button>
+        )}
+        <Button variant={processed ? "ghost" : "secondary"} size="sm" disabled={disabled} onClick={onLeaveOut}>
+          Ohne dieses Foto speichern
+        </Button>
+      </div>
+    </div>
   );
 }

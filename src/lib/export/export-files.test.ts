@@ -9,10 +9,11 @@ import { createDemoDatabase, MockDataProvider } from "@/lib/data/mock/mock-data-
 import { SupabaseDataProvider } from "@/lib/data/supabase/supabase-data-provider";
 import type { DataProvider } from "@/lib/data/types";
 import type { VehiclePhoto } from "@/lib/domain/types";
+import { AppError } from "@/lib/errors";
 import { createId } from "@/lib/ids";
 import { buildPhotoSlots } from "@/lib/photos/photo-slots";
 import { AUTOEXPERTEN_STANDARD_TEMPLATE as T, getOrderedShots } from "@/lib/shots/shot-template";
-import { buildExportZip, ExportFileLoader, exportFileKey, loadExportFile } from "./export-files";
+import { buildExportZip, ExportFileLoader, exportFileKey, exportMimeType, loadExportFile } from "./export-files";
 import { buildExportPlan, selectExportItems, type ExportItem } from "./listing-export";
 import { crc32 } from "./zip";
 
@@ -106,12 +107,34 @@ describe("export files in demo mode (IndexedDB)", () => {
     if (!first) throw new Error("no item");
     const getPhotoFile = vi.spyOn(data, "getPhotoFile").mockRejectedValueOnce(new TypeError("Failed to fetch"));
     const loader = await loadAll(data, [first]);
-    expect([...loader.getSnapshot().errors.values()]).toEqual(["Verbindung fehlgeschlagen. Bitte versuchen Sie es erneut."]);
+    expect([...loader.getSnapshot().errors.values()]).toEqual([
+      { message: "Verbindung fehlgeschlagen. Bitte versuchen Sie es erneut.", missing: false },
+    ]);
     loader.want([first]);
     expect(getPhotoFile).toHaveBeenCalledTimes(1);
     loader.want([first], { retry: true });
     await vi.waitFor(() => expect(loader.getSnapshot().files.size).toBe(1));
     expect(loader.getSnapshot().errors.size).toBe(0);
+  });
+
+  it("reports a file that is gone as missing – trying again cannot help", async () => {
+    const { data, plan } = await demoVehicle();
+    const [first] = selectExportItems(plan);
+    if (!first) throw new Error("no item");
+    const getPhotoFile = vi.spyOn(data, "getPhotoFile").mockRejectedValue(new AppError("not_found", { userMessage: "Diese Version des Fotos ist nicht mehr vorhanden." }));
+    const loader = await loadAll(data, [first]);
+    expect([...loader.getSnapshot().errors.values()]).toEqual([
+      { message: "Diese Version des Fotos ist nicht mehr vorhanden.", missing: true },
+    ]);
+    loader.want([first], { retry: true });
+    expect(getPhotoFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("knows the type of an item's file before it is loaded", () => {
+    expect(exportMimeType({ version: "processed", fileName: "AE_X_01_front.jpg" })).toBe("image/jpeg");
+    expect(exportMimeType({ version: "original", fileName: "AE_X_01_front.png" })).toBe("image/png");
+    expect(exportMimeType({ version: "original", fileName: "AE_X_01_front.heic" })).toBe("image/heic");
+    expect(exportMimeType({ version: "original", fileName: "AE_X_01_front.jpg" })).toBe("image/jpeg");
   });
 
   it("loads at most three files at a time and drops answers after clear()", async () => {

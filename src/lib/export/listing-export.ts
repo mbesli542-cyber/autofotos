@@ -7,29 +7,39 @@
  * - original:  not processed (yet) → the original, marked in the summary
  * - retake:    the automatic check or a processing rejected the photo
  *              ("muss neu aufgenommen werden") – only exported when the
- *              employee confirms it explicitly
+ *              employee confirms it explicitly. Known on every device: the
+ *              rejection is kept with the photo (processing-warnings.ts
+ *              storedRejection), the device's checks add what is newer.
  * - missing:   no photo saved for the shot
  * - unsaved:   a newer capture is still being saved (or could not be saved)
  *              on this device – the saved photo it replaces is not exported
- * Extra photos (never processed) follow as originals.
+ * Extra photos (never processed) follow as originals, numbered after the
+ * template (16, 17, … – exportOrderOf).
  *
  * Every file is named AE_{ref}_{nn}_{shot}.{ext} (buildExportFileName), so
- * the file names sort in listing order.
+ * the file names sort in listing order. A file that cannot be loaded can be
+ * left out, a missing processed file replaced by the original – only on the
+ * employee's choice (ExportChoices).
  */
 import type { PhotoVersion, Vehicle, VehiclePhoto } from "@/lib/domain/types";
 import { buildExportFileName, getStoragePathExtension } from "@/lib/naming/file-naming";
 import type { PhotoSlot } from "@/lib/photos/photo-slots";
-import { needsResultCheck, warningsToCheck } from "@/lib/processing/processing-warnings";
+import {
+  hasRetakeWarning,
+  needsResultCheck,
+  storedRejection,
+  warningsToCheck,
+} from "@/lib/processing/processing-warnings";
 import type { ShotCheckState } from "@/lib/processing/shot-check";
 import { sortPhotosByShotOrder } from "@/lib/shots/shot-progress";
-import type { ShotTemplate } from "@/lib/shots/shot-template";
+import { EXTRA_SHOT_ORDER_OFFSET, type ShotTemplate } from "@/lib/shots/shot-template";
 
 export type ExportItemStatus = "processed" | "original" | "retake" | "missing" | "unsaved" | "extra";
 
 export interface ExportItem {
   /** Shot key. */
   key: string;
-  /** Position in the listing order (template order; extra photos 101+). */
+  /** Position in the listing order and in the file name (template order; extra photos after it). */
   order: number;
   title: string;
   status: ExportItemStatus;
@@ -38,6 +48,10 @@ export interface ExportItem {
   version: PhotoVersion | null;
   /** AE_{ref}_{nn}_{shot}.{ext}; null when nothing can be exported. */
   fileName: string | null;
+  /** The original's export name when the processed result is exported (the way out if its file is gone). */
+  originalFileName: string | null;
+  /** The original instead of the missing processed file – chosen by the employee (withOriginal). */
+  originalInstead?: boolean;
   /** The processor asks to check the processed result. */
   needsCheck: boolean;
   /** German: the reason to retake, or the processor's hint on the result. */
@@ -67,21 +81,51 @@ export type ExportVehicle = Pick<Vehicle, "id" | "internalReference">;
 /** Slot fields the plan needs (photo-slots.ts). */
 export type ExportSlot = Pick<PhotoSlot, "key" | "order" | "title" | "pending"> & { photo: VehiclePhoto | null };
 
+/**
+ * The number of a shot in the listing and in its file name: the template's
+ * order; extra photos ("Zusatzfoto n", order 100 + n) come right after the
+ * template – 16, 17, … with 15 template shots – so the file names sort in
+ * listing order, also where "_101_" would land between "_09_" and "_10_".
+ */
+export function exportOrderOf(
+  template: Pick<ShotTemplate, "shots">,
+  photo: Pick<VehiclePhoto, "shotKey" | "shotOrder">,
+): number {
+  const shot = template.shots.find((entry) => entry.key === photo.shotKey);
+  if (shot) return shot.order;
+  if (photo.shotOrder <= EXTRA_SHOT_ORDER_OFFSET) return photo.shotOrder;
+  const last = template.shots.reduce((max, entry) => Math.max(max, entry.order), 0);
+  return last + (photo.shotOrder - EXTRA_SHOT_ORDER_OFFSET);
+}
+
 /** The export file name of one version of a photo (processed results are JPEGs). */
-export function exportFileNameFor(vehicle: ExportVehicle, photo: VehiclePhoto, version: PhotoVersion): string {
+export function exportFileNameFor(
+  template: Pick<ShotTemplate, "shots">,
+  vehicle: ExportVehicle,
+  photo: Pick<VehiclePhoto, "shotKey" | "shotOrder" | "originalStoragePath">,
+  version: PhotoVersion,
+): string {
   const extension =
     version === "processed" ? "jpg" : (getStoragePathExtension(photo.originalStoragePath) ?? "jpg");
   return buildExportFileName({
     internalReference: vehicle.internalReference,
     vehicleId: vehicle.id,
-    shotOrder: photo.shotOrder,
+    shotOrder: exportOrderOf(template, photo),
     shotKey: photo.shotKey,
     extension: extension === "jpeg" ? "jpg" : extension,
   });
 }
 
+interface PlanContext {
+  template: ShotTemplate;
+  vehicle: ExportVehicle;
+}
+
+const UNSAVED_NOTE = "Foto wird noch gespeichert.";
+const SAVE_FAILED_NOTE = "Foto konnte nicht gespeichert werden.";
+
 function item(
-  vehicle: ExportVehicle,
+  { template, vehicle }: PlanContext,
   slot: ExportSlot,
   status: ExportItemStatus,
   version: PhotoVersion | null,
@@ -92,34 +136,50 @@ function item(
     version === "processed" && photo !== null && needsResultCheck(photo.processingWarnings);
   return {
     key: slot.key,
-    order: slot.order,
+    order: photo ? exportOrderOf(template, photo) : exportOrderOf(template, { shotKey: slot.key, shotOrder: slot.order }),
     title: slot.title,
     status,
     photo,
     version,
-    fileName: photo && version ? exportFileNameFor(vehicle, photo, version) : null,
+    fileName: photo && version ? exportFileNameFor(template, vehicle, photo, version) : null,
+    originalFileName:
+      photo && version === "processed" ? exportFileNameFor(template, vehicle, photo, "original") : null,
     needsCheck,
     note: note ?? (needsCheck && photo ? (warningsToCheck(photo.processingWarnings)[0]?.message ?? null) : null),
   };
 }
 
-function templateItem(vehicle: ExportVehicle, slot: ExportSlot, check: ShotCheckState | undefined): ExportItem {
-  if (slot.pending) {
-    return item(
-      vehicle,
-      { ...slot, photo: null },
-      "unsaved",
-      null,
-      slot.pending.status === "failed" ? "Foto konnte nicht gespeichert werden." : "Foto wird noch gespeichert.",
-    );
+function unsavedItem(context: PlanContext, slot: ExportSlot): ExportItem {
+  const note = slot.pending?.status === "failed" ? SAVE_FAILED_NOTE : UNSAVED_NOTE;
+  return item(context, { ...slot, photo: null }, "unsaved", null, note);
+}
+
+/**
+ * Why the shot's photo must be retaken, or null: the shot's check state
+ * (shot-check.ts – it reads what is saved with the photo, too); without one,
+ * what is saved with the photo: the processor's stored rejection, or a
+ * result whose hint says the photo itself is the problem.
+ */
+function retakeReason(photo: VehiclePhoto, check: ShotCheckState | undefined): string | null {
+  if (check) return check.kind === "retake" ? check.reason : null;
+  const rejection = storedRejection(photo);
+  if (rejection !== null) return rejection;
+  if (photo.processedStoragePath && hasRetakeWarning(photo.processingWarnings)) {
+    return warningsToCheck(photo.processingWarnings)[0]?.message ?? null;
   }
+  return null;
+}
+
+function templateItem(context: PlanContext, slot: ExportSlot, check: ShotCheckState | undefined): ExportItem {
+  if (slot.pending) return unsavedItem(context, slot);
   const photo = slot.photo;
-  if (!photo) return item(vehicle, slot, "missing", null);
+  if (!photo) return item(context, slot, "missing", null);
   const processed = photo.processedStoragePath !== null;
-  if (check?.kind === "retake") return item(vehicle, slot, "retake", processed ? "processed" : "original", check.reason);
-  if (processed) return item(vehicle, slot, "processed", "processed");
+  const retake = retakeReason(photo, check);
+  if (retake !== null) return item(context, slot, "retake", processed ? "processed" : "original", retake);
+  if (processed) return item(context, slot, "processed", "processed");
   return item(
-    vehicle,
+    context,
     slot,
     "original",
     "original",
@@ -127,9 +187,9 @@ function templateItem(vehicle: ExportVehicle, slot: ExportSlot, check: ShotCheck
   );
 }
 
-function extraItem(vehicle: ExportVehicle, slot: ExportSlot): ExportItem {
-  if (slot.pending) return templateItem(vehicle, slot, undefined);
-  return item(vehicle, slot, slot.photo ? "extra" : "missing", slot.photo ? "original" : null);
+function extraItem(context: PlanContext, slot: ExportSlot): ExportItem {
+  if (slot.pending) return unsavedItem(context, slot);
+  return item(context, slot, slot.photo ? "extra" : "missing", slot.photo ? "original" : null);
 }
 
 /**
@@ -148,10 +208,11 @@ export function buildExportPlan({
   slots: { required: readonly ExportSlot[]; extras: readonly ExportSlot[] };
   checks?: ReadonlyMap<string, ShotCheckState>;
 }): ExportPlan {
+  const context: PlanContext = { template, vehicle };
   // Listing order: the template's, extra photos after it (never by time).
   const items = sortPhotosByShotOrder(template, [
-    ...slots.required.map((slot) => templateItem(vehicle, slot, checks?.get(slot.key))),
-    ...slots.extras.filter((slot) => slot.photo || slot.pending).map((slot) => extraItem(vehicle, slot)),
+    ...slots.required.map((slot) => templateItem(context, slot, checks?.get(slot.key))),
+    ...slots.extras.filter((slot) => slot.photo || slot.pending).map((slot) => extraItem(context, slot)),
   ].map((entry) => ({ shotKey: entry.key, shotOrder: entry.order, entry }))).map(({ entry }) => entry);
   const count = (status: ExportItemStatus) => items.filter((entry) => entry.status === status).length;
   const counts: ExportCounts = {
@@ -166,17 +227,44 @@ export function buildExportPlan({
   return { items, counts, complete: counts.processed === slots.required.length };
 }
 
-/**
- * The items whose files are saved, in listing order: everything exportable –
- * rejected shots ("retake") only with `includeRetakes`.
- */
-export function selectExportItems(plan: ExportPlan, { includeRetakes = false } = {}): ExportItem[] {
-  return plan.items.filter((entry) => entry.version !== null && (entry.status !== "retake" || includeRetakes));
+/** What the employee chose in the summary. */
+export interface ExportChoices {
+  /** Rejected shots ("retake") are saved too. */
+  includeRetakes?: boolean;
+  /** Shot keys left out ("Ohne dieses Foto speichern" – the file could not be loaded). */
+  leaveOut?: ReadonlySet<string>;
+  /** Shot keys whose processed file is gone: their original instead ("Original verwenden"). */
+  useOriginal?: ReadonlySet<string>;
 }
 
-/** Items that may be loaded for the export (every item with a file, rejected shots included). */
-export function exportableItems(plan: ExportPlan): ExportItem[] {
-  return selectExportItems(plan, { includeRetakes: true });
+/** The item with its original instead of the processed result (named for the original). */
+export function withOriginal(entry: ExportItem): ExportItem {
+  if (entry.version !== "processed" || entry.originalFileName === null) return entry;
+  return {
+    ...entry,
+    version: "original",
+    fileName: entry.originalFileName,
+    originalFileName: null,
+    originalInstead: true,
+    needsCheck: false,
+  };
+}
+
+/**
+ * The items whose files are saved, in listing order: everything exportable –
+ * rejected shots ("retake") only with `includeRetakes`; without the shots
+ * left out, with the original where the employee chose it.
+ */
+export function selectExportItems(
+  plan: ExportPlan,
+  { includeRetakes = false, leaveOut, useOriginal }: ExportChoices = {},
+): ExportItem[] {
+  return plan.items
+    .filter(
+      (entry) =>
+        entry.version !== null && (entry.status !== "retake" || includeRetakes) && !leaveOut?.has(entry.key),
+    )
+    .map((entry) => (useOriginal?.has(entry.key) ? withOriginal(entry) : entry));
 }
 
 /** "1 Foto" / "3 Fotos". */

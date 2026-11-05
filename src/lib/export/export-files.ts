@@ -4,9 +4,11 @@
  * session in Supabase mode), named AE_{ref}_{nn}_{shot}.{ext}, and – for the
  * ZIP – their CRC-32.
  *
- * ExportFileLoader loads them in the background as soon as the summary opens
- * (a few at a time), so the share sheet can open straight from the next tap.
- * It is an external store (subscribe/getSnapshot) for useSyncExternalStore.
+ * ExportFileLoader loads the files that will be saved in the background as
+ * soon as the summary opens (a few at a time), so the share sheet can open
+ * straight from the next tap. It is an external store
+ * (subscribe/getSnapshot) for useSyncExternalStore. A file that is gone
+ * (AppError "not_found") is reported as `missing` – trying again cannot help.
  */
 import type { DataProvider } from "@/lib/data/types";
 import { AppError, toUserMessage } from "@/lib/errors";
@@ -26,6 +28,12 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   heif: "image/heif",
   svg: "image/svg+xml",
 };
+
+/** The type of the file an item exports (processed results are JPEGs; an original by its file name). */
+export function exportMimeType(item: Pick<ExportItem, "version" | "fileName">): string {
+  if (item.version === "processed") return "image/jpeg";
+  return MIME_BY_EXTENSION[getStoragePathExtension(item.fileName ?? "") ?? "jpg"] ?? "image/jpeg";
+}
 
 /** Identifies an item's file: the photo, its version and the name it gets. */
 export function exportFileKey(item: Pick<ExportItem, "photo" | "version" | "fileName">): string {
@@ -60,20 +68,35 @@ export async function buildExportZip(files: readonly File[], crcs: (file: File) 
   return buildZipBlob(entries);
 }
 
+/** A file that could not be loaded. */
+export interface ExportFileError {
+  /** German reason. */
+  message: string;
+  /** The file is gone (not_found): another attempt cannot help – leave it out or use the original. */
+  missing: boolean;
+}
+
 export interface ExportFilesSnapshot {
   /** Loaded files by exportFileKey. */
   files: ReadonlyMap<string, File>;
-  /** German reason by exportFileKey for files that could not be loaded. */
-  errors: ReadonlyMap<string, string>;
+  /** Files that could not be loaded, by exportFileKey. */
+  errors: ReadonlyMap<string, ExportFileError>;
   /** Files being loaded or waiting to be loaded. */
   loading: number;
+}
+
+function toExportFileError(error: unknown): ExportFileError {
+  return {
+    message: toUserMessage(error, "Das Foto konnte nicht geladen werden."),
+    missing: error instanceof AppError && error.code === "not_found",
+  };
 }
 
 const EMPTY: ExportFilesSnapshot = { files: new Map(), errors: new Map(), loading: 0 };
 
 export class ExportFileLoader {
   private files = new Map<string, File>();
-  private errors = new Map<string, string>();
+  private errors = new Map<string, ExportFileError>();
   private queue: { key: string; item: ExportItem }[] = [];
   private active = new Set<string>();
   private crcs = new WeakMap<File, Promise<number>>();
@@ -101,7 +124,7 @@ export class ExportFileLoader {
 
   /**
    * Loads the files of these items that are neither loaded nor on their way.
-   * A file that failed is only tried again with `retry`.
+   * A file that failed is only tried again with `retry` (a missing one never).
    */
   want(items: readonly ExportItem[], { retry = false } = {}): void {
     let changed = false;
@@ -109,8 +132,9 @@ export class ExportFileLoader {
       if (!item.photo || !item.version || !item.fileName) continue;
       const key = exportFileKey(item);
       if (this.files.has(key) || this.active.has(key) || this.queue.some((entry) => entry.key === key)) continue;
-      if (this.errors.has(key)) {
-        if (!retry) continue;
+      const failed = this.errors.get(key);
+      if (failed) {
+        if (!retry || failed.missing) continue;
         this.errors.delete(key);
       }
       this.queue.push({ key, item });
@@ -129,10 +153,7 @@ export class ExportFileLoader {
       const generation = this.generation;
       void loadExportFile(this.getData(), next.item).then(
         (file) => this.finish(generation, next.key, () => this.files.set(next.key, file)),
-        (error: unknown) =>
-          this.finish(generation, next.key, () =>
-            this.errors.set(next.key, toUserMessage(error, "Das Foto konnte nicht geladen werden.")),
-          ),
+        (error: unknown) => this.finish(generation, next.key, () => this.errors.set(next.key, toExportFileError(error))),
       );
     }
   }
