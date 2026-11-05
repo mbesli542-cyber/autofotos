@@ -289,4 +289,33 @@ describe("<VehicleDetailScreen />", () => {
       await uploads.discard(refused.id);
     }
   });
+
+  it("makes 'Alle Fotos speichern' the primary action of the 'Bearbeitet' view and opens the summary", async () => {
+    const vehicle = await processedVehicleWithExtra();
+    const view = render(page(vehicle.id, "processed"));
+    await screen.findByRole("heading", { level: 2, name: "Porsche Macan" });
+    const hero = view.container.querySelector("section");
+    if (!hero) throw new Error("no hero");
+    const save = within(hero).getByRole("button", { name: "Alle Fotos speichern" });
+    expect(save).toHaveClass("bg-ae-blue");
+    // "Fotos bearbeiten" is still there, as the second choice.
+    expect(within(hero).getByRole("link", { name: "Fotos bearbeiten" })).not.toHaveClass("bg-ae-blue");
+
+    fireEvent.click(save);
+    const sheet = view.container.querySelector<HTMLElement>("dialog[aria-labelledby='export-title']");
+    if (!sheet) throw new Error("no export sheet");
+    expect(sheet).toHaveAttribute("open");
+    expect(within(sheet).getByTestId("export-summary")).toHaveTextContent("15 Fotos bereit · 1 Zusatzfoto");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Zurück", hidden: true }));
+    expect(sheet).not.toHaveAttribute("open");
+  });
+
+  it("offers 'Speichern' for the version shown in the large view", async () => {
+    const vehicle = await processedVehicleWithExtra();
+    const view = render(page(vehicle.id, "processed"));
+    fireEvent.click(await screen.findByRole("button", { name: /^01 Vorne links/ }));
+    const viewer = view.container.querySelector<HTMLElement>("dialog[aria-labelledby='photo-viewer-title']");
+    if (!viewer) throw new Error("photo viewer not open");
+    expect(within(viewer).getByRole("button", { name: "Foto speichern", hidden: true })).toBeInTheDocument();
+  });
 });

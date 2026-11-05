@@ -253,6 +253,7 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
         onDelete={handleDelete}
         onRetryUpload={(slot) => slot.pending && getAppServices().uploads.retry(slot.pending.id)}
         checks={checks}
+        exportVehicle={state.status === "ready" ? state.vehicle : undefined}
       />
     </>
   );
