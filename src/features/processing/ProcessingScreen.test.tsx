@@ -9,6 +9,7 @@ import { act, configure, fireEvent, render, screen, waitFor, within } from "@tes
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAppServices } from "@/lib/app-services";
+import { buildSeedData } from "@/lib/data/mock/seed";
 import type { ProcessingPresetId, ProcessingWarning, VehiclePhotoWithUrls } from "@/lib/domain/types";
 import { AppError } from "@/lib/errors";
 import {
@@ -535,9 +536,62 @@ describe("<ProcessingScreen />", () => {
   });
 
   it("does not offer the demo sample vehicle (placeholder drawings) for processing", async () => {
-    renderScreen(SAMPLE_VEHICLE_ID);
-    await waitFor(async () => expect(await startButton()).toBeDisabled());
-    expect(screen.getByText("Beispielfahrzeug – bitte ein eigenes Fahrzeug fotografieren.")).toBeInTheDocument();
+    // The samples exist only until the first real vehicle (the other tests created some): served as on a fresh device.
+    const { data } = getAppServices().backend;
+    const seed = buildSeedData();
+    const sample = seed.vehicles.find((vehicle) => vehicle.id === SAMPLE_VEHICLE_ID);
+    if (!sample) throw new Error("sample vehicle missing");
+    const getVehicle = vi.spyOn(data, "getVehicle").mockResolvedValue(sample);
+    const listPhotos = vi
+      .spyOn(data, "listPhotos")
+      .mockResolvedValue(seed.photos.filter((photo) => photo.vehicleId === SAMPLE_VEHICLE_ID));
+    try {
+      renderScreen(SAMPLE_VEHICLE_ID);
+      await waitFor(async () => expect(await startButton()).toBeDisabled());
+      expect(screen.getByText("Beispielfahrzeug – bitte ein eigenes Fahrzeug fotografieren.")).toBeInTheDocument();
+    } finally {
+      getVehicle.mockRestore();
+      listPhotos.mockRestore();
+    }
+  });
+
+  it("says the showroom PC is not reachable (with 'Erneut prüfen') – not 'noch nicht verbunden'", async () => {
+    status = { ...CONNECTED, connected: false, showroomSource: null };
+    renderScreen(await createCompleteVehicle("Asleep"));
+    expect(
+      await screen.findByText("Der Showroom-Rechner ist gerade nicht erreichbar. Bitte später erneut versuchen."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/noch nicht verbunden/)).toBeNull();
+    expect(document.body.textContent).not.toMatch(/Prozessor/);
+    expect(await startButton()).toBeDisabled();
+
+    // The PC is back: asking again enables processing.
+    status = CONNECTED;
+    fireEvent.click(screen.getByRole("button", { name: "Erneut prüfen" }));
+    await waitFor(async () => expect(await startButton()).toBeEnabled());
+    expect(screen.queryByText(/nicht erreichbar/)).toBeNull();
+  });
+
+  it("says that the device is offline while there is no connection", async () => {
+    const vehicleId = await createCompleteVehicle("Offline");
+    const onLine = vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+    try {
+      renderScreen(vehicleId);
+      expect(
+        await screen.findByText("Keine Internetverbindung – die Bearbeitung ist wieder möglich, sobald Sie online sind."),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/noch nicht verbunden/)).toBeNull();
+      expect(await startButton()).toBeDisabled();
+    } finally {
+      onLine.mockRestore();
+    }
+  });
+
+  it("keeps 'noch nicht verbunden' for a deployment without any processor", async () => {
+    status = { ...CONNECTED, connected: false, processor: "mock", showroomSource: null };
+    renderScreen(await createCompleteVehicle("NoProcessor"));
+    expect(await screen.findByText("Echte Showroom-Bearbeitung ist noch nicht verbunden.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Erneut prüfen" })).toBeNull();
   });
 
   it("explains a processor without access to the vehicle storage", async () => {

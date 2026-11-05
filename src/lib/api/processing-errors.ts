@@ -4,6 +4,7 @@
  * employee; technical details (URLs, keys, stack traces) never leave the server.
  */
 import { NextResponse } from "next/server";
+import { PROCESSOR_UNREACHABLE_MESSAGE } from "@/lib/processing/processor-connection";
 import { ProcessingServiceError } from "@/lib/processing/real-image-processor";
 import {
   PROCESSING_BUSY_CODE,
@@ -16,8 +17,8 @@ export function processingNotConnected(): NextResponse {
   return apiError(503, PROCESSING_NOT_CONNECTED_CODE, PROCESSING_NOT_CONNECTED_MESSAGE);
 }
 
-export const PROCESSING_UNREACHABLE_MESSAGE =
-  "Die Bildbearbeitung ist derzeit nicht erreichbar. Bitte versuchen Sie es später erneut.";
+/** The processor is configured but does not answer (e.g. the dealer's PC is asleep or restarting). */
+export const PROCESSING_UNREACHABLE_MESSAGE = PROCESSOR_UNREACHABLE_MESSAGE;
 
 export function processingErrorResponse(
   error: unknown,

@@ -11,7 +11,8 @@ export type ProcessingStatusState =
 
 /**
  * Live processor status (GET /api/processing-status). Re-checked whenever the
- * page becomes visible again (routes stay mounted, effects re-run) and on refresh().
+ * page becomes visible again (routes stay mounted, effects re-run), when the
+ * connection comes back or is lost, and on refresh().
  */
 export function useProcessingStatus() {
   const [state, setState] = useState<ProcessingStatusState>({ phase: "loading", status: null });
@@ -27,6 +28,17 @@ export function useProcessingStatus() {
     );
     return () => controller.abort();
   }, [version]);
+
+  // Connection back (or lost): ask again, so the page never keeps an outdated state.
+  useEffect(() => {
+    const onChange = () => setVersion((v) => v + 1);
+    window.addEventListener("online", onChange);
+    window.addEventListener("offline", onChange);
+    return () => {
+      window.removeEventListener("online", onChange);
+      window.removeEventListener("offline", onChange);
+    };
+  }, []);
 
   const refresh = useCallback(() => setVersion((v) => v + 1), []);
   return { state, refresh };
