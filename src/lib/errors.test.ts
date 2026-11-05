@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { AppError, isQuotaExceededError, isRejectedFileError, storageError, toUserMessage } from "./errors";
+import {
+  AppError,
+  isQuotaExceededError,
+  isRejectedFileError,
+  isStorageFullError,
+  storageError,
+  toUserMessage,
+} from "./errors";
 
 describe("isRejectedFileError", () => {
   it("is true only for files the server refuses for good (type, size)", () => {
@@ -31,6 +38,11 @@ describe("storage full (QuotaExceededError)", () => {
     expect(isQuotaExceededError(new DOMException("Aborted", "AbortError"))).toBe(false);
     expect(isQuotaExceededError(new AppError("storage"))).toBe(false);
     expect(isQuotaExceededError(null)).toBe(false);
+    // The upload queue's flag: the AppError made from it counts, too.
+    expect(isStorageFullError(new AppError("storage_full"))).toBe(true);
+    expect(isStorageFullError(quota())).toBe(true);
+    expect(isStorageFullError(new AppError("storage"))).toBe(false);
+    expect(isStorageFullError(new TypeError("Failed to fetch"))).toBe(false);
   });
 
   it("tells the employee to delete vehicles instead of retrying", () => {

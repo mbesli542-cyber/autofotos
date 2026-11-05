@@ -15,7 +15,7 @@
  * Retries are idempotent because the queue id is used as the photo id.
  */
 import type { VehiclePhoto } from "@/lib/domain/types";
-import { AppError, isRejectedFileError, toUserMessage } from "@/lib/errors";
+import { AppError, isRejectedFileError, isStorageFullError, toUserMessage } from "@/lib/errors";
 import { prepareImage, type PreparedImage } from "@/lib/camera/image-utils";
 import { createId } from "@/lib/ids";
 import { isOlderCapture, isOlderThanSavedPhoto } from "@/lib/photos/capture-order";
@@ -60,6 +60,13 @@ export interface UploadItem {
    * large): it is not retried automatically and can only be discarded.
    */
   retryable: boolean;
+  /**
+   * true: the device's storage refused to keep the capture – it lives in
+   * memory only and is lost when the app is closed before it is saved.
+   */
+  unpersisted?: boolean;
+  /** true: the last attempt failed because the device's storage is full (retrying alone does not help). */
+  storageFull?: boolean;
 }
 
 export interface UploadQueueSnapshot {
@@ -199,7 +206,7 @@ export class UploadQueue {
   retry(id: string): void {
     if (this.discarding.has(id)) return;
     if (this.items.find((item) => item.id === id)?.status !== "failed") return;
-    this.updateItem(id, { status: "queued", error: null });
+    this.updateItem(id, { status: "queued", error: null, storageFull: false });
     void this.run();
   }
 
@@ -209,7 +216,7 @@ export class UploadQueue {
     this.items = this.items.map((item) => {
       if (item.status !== "failed" || !item.retryable || this.discarding.has(item.id)) return item;
       changed = true;
-      return { ...item, status: "queued", error: null };
+      return { ...item, status: "queued", error: null, storageFull: false };
     });
     if (changed) {
       this.emit();
@@ -322,6 +329,8 @@ export class UploadQueue {
       thumbnailUrl: null,
       error: record.lastError,
       retryable: record.retryable !== false,
+      unpersisted: this.unpersisted.has(record.id),
+      storageFull: false,
     };
   }
 
@@ -407,6 +416,7 @@ export class UploadQueue {
           // Removed meanwhile (saved, or the queue was cleared): nothing to keep.
           if (!this.records.has(record.id)) continue;
           const retryable = !isRejectedFileError(error);
+          const storageFull = isStorageFullError(error);
           const message = toUserMessage(
             error,
             "Foto konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
@@ -415,10 +425,18 @@ export class UploadQueue {
           this.records.set(record.id, updated);
           try {
             await this.db.put(STORE, updated);
+            // Stored now (e.g. vehicles were deleted meanwhile): it survives closing the app.
+            this.unpersisted.delete(record.id);
           } catch {
             // keep in memory
           }
-          this.updateItem(record.id, { status: "failed", error: message, retryable });
+          this.updateItem(record.id, {
+            status: "failed",
+            error: message,
+            retryable,
+            storageFull,
+            unpersisted: this.unpersisted.has(record.id),
+          });
         }
       }
     } finally {

@@ -24,6 +24,7 @@ import { getAppServices, getBackendMode, getShotTemplate } from "@/lib/app-servi
 import { cn } from "@/lib/cn";
 import { toUserMessage } from "@/lib/errors";
 import { vehicleDisplayName } from "@/lib/format";
+import { failedUploadsText, summarizeFailedUploads } from "@/lib/offline/upload-status";
 import { buildPhotoSlots, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { photoChecks } from "@/lib/processing/photo-checks";
 import { processingRuns } from "@/lib/processing/processing-runs";
@@ -127,11 +128,12 @@ export function VehicleDetailScreen({
   const { vehicle } = state;
   const cover = photos[0];
   const coverUrl = cover ? (variant === "processed" ? cover.urls.processed : cover.urls.original) : null;
-  const failed = pending.filter((item) => item.status === "failed");
-  /** Failed uploads a retry can still save. */
-  const failedUploads = failed.filter((item) => item.retryable).length;
+  const failed = summarizeFailedUploads(pending);
+  /** Failed uploads a retry can still save (after deleting vehicles when the storage is full). */
+  const failedUploads = failed.retryable;
   /** Files the server refused for good: only "Verwerfen" in the large view helps. */
-  const refusedUploads = failed.length - failedUploads;
+  const refusedUploads = failed.refused;
+  const failedText = failedUploadsText(failed);
   /** Processed versions the processor asks to check ("Bearbeitet" view). */
   const toCheck = allSlots.filter((slot) => processedNeedsCheck(slot, variant)).length;
 
@@ -233,9 +235,7 @@ export function VehicleDetailScreen({
           >
             <CloudOff className="size-5 shrink-0 text-ae-warning" aria-hidden />
             <div className="flex flex-1 flex-col gap-1 text-ae-muted">
-              {failedUploads > 0 && (
-                <p>{`${failedUploads} Foto(s) konnten noch nicht gespeichert werden. Sie bleiben auf diesem Gerät.`}</p>
-              )}
+              {failedText && <p className={cn(failed.unpersisted > 0 && "font-medium text-ae-text")}>{failedText}</p>}
               {refusedUploads > 0 && (
                 <p>
                   {refusedUploads === 1
@@ -243,7 +243,7 @@ export function VehicleDetailScreen({
                     : `${refusedUploads} Fotos können nicht gespeichert werden. Bitte die Fotos antippen und in der Großansicht „Verwerfen“ wählen.`}
                 </p>
               )}
-              {failed.length === 0 && <p>{`${pending.length} Foto(s) werden gespeichert…`}</p>}
+              {failedUploads + refusedUploads === 0 && <p>{`${pending.length} Foto(s) werden gespeichert…`}</p>}
             </div>
             {failedUploads > 0 && (
               <button

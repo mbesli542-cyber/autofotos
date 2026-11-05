@@ -90,6 +90,11 @@ export function isQuotaExceededError(error: unknown): boolean {
   return false;
 }
 
+/** The device's storage is full (a quota error, or the AppError made from one). */
+export function isStorageFullError(error: unknown): boolean {
+  return (error instanceof AppError && error.code === "storage_full") || isQuotaExceededError(error);
+}
+
 /**
  * The error to throw when a write to the device's storage failed: "storage
  * full" when the browser says so, the generic storage error otherwise.

@@ -290,6 +290,40 @@ describe("<VehicleDetailScreen />", () => {
       await uploads.discard(refused.id);
     }
   });
+
+  it("says that the device's storage is full instead of only 'noch nicht gespeichert'", async () => {
+    const vehicle = await processedVehicleWithExtra();
+    const { backend, uploads } = getAppServices();
+    const quota = new DOMException("Speicher voll", "QuotaExceededError");
+    const save = vi.spyOn(backend.data, "savePhoto").mockRejectedValue(new AppError("storage_full", { cause: quota }));
+    const full = await uploads.enqueue({
+      vehicleId: vehicle.id,
+      shotKey: "front",
+      shotOrder: 2,
+      title: "Vorne",
+      file: new Blob(["jpeg"], { type: "image/jpeg" }),
+      takenAt: new Date().toISOString(),
+    });
+    try {
+      await waitFor(() =>
+        expect(uploads.getSnapshot().items.find((item) => item.id === full.id)).toMatchObject({
+          status: "failed",
+          storageFull: true,
+        }),
+      );
+      render(page(vehicle.id, "original"));
+      expect(
+        await screen.findByText(
+          "1 Foto konnte nicht gespeichert werden: Der Speicher auf diesem Gerät ist voll. Bitte bereits gespeicherte Fahrzeuge löschen. Sie bleiben auf diesem Gerät.",
+        ),
+      ).toBeInTheDocument();
+      // After deleting vehicles a retry saves it.
+      expect(screen.getByRole("button", { name: "Erneut versuchen" })).toBeInTheDocument();
+    } finally {
+      save.mockRestore();
+      await uploads.discard(full.id);
+    }
+  });
 });
 
 describe("<VehicleDetailScreen /> – rejected shots and deleting the vehicle", () => {

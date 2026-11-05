@@ -23,6 +23,7 @@ import {
   type PendingUploadRecord,
   type UploadProcessor,
 } from "./upload-queue";
+import { summarizeFailedUploads } from "./upload-status";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -426,6 +427,58 @@ describe("UploadQueue – right before uploading, the stored capture is checked"
     await flush();
     expect(queue.getSnapshot().items).toEqual([]);
     expect((await data.listPhotos(vehicle.id)).map((photo) => photo.id)).toEqual([item.id]);
+  });
+});
+
+describe("UploadQueue – full device storage", () => {
+  const quota = () => new DOMException("Speicher voll", "QuotaExceededError");
+
+  it("marks a capture the full storage refused (kept in memory only) and saves it once space is free", async () => {
+    const { data, vehicle, failures, save, capture } = await setup();
+    const db = createUploadQueueDatabase();
+    const put = vi.spyOn(db, "put").mockRejectedValue(quota());
+    const queue = new UploadQueue(save, 480, db);
+    failures.push(new AppError("storage_full", { cause: quota() }));
+    const item = await queue.enqueue(capture(T0));
+    await flush();
+    expect(queue.getSnapshot().items[0]).toMatchObject({
+      id: item.id,
+      status: "failed",
+      retryable: true,
+      storageFull: true,
+      unpersisted: true,
+      error: USER_ERROR_MESSAGES.storage_full,
+    });
+    expect(summarizeFailedUploads(queue.getSnapshot().items)).toEqual({
+      retryable: 1,
+      refused: 0,
+      storageFull: 1,
+      unpersisted: 1,
+    });
+
+    // Vehicles were deleted: the storage takes data again.
+    put.mockRestore();
+    queue.retry(item.id);
+    await flush();
+    expect(queue.getSnapshot().items).toEqual([]);
+    expect((await data.listPhotos(vehicle.id)).map((photo) => photo.id)).toEqual([item.id]);
+  });
+
+  it("stores a capture kept in memory as soon as the storage takes it again", async () => {
+    const { failures, save, capture } = await setup();
+    const db = createUploadQueueDatabase();
+    const put = vi.spyOn(db, "put").mockRejectedValue(quota());
+    const queue = new UploadQueue(save, 480, db);
+    failures.push(new TypeError("Failed to fetch"), new TypeError("Failed to fetch"));
+    const item = await queue.enqueue(capture(T0));
+    await flush();
+    expect(queue.getSnapshot().items[0]).toMatchObject({ status: "failed", storageFull: false, unpersisted: true });
+
+    put.mockRestore();
+    queue.retry(item.id);
+    await flush();
+    expect(queue.getSnapshot().items[0]).toMatchObject({ status: "failed", storageFull: false, unpersisted: false });
+    expect(await persisted(db)).toEqual([item.id]);
   });
 });
 
