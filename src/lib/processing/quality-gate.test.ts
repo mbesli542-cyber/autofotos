@@ -136,6 +136,10 @@ describe("getRetakeStatus", () => {
     const processed = { photoId: "p_old", shotKey: "front", status: "complete", errorCode: null };
     expect(getRetakeStatus({ ...processed, warnings: [mirrored] }, [oldPhoto], [])).toEqual({ kind: "retake" });
     expect(getRetakeStatus({ ...processed, warnings: [removed] }, [oldPhoto], [])).toBeNull();
+    // ground_contact_uncertain: a retake as the failed job's code, only a check as a result's hint.
+    const contacts = { code: "ground_contact_uncertain", message: "Die Reifen wurden nicht sicher erkannt – bitte den Schatten prüfen." };
+    expect(getRetakeStatus({ ...processed, warnings: [contacts] }, [oldPhoto], [])).toBeNull();
+    expect(getRetakeStatus({ ...failed, errorCode: "ground_contact_uncertain" }, [oldPhoto], [])).toEqual({ kind: "retake" });
     // Once the new photo is there, it is offered for processing.
     expect(getRetakeStatus({ ...processed, warnings: [mirrored] }, [newPhoto], [])).toEqual({ kind: "ready", photo: newPhoto });
   });

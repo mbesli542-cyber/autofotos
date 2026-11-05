@@ -19,6 +19,8 @@ describe("processor hints on a result", () => {
     expect(getWarningKind("plate_mirrored")).toBe("retake");
     expect(getWarningKind("background_object_suspected")).toBe("retake");
     expect(getWarningKind("vehicle_part_uncertain")).toBe("check");
+    // Also a rejection code of the quality gate – as a hint on a saved result only a check.
+    expect(getWarningKind("ground_contact_uncertain")).toBe("check");
     for (const code of [
       "background_object_removed",
       "vehicle_occluded",
@@ -29,6 +31,21 @@ describe("processor hints on a result", () => {
       expect(getWarningKind(code)).toBe("check");
     }
     for (const code of ["low_resolution", "vehicle_reduced", "vehicle_small"]) expect(getWarningKind(code)).toBe("info");
+  });
+
+  it("asks to check the shadow, never for a retake, when a saved result's tyre contacts were implausible", () => {
+    const contacts = {
+      code: "ground_contact_uncertain",
+      message:
+        "Die Reifen wurden nicht sicher erkannt (z. B. Auspuff oder Diffusor statt Reifen) – bitte den Schatten unter dem Fahrzeug prüfen.",
+    };
+    const hints = [warning("vehicle_reduced"), contacts];
+    expect(needsResultCheck(hints)).toBe(true);
+    expect(hasRetakeWarning(hints)).toBe(false);
+    expect(warningsToCheck(hints)).toEqual([contacts]);
+    expect(infoWarnings(hints).map((hint) => hint.code)).toEqual(["vehicle_reduced"]);
+    // A stored REJECTION with that code (no result) is a retake.
+    expect(getWarningKind(rejectionWarning("ground_contact_uncertain", "Die Bodenkontakte …").code)).toBe("retake");
   });
 
   it("never hides an unknown hint: it asks for a check", () => {

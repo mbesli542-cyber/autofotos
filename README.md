@@ -809,8 +809,11 @@ at most 2400 px – typically ≈ 0.75–1.4 MB, streamed through
   `plate_mirrored` and `background_object_suspected` offer "Foto neu
   aufnehmen"; the summary asks "Bitte N Ergebnisse prüfen". Hints to check
   include `vehicle_part_uncertain` – a small part of the car (e.g. at a mirror
-  or a light) may be missing from the result. Unknown codes count as "please
-  check". The hints are stored with the processed version
+  or a light) may be missing from the result – and `ground_contact_uncertain`
+  on a saved result (the tyre contacts did not fit a wheelbase, e.g. an exhaust
+  taken as a tyre: "bitte den Schatten unter dem Fahrzeug prüfen"); the same
+  code as a failed job's `errorCode` is the quality-gate rejection (retake).
+  Unknown codes count as "please check". The hints are stored with the processed version
   (demo: on the IndexedDB photo record; Supabase: `processing_warnings`,
   written by `recordProcessedPhoto`) and shown later in "Bearbeitet" – a badge
   on the tile, a line on the vehicle page, the text in the large view. A new

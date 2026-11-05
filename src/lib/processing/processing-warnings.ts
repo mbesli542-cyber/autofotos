@@ -13,6 +13,13 @@
  * Unknown codes count as "check" and show the processor's own text – a hint
  * that asks for a check is never hidden.
  *
+ * `ground_contact_uncertain` is both: a quality-gate REJECTION code (a failed
+ * job's `errorCode`, quality-gate.ts – fewer than two tyre contacts → retake)
+ * and a HINT on a saved result (the processor found tyre contacts, but they
+ * do not fit a wheelbase – e.g. an exhaust or diffuser taken as a tyre – and
+ * drew the floor shadow without them: "bitte den Schatten unter dem Fahrzeug
+ * prüfen"). As a hint it is only a "check"; the photo itself is fine.
+ *
  * A photo WITHOUT a processed result can carry one stored hint: the
  * processor's rejection (code "rejected:<errorCode>", e.g.
  * "rejected:vehicle_cropped", with its German reason) – saved with the photo
@@ -32,6 +39,8 @@ const WARNING_KINDS: ReadonlyMap<string, ProcessingWarningKind> = new Map([
   ["busy_background", "check"],
   ["vehicle_not_detected", "check"],
   ["vehicle_part_uncertain", "check"],
+  // As a hint on a saved result only (see above) – a rejection with this code is a failed job.
+  ["ground_contact_uncertain", "check"],
   ["low_resolution", "info"],
   ["vehicle_reduced", "info"],
   ["vehicle_small", "info"],

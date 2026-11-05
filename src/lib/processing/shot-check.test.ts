@@ -20,6 +20,10 @@ import {
 const TOO_SMALL = "Fahrzeug im Originalfoto zu klein. Bitte näher fotografieren.";
 const MIRRORED = { code: "plate_mirrored", message: "Das Foto zeigt das Fahrzeug von der anderen Seite." };
 const UNCERTAIN = { code: "vehicle_part_uncertain", message: "Ein Fahrzeugteil ist unsicher – bitte prüfen." };
+const CONTACTS = {
+  code: "ground_contact_uncertain",
+  message: "Die Reifen wurden nicht sicher erkannt (z. B. Auspuff oder Diffusor statt Reifen) – bitte den Schatten unter dem Fahrzeug prüfen.",
+};
 
 function photo(id: string, takenAt = "2026-11-03T10:00:00.000Z", patch: Partial<VehiclePhotoWithUrls> = {}): VehiclePhotoWithUrls {
   return {
@@ -91,6 +95,11 @@ describe("getShotCheckState", () => {
     expect(getShotCheckState(slot(current), [check("p1", { warnings: [UNCERTAIN] })], "on")).toEqual({
       kind: "ok",
       hint: UNCERTAIN.message,
+    });
+    // Implausible tyre contacts on an accepted photo: "Geprüft – bitte Ergebnis ansehen", never a retake.
+    expect(getShotCheckState(slot(current), [check("p1", { warnings: [CONTACTS] })], "on")).toEqual({
+      kind: "ok",
+      hint: CONTACTS.message,
     });
     expect(
       getShotCheckState(slot(current), [check("p1", { status: "retake", message: TOO_SMALL, errorCode: "vehicle_too_small" })], "on"),
