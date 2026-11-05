@@ -25,11 +25,13 @@ export interface ShowroomSpec {
   accentLighting: { description: string; type: "vertical_led"; color: string };
   /** Decorative interior elements visible in the reference showroom. */
   decor: readonly string[];
+  /**
+   * Brand wall: official logo + city only. No dealer contact data (phone,
+   * e-mail, web address) in listing photos – mobile.de (AGB-HB) forbids it.
+   */
   brandWall: {
     logoAsset: string;
     lines: readonly string[];
-    website: string;
-    phone: string;
   };
   /**
    * Plate set of the ONE AutoExperten 3D showroom (processor/showroom3d):
@@ -86,8 +88,6 @@ export interface ProcessingPreset {
 const BRAND_WALL = {
   logoAsset: LOGO_ASSETS.onLight,
   lines: ["AutoExperten", BRAND.city],
-  website: BRAND.websiteLabel,
-  phone: BRAND.phone,
 } as const;
 
 export const PROCESSING_PRESETS: Record<ProcessingPresetId, ProcessingPreset> = {

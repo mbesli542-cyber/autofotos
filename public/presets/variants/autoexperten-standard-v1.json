@@ -12,7 +12,7 @@
     "lightMatch": 0.0,
     "logo": {
       "file": "official/AutoExperten_Logo.png",
-      "centerX": 0.38,
+      "centerX": 0.5,
       "top": 0.093,
       "maxWidth": 0.6,
       "maxHeight": 0.2,
@@ -21,7 +21,7 @@
     },
     "city": {
       "text": "Schwetzingen",
-      "centerX": 0.38,
+      "centerX": 0.5,
       "top": 0.265,
       "capHeight": 0.034,
       "tracking": 0.38,
@@ -36,7 +36,7 @@
       "ruleThickness": 0.0025
     },
     "website": {
-      "text": "www.autoexperten-rn.de",
+      "text": "",
       "centerX": 0.725,
       "top": 0.26,
       "capHeight": 0.019,
@@ -46,13 +46,13 @@
       "opacity": 1.0,
       "mounted": false,
       "align": "left",
-      "icon": "globe",
+      "icon": "",
       "ruleLength": 0.0,
       "ruleGap": 0.0,
       "ruleThickness": 0.0
     },
     "phone": {
-      "text": "+49 6202 9262357",
+      "text": "",
       "centerX": 0.725,
       "top": 0.325,
       "capHeight": 0.019,
@@ -62,7 +62,7 @@
       "opacity": 1.0,
       "mounted": false,
       "align": "left",
-      "icon": "phone",
+      "icon": "",
       "ruleLength": 0.0,
       "ruleGap": 0.0,
       "ruleThickness": 0.0

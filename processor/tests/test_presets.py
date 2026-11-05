@@ -133,7 +133,7 @@ def test_broken_json_is_a_configuration_error(settings):
 @pytest.mark.parametrize(
     "path, value",
     [
-        (["branding", "phone", "top"], 0.90),  # phone number moved down to the floor
+        (["branding", "city", "top"], 0.90),  # city line moved down to the floor
         (["placement", "maxHeightRatio"], 0.1),
     ],
 )

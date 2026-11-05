@@ -122,16 +122,17 @@ def test_plate_provider_brands_every_plate_in_wall_space(settings):
         assert not showroom.rgb.flags.writeable and not showroom.shadow.flags.writeable
         assert showroom.rgb.shape == (1200, 1600, 3) and showroom.shadow.shape == (1200, 1600)
         names = [b[0] for b in showroom.branding.boxes]
-        assert names == ["logo", "city", "website", "phone"]
+        assert names == ["logo", "city"]  # no contact data on the wall (mobile.de AGB-HB)
         logo = showroom.branding.box("logo")
         # centred on the wall, above the typical car's roof (with the clearance)
         u0, v0, u1, _ = showroom.plate.proxy_bbox
         assert abs((logo[0] + logo[2]) / 2 - 800) < 0.12 * 1600
         assert showroom.branding.bottom + preset.branding.clearance * 1200 < v0 * 1200
-        # the main logo is clearly visible, the contact lines are secondary
-        web = showroom.branding.box("website")
+        # the main logo is clearly visible, the city line is secondary
+        city = showroom.branding.box("city")
         assert 0.22 * 1600 < (logo[2] - logo[0]) < 0.40 * 1600
-        assert (web[2] - web[0]) < 0.6 * (logo[2] - logo[0])
+        assert (city[2] - city[0]) < (logo[2] - logo[0])
+        assert showroom.branding.box("website") is None and showroom.branding.box("phone") is None
 
 
 def test_plate_provider_caches_and_follows_file_changes(settings):

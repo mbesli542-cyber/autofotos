@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import re
 import math
 from dataclasses import fields, replace
 from pathlib import Path
@@ -79,9 +80,9 @@ def test_variants_are_complete_valid_presets_of_the_same_showroom(name):
     assert branding.logo.file == "official/AutoExperten_Logo.png"  # the official file, only scaled
     assert branding.logo.max_width > parse_preset(STANDARD).branding.logo.max_width
     assert branding.city.text == "Schwetzingen" and branding.city.rule_length > 0
-    assert (branding.website.icon, branding.phone.icon) == ("globe", "phone")
-    assert branding.website.text == "www.autoexperten-rn.de" and branding.phone.text == "+49 6202 9262357"
-    assert branding.website.align == branding.phone.align == "left"
+    # no dealer contact data in listing photos (mobile.de AGB-HB: photos must not contain
+    # the dealer's phone number or e-mail address; no web addresses in a listing)
+    assert branding.website.text == "" and branding.phone.text == ""
     # glossier floor, still within the reflection limits
     assert 1.0 < preset.reflection.strength <= 1.5 and preset.reflection.max_reflectance <= 0.3
     assert (preset.placement.depth_offset_m > 0) == (name == "v2")
@@ -100,7 +101,7 @@ def test_branding_keeps_clear_of_the_brand_wall_edges(name):
     preset = parse_preset(data)
     width, height = 2680, 1680  # brand area 6.7 m × 4.2 m
     _, layout = apply_branding(_wall(width, height), _flat(preset.branding), BRAND_DIR)
-    assert {b[0] for b in layout.boxes} == {"logo", "city", "website", "phone"}
+    assert {b[0] for b in layout.boxes} == {"logo", "city"}
     for label, x0, y0, x1, y1 in layout.boxes:
         assert x0 >= BRAND_EDGE_MARGIN * width and x1 <= (1 - BRAND_EDGE_MARGIN) * width, label
     # no element runs into another one
@@ -384,3 +385,14 @@ def test_a_variant_never_brings_the_car_closer_to_the_wall_than_the_plate_spot(
     assert "wall" in fit["reducedBy"]
     assert fit["depthOffsetM"] < 0.02 and fit["widthScale"] < 1.005
     assert _wall_clearance(far.metadata) >= _wall_clearance(near.metadata) - 0.03
+
+
+@pytest.mark.parametrize("name", ["standard", "v1", "v2"])
+def test_listing_photos_carry_no_dealer_contact_data(name):
+    """mobile.de (AGB-HB, Inserate no. 9) forbids the dealer's contact data (phone, e-mail) in
+    listing photos and web addresses in a listing; the brand wall shows logo + city only."""
+    data = STANDARD if name == "standard" else VARIANTS[name]
+    branding = parse_preset(data).branding
+    assert branding.website.text == "" and branding.phone.text == ""
+    texts = " ".join(t.text for t in (branding.city, branding.website, branding.phone))
+    assert not re.search(r"\d{4,}|www\.|https?:|@|\.de\b", texts), texts

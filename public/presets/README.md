@@ -18,7 +18,7 @@ Assets of the AutoExperten showroom processing (used by the processor in
                                                        <shot>-shadow.png (floor shadow of a typical car)
                                                        <shot>-reflection.png (the floor's own reflection)
                                                        plates.json (camera, floor/wall homographies, proxy car)
- + official branding in wall space (logo PNG + SCHWETZINGEN + website + phone,
+ + official branding in wall space (logo PNG + SCHWETZINGEN – no contact data,
    processor/app/showroom/wall_branding.py, layout in the JSON `branding`)
  + original vehicle pixels on the plate of its angle, contact + floor shadow
  = listing photo (identical room for every Mercedes, BMW, Audi, Porsche, VW …)
@@ -137,5 +137,15 @@ perspective. Tune `logo.top`, `logo.maxWidth`, `city.top`, `website.top`,
 (fraction of the output height) the vehicle roof keeps below the lowest
 element. The logo is lit by the plate's own wall light (matte print), so
 `lightMatch` stays 0.
+
+**No dealer contact data in the photos.** `website.text` and `phone.text` stay
+empty (an empty text is not drawn): mobile.de's dealer terms (AGB-HB, valid
+from 1 April 2025, listings no. 9) forbid the dealer's contact data such as
+phone number or e-mail address in listing photos, and no. 14 forbids web
+addresses in a listing. AutoScout24.de ("Anforderungen an die Gestaltung von
+Anzeigen" 2.1) does not allow photos with integrated logos or text at all –
+for AutoScout24 a look without wall branding may be needed (`branding.enabled`
+false). `test_listing_photos_carry_no_dealer_contact_data` guards the shipped
+preset and the variants.
 
 `autoexperten-dark` (dark showroom) is planned; no assets yet.

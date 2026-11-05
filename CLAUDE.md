@@ -99,6 +99,10 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
   "Für Außenaufnahmen das Smartphone bitte quer halten."
 - **Official logo only** (`public/brand/official/`); never redraw or
   approximate it.
+- **No dealer contact data in processed photos** (phone, e-mail, web address):
+  mobile.de's dealer terms (AGB-HB, listings no. 9/14) forbid it. The brand
+  wall shows the logo + "SCHWETZINGEN" only (`website`/`phone` texts empty;
+  guarded by `test_listing_photos_carry_no_dealer_contact_data`).
 
 ## Architecture map
 
