@@ -181,3 +181,29 @@ def test_plates_without_a_reflection_pass_use_the_default_reflectance(scene):
     assert info["platePass"] is False
     assert info["reflectance"] == [preset.reflection.default_reflectance] * 2
     assert np.all(out >= background - 1e-6)  # nothing removed, only the car's reflection added
+
+
+def test_the_footprint_reach_keeps_the_removal_to_the_floor_under_the_car(scene):
+    """reflection.footprintReach: below a bumper tip that rises far above the floor line the floor
+    seen there lies behind/beside the car – its own reflection is not blocked by the car and stays
+    (no removed strip beside the ends); the car's mirror image itself is unchanged."""
+    preset, showroom, placement, background = scene
+    rgb, alpha, contacts = _car(placement, (0.0, 0.0, 0.0))
+    left, right = int(round(placement.left)), int(round(placement.left + placement.width))
+    bottom = int(round(placement.bottom))
+    for x in range(left, right):  # the body's bottom rises 150 px towards both ends
+        f = abs((x - left) / max(right - left, 1) - 0.5) * 2.0
+        lift = int(round(150 * max(0.0, (f - 0.6) / 0.4)))
+        if lift:
+            alpha[bottom - CLEARANCE - lift : bottom - CLEARANCE, x] = 0.0
+    model = build_ground_model(alpha, placement, contacts, showroom)
+    kw = dict(info=None, model=model, background_linear=background)
+    default = apply_reflection(background, rgb, alpha, contacts, showroom, placement, preset.reflection, **kw)
+    cfg = dataclasses.replace(preset.reflection, footprint_reach=0.3)
+    limited = apply_reflection(background, rgb, alpha, contacts, showroom, placement, cfg, **kw)
+    assert np.all(limited >= default - 1e-6)  # only less removal, never more
+    gain = (limited - default).max(axis=-1)
+    assert gain.max() > 0.01  # the strip beside the raised ends keeps the plate's reflection
+    # the mirror image of the body between the tyres (under it the floor IS under the car) is unchanged
+    mid = slice(int(placement.left + 0.35 * placement.width), int(placement.left + 0.65 * placement.width))
+    assert np.allclose(limited[bottom + 5 : bottom + 120, mid], default[bottom + 5 : bottom + 120, mid], atol=1e-6)

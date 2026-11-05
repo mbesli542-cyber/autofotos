@@ -259,9 +259,14 @@ with the Next.js app; the processor reads it from `PROCESSOR_ASSETS_DIR`,
 default `../public`). Sections: `background.plates` (the plate set),
 `branding`, `output`, `placement` (size limits only), `shadow` (grounding v3:
 `contactOpacity`, `creaseOpacity`, `underbodyOpacity` ≥ `edgeOpacity`, distances
-in floor metres, `minFloorLight` ≥ 0.02), `reflection` (`enabled`, `strength` ≤ 1.5 ×
+in floor metres, `minFloorLight` ≥ 0.02; optional `tint` – per-channel darkening R G B,
+0.85–1 with the largest 1, default 1 1 0.95 (slightly cooler deep shadows), 1 1 1 keeps a
+warm floor's hue; optional `footprintReach` – 0 = off (default) or 0.05–2 m: the under-car
+shadow above the floor line fades out that far outside the fitted footprint, no dark bar
+below a rising bumper tip), `reflection` (`enabled`, `strength` ≤ 1.5 ×
 the plate's measured reflectance, `maxReflectance`/`defaultReflectance` ≤ 0.3,
-`fade` 0.2–2 × car height, `blurRate` ≤ 0.2),
+`fade` 0.2–2 × car height, `blurRate` ≤ 0.2, optional `footprintReach` like the shadow's
+for the band under the car where the plate's own reflection is removed),
 `vehicleAdjustments`, `quality`. Unknown keys, wrong types, NaN/Infinity and
 out-of-range values are rejected (`PresetConfigError`), never replaced by
 defaults – `/health` reports them as `presetError` and jobs fail with

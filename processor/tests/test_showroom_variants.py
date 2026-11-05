@@ -424,13 +424,10 @@ def test_the_dealer_variant_is_a_complete_valid_preset():
     assert HAENDLER["background"]["plates"] == "autoexperten-haendler/plates.json"
     for section in ("output", "vehicleAdjustments", "quality"):
         assert HAENDLER[section] == STANDARD[section], section
-    # stronger underbody shadow, everything else of the grounding as shipped
-    assert (preset.shadow.edge_opacity, preset.shadow.underbody_falloff, preset.shadow.ambient_opacity) == (0.7, 0.25, 0.6)
-    changed = {"edgeOpacity", "underbodyFalloff", "ambientOpacity"}
-    assert {k: v for k, v in HAENDLER["shadow"].items() if k not in changed} == {
-        k: v for k, v in STANDARD["shadow"].items() if k not in changed
-    }
-    assert preset.reflection.strength == 1.0 and HAENDLER["reflection"] == STANDARD["reflection"]
+    # "Schatten mittel" (the recommendation, see test_the_dealer_variant_comes_in_three_shadow_strengths)
+    assert HAENDLER["shadow"] == {**STANDARD["shadow"], **dict(DEALER_STRENGTHS["mittel"][0])}
+    assert HAENDLER["reflection"] == {**STANDARD["reflection"], **dict(DEALER_STRENGTHS["mittel"][1])}
+    assert preset.shadow.tint == (1.0, 1.0, 1.0) and preset.shadow.footprint_reach == 0.3
     branding = preset.branding
     assert branding.enabled and branding.logo.file == "official/AutoExperten_Logo.png"
     assert branding.city.text == "Schwetzingen" and branding.city.rule_length > 0 and branding.city.rule_thickness > 0
@@ -439,6 +436,54 @@ def test_the_dealer_variant_is_a_complete_valid_preset():
     for name in ("city", "website", "phone"):
         assert {"align", "icon", "ruleLength", "ruleGap", "ruleThickness"} <= set(HAENDLER["branding"][name])
     assert {"widthScale", "depthOffsetM"} <= set(HAENDLER["placement"])
+
+
+#: The dealer variant's three shadow strengths (shadow, reflection fields; dealer_backdrop.STRENGTHS).
+DEALER_STRENGTHS = {
+    "leicht": (
+        {"contactOpacity": 0.85, "creaseOpacity": 0.7, "underbodyOpacity": 0.7, "edgeOpacity": 0.3,
+         "underbodyFalloff": 0.08, "ambientOpacity": 0.2, "ambientReach": 0.3, "tint": [1.0, 1.0, 1.0], "footprintReach": 0.3},
+        {"strength": 1.2, "maxReflectance": 0.25, "fade": 0.4, "footprintReach": 0.3},
+    ),
+    "mittel": (
+        {"contactOpacity": 0.9, "creaseOpacity": 0.8, "underbodyOpacity": 0.8, "edgeOpacity": 0.4,
+         "underbodyFalloff": 0.1, "ambientOpacity": 0.3, "ambientReach": 0.4, "tint": [1.0, 1.0, 1.0], "footprintReach": 0.3},
+        {"strength": 1.5, "maxReflectance": 0.3, "fade": 0.5, "footprintReach": 0.3},
+    ),
+    "kraeftig": (
+        {"contactOpacity": 0.92, "creaseOpacity": 0.85, "underbodyOpacity": 0.85, "edgeOpacity": 0.5,
+         "underbodyFalloff": 0.14, "ambientOpacity": 0.4, "ambientReach": 0.5, "tint": [1.0, 1.0, 1.0], "footprintReach": 0.3},
+        {"strength": 1.5, "maxReflectance": 0.3, "fade": 0.6, "footprintReach": 0.3},
+    ),
+}  # fmt: skip
+DEALER_STRENGTH_FILES = {
+    "leicht": PRESETS / "variants" / "autoexperten-haendler-leicht.json",
+    "mittel": HAENDLER_FILE,
+    "kraeftig": PRESETS / "variants" / "autoexperten-haendler-kraeftig.json",
+}
+
+
+def test_the_dealer_variant_comes_in_three_shadow_strengths():
+    """The dealer: "the shadows underneath stay far too black". Three strengths of one look – they
+    differ only in shadow/reflection (and the name); all keep the wood's hue (tint 1, 1, 1) and limit
+    the under-car terms to the car's footprint; leicht < mittel < kräftig everywhere."""
+    data = {k: json.loads(f.read_text(encoding="utf-8")) for k, f in DEALER_STRENGTH_FILES.items()}
+    presets = {k: parse_preset(d) for k, d in data.items()}
+    for key, item in data.items():
+        shadow, reflection = DEALER_STRENGTHS[key]
+        assert item["shadow"] == {**STANDARD["shadow"], **shadow}, key
+        assert item["reflection"] == {**STANDARD["reflection"], **reflection}, key
+        others = {k: v for k, v in item.items() if k not in ("shadow", "reflection", "name")}
+        assert others == {k: v for k, v in HAENDLER.items() if k not in ("shadow", "reflection", "name")}, key
+    assert "leicht" in data["leicht"]["name"] and "kräftig" in data["kraeftig"]["name"]
+    s = {k: p.shadow for k, p in presets.items()}
+    for name in ("contact_opacity", "crease_opacity", "underbody_opacity", "edge_opacity", "underbody_falloff",
+                 "ambient_opacity", "ambient_reach"):  # fmt: skip
+        assert getattr(s["leicht"], name) < getattr(s["mittel"], name) < getattr(s["kraeftig"], name), name
+    # even "kräftig" stays well below the earlier, far too black look (edge 0.7, falloff 0.25 m, ambient 0.6)
+    assert s["kraeftig"].edge_opacity < 0.7 and s["kraeftig"].underbody_falloff < 0.25 and s["kraeftig"].ambient_opacity < 0.6
+    r = {k: p.reflection for k, p in presets.items()}
+    assert r["leicht"].fade < r["mittel"].fade < r["kraeftig"].fade <= 1.0  # the car's mirror image stays near the car
 
 
 @pytest.mark.parametrize("name", ALL_VARIANTS)

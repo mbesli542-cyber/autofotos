@@ -90,22 +90,29 @@
     "depthOffsetM": 0.0
   },
   "shadow": {
-    "contactOpacity": 0.92,
-    "creaseOpacity": 0.85,
-    "underbodyOpacity": 0.85,
-    "edgeOpacity": 0.7,
-    "underbodyFalloff": 0.25,
-    "ambientOpacity": 0.6,
-    "ambientReach": 0.6,
-    "minFloorLight": 0.04
+    "contactOpacity": 0.9,
+    "creaseOpacity": 0.8,
+    "underbodyOpacity": 0.8,
+    "edgeOpacity": 0.4,
+    "underbodyFalloff": 0.1,
+    "ambientOpacity": 0.3,
+    "ambientReach": 0.4,
+    "minFloorLight": 0.04,
+    "tint": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "footprintReach": 0.3
   },
   "reflection": {
     "enabled": true,
-    "strength": 1.0,
-    "maxReflectance": 0.2,
+    "strength": 1.5,
+    "maxReflectance": 0.3,
     "defaultReflectance": 0.1,
-    "fade": 1.0,
-    "blurRate": 0.04
+    "fade": 0.5,
+    "blurRate": 0.04,
+    "footprintReach": 0.3
   },
   "vehicleAdjustments": {
     "exposureEvLimit": 0.25,

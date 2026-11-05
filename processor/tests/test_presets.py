@@ -58,6 +58,22 @@ def test_grounding_and_reflection_defaults_match_the_shipped_preset():
     assert preset.shadow.min_floor_light >= 0.02
 
 
+def test_the_dealer_look_fields_default_to_the_shipped_behaviour():
+    """shadow.tint / shadow.footprintReach / reflection.footprintReach (the dealer's backdrop) are not
+    in the shipped preset: their defaults are exactly the shipped behaviour (cooler deep shadows, no
+    footprint limit) – the shipped look stays byte-identical."""
+    data = copy.deepcopy(PRESET)
+    assert "tint" not in data["shadow"] and "footprintReach" not in data["shadow"]
+    assert "footprintReach" not in data["reflection"]
+    preset = parse_preset(data)
+    assert preset.shadow.tint == (1.0, 1.0, 0.95) and preset.shadow.footprint_reach == 0.0
+    assert preset.reflection.footprint_reach == 0.0
+    shadow = parse_preset(_with(["shadow", "tint"], [1, 1, 1])).shadow
+    assert shadow.tint == (1.0, 1.0, 1.0) and all(isinstance(v, float) for v in shadow.tint)
+    assert parse_preset(_with(["shadow", "footprintReach"], 0.3)).shadow.footprint_reach == 0.3
+    assert parse_preset(_with(["reflection", "footprintReach"], 0.3)).reflection.footprint_reach == 0.3
+
+
 def test_missing_reflection_section_uses_the_defaults():
     data = _with(["reflection"], KeyError)
     assert parse_preset(data).reflection == ReflectionConfig()
@@ -96,6 +112,14 @@ def test_shot_overrides_are_still_possible():
         (["shadow", "ambientReach"], 5.0),  # metres – would darken the whole foreground again
         (["shadow", "underbodyFalloff"], 0.0),
         (["shadow"], [0.9]),
+        (["shadow", "tint"], [1.0, 1.0, 0.5]),  # a strong colour cast
+        (["shadow", "tint"], [0.9, 0.9, 0.9]),  # relative to the most darkened channel (max 1)
+        (["shadow", "tint"], [1.0, 1.0]),
+        (["shadow", "tint"], "neutral"),
+        (["shadow", "footprintReach"], 0.01),  # 0 (off) or a sensible floor distance
+        (["shadow", "footprintReach"], 3.0),
+        (["shadow", "footprintReach"], -0.3),
+        (["reflection", "footprintReach"], 5.0),
         (["reflection", "opacity"], 0.14),  # v2 field – the reflectance is measured on the plate now
         (["reflection", "strength"], 2.0),  # a mirror, not a lacquer reflection
         (["reflection", "maxReflectance"], 0.5),

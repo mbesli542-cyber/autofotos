@@ -100,6 +100,15 @@ class ShadowConfig:
     ambient_reach: float = 0.6
     #: The floor keeps at least this fraction of its light (no black holes).
     min_floor_light: float = 0.04
+    #: Relative darkening per channel (R, G, B): (1, 1, 0.95) = deep shadows slightly cooler, like
+    #: the shipped plates' rendered proxy shadow on their floor; (1, 1, 1) multiplies all channels
+    #: alike – the floor's own hue is kept (a warm wood floor does not turn reddish-grey).
+    tint: tuple[float, float, float] = (1.0, 1.0, 0.95)
+    #: 0 = off. Otherwise the under-car shadow above the floor line (the floor seen under the
+    #: body and beside the silhouette's ends) fades out with the floor distance (m) outside the
+    #: fitted footprint: below a rising bumper tip the photo shows floor behind or beside the
+    #: car, not under it – no tall dark bar at the car's ends.
+    footprint_reach: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -125,6 +134,10 @@ class ReflectionConfig:
     #: Gloss blur: Gaussian sigma (px) per px of distance from the floor line (horizontal;
     #: vertically 4× as much – glossy floors stretch reflections towards the camera).
     blur_rate: float = 0.04
+    #: 0 = off. Otherwise the floor under the car (and its mirror image), where the plate's own
+    #: reflection is removed, fades out with the floor distance (m) outside the fitted footprint
+    #: (like shadow.footprintReach) – no removed strip beside a rising bumper tip.
+    footprint_reach: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -550,7 +563,27 @@ def _parse_shadow(data) -> ShadowConfig:
         raise PresetConfigError("shadow.edgeOpacity must not exceed shadow.underbodyOpacity (darkest under the car)")
     if shadow.min_floor_light < 0.02:
         raise PresetConfigError("shadow.minFloorLight must be at least 0.02 (never pure black)")
+    if not all(TINT_RANGE[0] <= v <= TINT_RANGE[1] for v in shadow.tint) or max(shadow.tint) != 1.0:
+        raise PresetConfigError(
+            f"shadow.tint must be three values {TINT_RANGE[0]}..{TINT_RANGE[1]} with the largest 1 "
+            f"(relative darkening per channel, R G B), got {list(shadow.tint)}"
+        )
+    _check_footprint_reach("shadow", shadow.footprint_reach)
     return shadow
+
+
+#: shadow.tint: per-channel darkening relative to the most darkened channel – a mild cast at most.
+TINT_RANGE = (0.85, 1.0)
+#: shadow/reflection.footprintReach: 0 (off) or metres of floor outside the fitted footprint.
+FOOTPRINT_REACH_RANGE = (0.05, 2.0)
+
+
+def _check_footprint_reach(section: str, value: float) -> None:
+    if value != 0.0 and not FOOTPRINT_REACH_RANGE[0] <= value <= FOOTPRINT_REACH_RANGE[1]:
+        raise PresetConfigError(
+            f"{section}.footprintReach must be 0 (off) or {FOOTPRINT_REACH_RANGE[0]}..{FOOTPRINT_REACH_RANGE[1]} "
+            f"(metres of floor outside the car's footprint), got {value}"
+        )
 
 
 #: detailBackdrop ranges: (min, max) per field (fractions unless noted).
@@ -621,6 +654,7 @@ def _parse_reflection(data) -> ReflectionConfig:
         raise PresetConfigError("reflection.fade must be 0.2..2 (× the vehicle height)")
     if reflection.blur_rate > 0.2:
         raise PresetConfigError("reflection.blurRate must be 0..0.2 (px blur per px of distance)")
+    _check_footprint_reach("reflection", reflection.footprint_reach)
     return reflection
 
 

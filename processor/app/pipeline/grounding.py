@@ -43,8 +43,11 @@ floor only, never below ``shadow.minFloorLight``:
 4. front/rear views without visible tyres: soft occlusion pools at the hidden
    tyres inside the lower body's corners.
 
-Deep shadows are darkened slightly less in blue (SHADOW_TINT), like the plates'
-rendered proxy shadow – no saturated orange holes.
+Deep shadows are darkened per channel by ``shadow.tint`` – by default slightly less in blue
+(SHADOW_TINT), like the plates' rendered proxy shadow (no saturated orange holes); (1, 1, 1)
+keeps the floor's own hue (a warm wood floor). With ``shadow.footprintReach`` the under-car
+term above the floor line fades out outside the fitted footprint (no tall dark bar below a
+rising bumper tip, where the photo shows floor behind or beside the car).
 
 :func:`clean_ground_fringe` removes light ground/snow remnants of the cut-out at
 the tyre bottoms and along the lower outline (they are not vehicle pixels; a
@@ -62,7 +65,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from ..presets import Preset, ShowroomPlate
+from ..presets import Preset, ShadowConfig, ShowroomPlate
 from ..showroom.plates import Plate, ProxyContact
 from .mask import BBox
 from .placement import PlacementResult
@@ -150,8 +153,9 @@ HIDDEN_POOL_RADIUS = 0.3
 HIDDEN_TYRE_INSET = 0.11
 HIDDEN_AXLE_OFFSET = 0.6
 
-#: Relative darkening per channel (R, G, B), measured on the plates' rendered proxy shadow.
-SHADOW_TINT = (1.0, 1.0, 0.95)
+#: Relative darkening per channel (R, G, B), measured on the plates' rendered proxy shadow – the
+#: default of the preset's shadow.tint.
+SHADOW_TINT = ShadowConfig().tint
 
 # ---- ambient
 #: The (soft, calibrated) ambient occlusion reaches at most this far (m of floor depth)
@@ -571,6 +575,13 @@ def end_fade(rows: np.ndarray, top: np.ndarray, beyond: np.ndarray) -> np.ndarra
     ramp = np.maximum(END_FADE_SLOPE * beyond, 1.0)
     t = np.clip((np.asarray(rows, np.float64) - np.asarray(top, np.float64)[None, :]) / ramp[None, :], 0.0, 1.0)
     return np.where(beyond[None, :] > 0.0, t * t * (3.0 - 2.0 * t), 1.0).astype(np.float32)
+
+
+def footprint_limit(sd: np.ndarray, applies: np.ndarray, reach: float) -> np.ndarray:
+    """1 inside the car's footprint (signed floor distance `sd` ≤ 0, metres), fading out as
+    exp(−(sd / reach)²) outside it where `applies` (broadcastable bool) – elsewhere 1."""
+    outside = np.maximum(np.asarray(sd, np.float64), 0.0) / max(reach, 1e-6)
+    return np.where(applies, np.exp(-(outside**2)), 1.0).astype(np.float32)
 
 
 def _steepness(values: np.ndarray, sigma: float) -> np.ndarray:
@@ -1101,14 +1112,19 @@ def apply_grounding(
     sideways = np.exp(-((beyond / np.maximum(cfg.underbody_falloff * across_px, 1.0)) ** 2))
     rows_c = np.arange(window.y0, window.y1, dtype=np.float64)[:, None] + 0.5
     top = np.maximum(edge_f, np.asarray(plate.floor_top, np.float64)[window.x0 : window.x1])
-    under = (under * sideways[None, :] * end_fade(rows_c, top, beyond)).astype(np.float32)
-    under = cv2.GaussianBlur(under, (0, 0), sigmaX=max(0.8, UNDERBODY_SMOOTH * vw), sigmaY=0.1)
-    keep = 1.0 - under
-
-    # 3) ambient: the plate's rendered proxy shadow through the car pose, near the car only
+    under = under * sideways[None, :] * end_fade(rows_c, top, beyond)
     gx, gy = window.grid()
     fx, fy = frame.to_floor(gx, gy)
     rows = gy[:, :1]
+    sd = fp.sdf(fx, fy, FOOTPRINT_CORNER * pose.reference_scale)
+    if cfg.footprint_reach > 0.0:
+        # above the floor line the floor seen under a rising bumper tip (or beside the ends) lies
+        # behind/beside the car once it is outside the footprint – the under-car term fades out
+        under = under * footprint_limit(sd, rows <= line_f[None, :], cfg.footprint_reach * pose.reference_scale)
+    under = cv2.GaussianBlur(under.astype(np.float32), (0, 0), sigmaX=max(0.8, UNDERBODY_SMOOTH * vw), sigmaY=0.1)
+    keep = 1.0 - under
+
+    # 3) ambient: the plate's rendered proxy shadow through the car pose, near the car only
     ahead = np.maximum(rows - line_f[None, :], 0.0) / np.maximum(AMBIENT_FRONT_REACH * depth_px * line_steep, 1.0)[None, :]
     # (a proxy moved back into the room samples its rendered shadow where it was rendered)
     sx, sy = plate.plate.proxy_shift
@@ -1119,7 +1135,6 @@ def apply_grounding(
     proxy = cv2.remap(
         np.asarray(plate.shadow, np.float32), map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
     )
-    sd = fp.sdf(fx, fy, FOOTPRINT_CORNER * pose.reference_scale)
     near_car = np.exp(-((np.maximum(sd, 0.0) / max(cfg.ambient_reach * pose.reference_scale, 1e-3)) ** 2))
     ambient = cfg.ambient_opacity * (1.0 - np.clip(proxy, 0.0, 1.0)) * near_car * np.exp(-(ahead**2))
     keep *= (1.0 - ambient).astype(np.float32)
@@ -1169,7 +1184,7 @@ def apply_grounding(
     keep = np.maximum(keep, cfg.min_floor_light).astype(np.float32)
     # per channel: the rendered proxy shadow is slightly cooler than the lit wood (blue ≈ 5 %
     # less darkened) – deep shadows do not turn into saturated orange
-    tint = np.asarray(SHADOW_TINT, np.float32)
+    tint = np.asarray(cfg.tint, np.float32)
     grounded[window.y0 : window.y1, window.x0 : window.x1] *= 1.0 - (1.0 - keep[..., None]) * tint
 
     if info is not None:

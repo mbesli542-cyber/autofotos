@@ -30,7 +30,9 @@ the sharp streak cores); what stays (``wood · D``) is the matte wood the proces
 car blocks that reflection. The pass is stored at the plate's full size and limited per pixel
 (``limit_saturation``): what is left after removing it is never more saturated than the floor's
 own wood – the plank seams inside a streak carry no gloss (they show the bare wood), so removing
-the streak's share there would turn them into orange-red lines. ``reflectance`` per image row is
+the streak's share there would turn them into orange-red lines. In the hot streak cores the split
+leaves too little wood under the near-white light (removed under a car: dark grey bands), so the wood
+left in a core is lifted to the unlit wood next to it (``lift_streak_cores``). ``reflectance`` per image row is
 calibrated exactly like the rendered plates (postprocess_plates.reflection_pass: reflection of
 the white wall / wall radiance at the mirrored row – the frontal level camera mirrors the wall
 about the junction row).
@@ -88,6 +90,16 @@ FLOOR_PAD = 3
 SATURATION_PERCENTILE = 1.0
 #: Floor pixels whose reflection is below this fraction of the plate define that natural wood.
 WOOD_ONLY_FRACTION = 0.08
+#: Streak cores: the wood left after removing the pass is lifted to the unlit wood next to them
+#: (lift_streak_cores, all at PASS_SIZE). The row's baseline share of reflection is the lowest
+#: share within ±BASE_HALF px; pixels within UNLIT_BAND of it are its unlit wood (averaged with
+#: a Gaussian of UNLIT_SIGMA px, wider where no such pixel is near); pixels more than CORE_OFFSET
+#: above it are lifted, fully from CORE_OFFSET + CORE_SPAN on; the gain is at most MAX_LIFT.
+BASE_HALF = 80
+UNLIT_BAND = 0.06
+UNLIT_SIGMA = (40.0, 6.0)
+CORE_OFFSET, CORE_SPAN = 0.05, 0.10
+MAX_LIFT = 1.8
 
 
 LUMA = np.array([0.2126, 0.7152, 0.0722], np.float32)
@@ -199,6 +211,49 @@ def limit_saturation(lin: np.ndarray, refl: np.ndarray, limits: tuple[float, flo
     return (refl * s[..., None]).astype(np.float32), s
 
 
+def lift_streak_cores(lin: np.ndarray, refl: np.ndarray) -> tuple[np.ndarray, dict]:
+    """Reduce the pass in the streak cores so that removing it leaves the wood of the unlit floor
+    beside the streak, not darker and not greyer (``lin`` and ``refl`` linear, full size).
+
+    In the cores of the light streaks his floor is near white; the colour split cannot tell how
+    much wood is under that light and leaves too little (6–24 % darker and greyer than the wood
+    between the streaks) – removed under a car, every streak would become a dark grey band. Per
+    channel the wood left in a core is scaled up to the unlit wood next to it in the same rows
+    (smooth gain, the grain of the plate's own pixels stays); the pass never becomes negative."""
+    height, width = lin.shape[:2]
+    wood = np.clip(lin - refl, 0.0, None)
+    ps, rs, ds = (
+        cv2.GaussianBlur(cv2.resize(x, PASS_SIZE, interpolation=cv2.INTER_AREA), (0, 0), GRAIN_SIGMA)
+        for x in (lin, refl, wood)
+    )
+    share = ((rs @ LUMA) / np.maximum(ps @ LUMA, 1e-6)).astype(np.float32)
+    floor = (rs @ LUMA) > 0.0  # the pass is 0 off the floor
+    base = cv2.erode(np.where(floor, share, 9.0).astype(np.float32), np.ones((1, 2 * BASE_HALF + 1), np.uint8))
+    base = cv2.GaussianBlur(np.where(base > 8.0, share, base), (0, 0), sigmaX=BASE_HALF / 2.0, sigmaY=3.0)
+    unlit_w = (np.clip(1.0 - (share - base) / UNLIT_BAND, 0.0, 1.0) * floor).astype(np.float32)
+    unlit = np.zeros_like(ds)
+    done = np.zeros(share.shape, bool)
+    for k in (1, 2, 4, 8):
+        sx, sy = UNLIT_SIGMA[0] * k, UNLIT_SIGMA[1] * k
+        num = cv2.GaussianBlur(ds * unlit_w[..., None], (0, 0), sigmaX=sx, sigmaY=sy)
+        den = cv2.GaussianBlur(unlit_w, (0, 0), sigmaX=sx, sigmaY=sy)
+        ok = (den > 0.05) & ~done
+        unlit[ok] = (num / np.maximum(den, 1e-6)[..., None])[ok]
+        done |= ok
+    core = np.clip((share - base - CORE_OFFSET) / CORE_SPAN, 0.0, 1.0) * floor
+    gain = 1.0 + core[..., None] * (np.clip(unlit / np.maximum(ds, 1e-6), 1.0, MAX_LIFT) - 1.0)
+    gain = cv2.GaussianBlur(gain.astype(np.float32), (0, 0), 1.5)
+    gain = cv2.resize(gain, (width, height), interpolation=cv2.INTER_LINEAR)
+    lifted = np.where(refl > 0.0, lin - np.minimum(wood * gain, lin), refl)
+    lifted = np.clip(lifted, 0.0, None).astype(np.float32)
+    info = {
+        "liftedShare": round(float((gain.max(axis=2) > 1.02)[cv2.resize(floor.astype(np.uint8), (width, height)) > 0].mean()), 4),
+        "maxLift": round(float(gain.max()), 3),
+        "removedByLift": round(float(((refl - lifted) @ LUMA).sum() / max(float((refl @ LUMA).sum()), 1e-6)), 4),
+    }
+    return lifted, info
+
+
 def full_reflection(plate_rgb: np.ndarray, room: dict) -> tuple[np.ndarray, dict]:
     """The stored pass: the split's smooth fraction applied to the plate's own FULL-SIZE pixels
     (follows the plank seams, which a PASS_SIZE layer cannot), saturation-limited."""
@@ -217,6 +272,10 @@ def full_reflection(plate_rgb: np.ndarray, room: dict) -> tuple[np.ndarray, dict
         float(np.percentile(lin[..., 2][wood_only] / red, SATURATION_PERCENTILE)),
     )
     limited, s = limit_saturation(lin, refl, limits)
+    # removed under a car the streak cores keep the wood of the unlit floor beside them (no dark
+    # grey bands); the saturation guard applies to the lifted pass again
+    lifted, lift = lift_streak_cores(lin, limited)
+    final, s2 = limit_saturation(lin, lifted, limits)
     on = soft > 0.5
     info = dict(info)
     info.update(
@@ -224,11 +283,12 @@ def full_reflection(plate_rgb: np.ndarray, room: dict) -> tuple[np.ndarray, dict
             "saturationLimit": {"gr": round(limits[0], 4), "br": round(limits[1], 4), "woodPixels": int(wood_only.sum())},
             "limitedShare": round(float((s[on] < 0.999).mean()), 4),
             "removedByLimit": round(float(((refl - limited) @ LUMA)[on].sum() / max(float((refl @ LUMA)[on].sum()), 1e-6)), 4),
-            "reflectionMax": round(float(limited.max()), 4),
-            "reflectionMeanFloor": round(float(limited[on].mean()), 4),
+            "coreLift": {**lift, "limitedAfterLift": round(float((s2[on] < 0.999).mean()), 4)},
+            "reflectionMax": round(float(final.max()), 4),
+            "reflectionMeanFloor": round(float(final[on].mean()), 4),
         }
     )
-    return limited, info
+    return final, info
 
 
 def wall_albedo(plate_rgb: np.ndarray, measure: dict) -> list[float]:
@@ -301,11 +361,55 @@ VARIANT_DESCRIPTION = (
     "Showroom-Hintergrund des Händlers (helle Paneelwand, blaue LED-Linien, Walnuss-Lamellen, "
     "Olivenbaum, glänzendes Parkett) mit offiziellem AutoExperten Logo und Schwetzingen."
 )
-VARIANT_SHADOW = {"edgeOpacity": 0.7, "underbodyFalloff": 0.25, "ambientOpacity": 0.6}
-VARIANT_REFLECTION = {"strength": 1.0}
+#: Shadow and reflection of the variant in three strengths (the dealer: "the shadows underneath stay
+#: far too black" with the earlier edgeOpacity 0.7 / underbodyFalloff 0.25 / ambientOpacity 0.6).
+#: All three keep the wood's hue (tint 1, 1, 1) and limit the under-car terms to the car's footprint;
+#: "mittel" is the recommendation and the variant file itself, the others are written next to it.
+SHADOW_COMMON = {"tint": [1.0, 1.0, 1.0], "footprintReach": 0.3}
+REFLECTION_COMMON = {"footprintReach": 0.3}
+STRENGTHS = {
+    "leicht": (
+        {"contactOpacity": 0.85, "creaseOpacity": 0.7, "underbodyOpacity": 0.7, "edgeOpacity": 0.3,
+         "underbodyFalloff": 0.08, "ambientOpacity": 0.2, "ambientReach": 0.3},
+        {"strength": 1.2, "maxReflectance": 0.25, "fade": 0.4},
+    ),
+    "mittel": (
+        {"contactOpacity": 0.9, "creaseOpacity": 0.8, "underbodyOpacity": 0.8, "edgeOpacity": 0.4,
+         "underbodyFalloff": 0.1, "ambientOpacity": 0.3, "ambientReach": 0.4},
+        {"strength": 1.5, "maxReflectance": 0.3, "fade": 0.5},
+    ),
+    "kraeftig": (
+        {"contactOpacity": 0.92, "creaseOpacity": 0.85, "underbodyOpacity": 0.85, "edgeOpacity": 0.5,
+         "underbodyFalloff": 0.14, "ambientOpacity": 0.4, "ambientReach": 0.5},
+        {"strength": 1.5, "maxReflectance": 0.3, "fade": 0.6},
+    ),
+}  # fmt: skip
+RECOMMENDED = "mittel"
+STRENGTH_NAMES = {"leicht": "Schatten leicht", "mittel": "Schatten mittel", "kraeftig": "Schatten kräftig"}
+
+
+def strength_path(target: Path, strength: str) -> Path:
+    """The variant file of a strength: the recommended one is `target` itself."""
+    return target if strength == RECOMMENDED else target.with_name(f"{target.stem}-{strength}{target.suffix}")
 
 
 def write_variant(standard: Path, target: Path, plates: str, layout: dict, room: dict) -> dict:
+    """Write the variant in its three shadow strengths (``strength_path``); returns the recommended one."""
+    data = variant_data(standard, plates, layout, room)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    out = {}
+    for strength, (shadow, reflection) in STRENGTHS.items():
+        item = json.loads(json.dumps(data))
+        if strength != RECOMMENDED:
+            item["name"] = f"{VARIANT_NAME} ({STRENGTH_NAMES[strength]})"
+        item["shadow"].update({**shadow, **SHADOW_COMMON})
+        item["reflection"].update({**reflection, **REFLECTION_COMMON})
+        strength_path(target, strength).write_text(json.dumps(item, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        out[strength] = item
+    return out[RECOMMENDED]
+
+
+def variant_data(standard: Path, plates: str, layout: dict, room: dict) -> dict:
     data = json.loads(standard.read_text(encoding="utf-8"))
     data["name"] = VARIANT_NAME
     data["description"] = VARIANT_DESCRIPTION
@@ -341,10 +445,6 @@ def write_variant(standard: Path, target: Path, plates: str, layout: dict, room:
     )
     for name in ("website", "phone"):  # no dealer contact data in listing photos (mobile.de)
         branding[name]["text"] = ""
-    data["shadow"].update(VARIANT_SHADOW)
-    data["reflection"].update(VARIANT_REFLECTION)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return data
 
 

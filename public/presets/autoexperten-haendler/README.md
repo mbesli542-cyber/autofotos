@@ -103,14 +103,52 @@ Yaris front is rejected for a lost mirror); the front plate uses the rear's came
   plank seams, and is limited per pixel: what is left after removing it is never more saturated
   than the floor's own reflection-poor wood (1st percentile of g/r and b/r) – the seams inside a
   streak carry no gloss and stay wood instead of turning into orange-red lines.
+  **Streak cores keep the unlit wood** (`lift_streak_cores`): in the hot cores of his streaks
+  the floor is near white and the split left too little wood under the light – removed in a
+  car's mirror image every streak became a dark grey band (cores 6–25 % darker and greyer than
+  the wood between the streaks). Per channel the wood left in a core is scaled up to the unlit
+  wood next to it in the same rows (smooth gain ≤ 1.8, the plate's grain stays; 3.6 % less
+  light removed in all): removed, a core now has 0.98–1.05 of the unlit wood beside it, same
+  colour (`tests/test_dealer_backdrop.py` checks the stored pass).
   The car's own reflection uses that `reflectance` (≈ 0.10 where the cars' bumpers stand,
   v ≈ 0.8–0.9 – what a lacquered floor reflects at that viewing angle: Fresnel for n = 1.5 at
-  ≈ 60° gives ≈ 0.09; ≈ 0.4 near the wall, capped by `reflection.maxReflectance`), so in front of
-  a bumper it is faint, as in his reference photos.
+  ≈ 60° gives ≈ 0.09; ≈ 0.4 near the wall) × `reflection.strength` (1.5 in "mittel"), capped by
+  `reflection.maxReflectance` (0.3), and fades out within ½ car height (`fade` 0.5) – right under
+  the car dark paint reflects darker and chrome / light paint lighter, further out his streaks
+  come back, as in his reference photos.
 - `plates.json` – camera, horizon, floor/wall homographies (identical for all shots), per shot
   the proxy pose, bbox, tyre contacts, wall clearance; `room` documents the measured features.
 - `branding.json` – where his lettering was, as fractions of the brand area (the values in the
   variant preset's `branding`).
+
+## Shadows: three strengths
+
+The dealer (on the first results): "the shadows underneath are not good at all, they stay far too
+black". Measured on his S63 / Lancer / Clio / C-Crosser with the earlier values (`edgeOpacity`
+0.7, `underbodyFalloff` 0.25 m, `ambientOpacity` 0.6; linear floor luminance result ÷ empty plate):
+the floor at the tyres and under the sill kept 0.04–0.08 (L\* 73 → 14–19, nearly black) – the
+underbody (0.20–0.32) and the rendered ambient pass (0.40–0.50, darkest under the car)
+multiplied, plus the removed floor reflection (0.56–0.66); the default `tint` turned those deep
+shadows reddish-grey (hue 64° → 33–47°); 0.3 m in front of the car the shadow alone still
+kept only 0.67–0.81, beside the bumper ends 0.41–0.64 (a tall dark bar below the rising bumper
+tip, the underbody band continued sideways); the removed streaks left dark grey bands (above).
+
+All three strengths keep the wood's hue (`shadow.tint` 1 1 1: hue 63–64° in every shadow),
+limit the under-car shadow and the removed-reflection band to the car's fitted footprint
+(`footprintReach` 0.3 m: no bar beside the ends) and keep the car's own reflection near the
+car (`reflection.fade` ≤ 0.6, strength 1.2–1.5 of the measured Fresnel reflectance, capped at
+0.25–0.3): dark paint darker, chrome and light paint lighter, blurred like the plate's gloss.
+
+| | tyres | under the sill | shadow 0.3 m in front | beside the ends | variant file |
+| --- | --- | --- | --- | --- | --- |
+| earlier | 0.04–0.08 (L\* 14–19) | 0.05–0.06 (L\* 17–18) | 0.67–0.81 | 0.41–0.64 | – |
+| leicht | 0.16–0.27 (L\* 30–36) | 0.20–0.23 (L\* 36–38) | 0.93–0.98 | 0.98–1.0 | `../variants/autoexperten-haendler-leicht.json` |
+| **mittel** | 0.12–0.21 (L\* 26–31) | 0.14–0.16 (L\* 30–31) | 0.89–0.97 | 0.96–0.99 | `../variants/autoexperten-haendler.json` |
+| kräftig | 0.09–0.16 (L\* 22–27) | 0.10–0.11 (L\* 24–26) | 0.86–0.96 | 0.94–0.99 | `../variants/autoexperten-haendler-kraeftig.json` |
+
+"Mittel" is the recommendation and the variant file; 1 m in front of the car the shadow is 1.0
+in all three (the floor there only loses its streaks inside the car's mirror image and keeps
+the unlit wood).
 
 ## Reproducing
 

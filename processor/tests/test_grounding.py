@@ -415,3 +415,64 @@ def test_the_debug_overlay_shows_the_ground_model(scene):
     assert np.abs(overlay.astype(int) - plate.astype(int)).sum() > 0
     small = draw_ground_model(plate[::2, ::2].copy(), model, transform=lambda x, y: (x / 2, y / 2))
     assert small.shape == plate[::2, ::2].shape
+
+
+# --------------------------------------------------------------------------- dealer look: hue, footprint
+
+
+def _with_shadow(preset, **changes):
+    return dataclasses.replace(preset, shadow=dataclasses.replace(preset.shadow, **changes))
+
+
+def test_a_neutral_tint_keeps_the_floors_own_hue(scene):
+    """shadow.tint (1, 1, 1): every channel darkened alike – a warm wood floor keeps its hue in the
+    deep shadow instead of turning reddish-grey (the default tint darkens blue 5 % less)."""
+    preset, showroom, placement, alpha, contacts, background = scene
+    neutral = apply_grounding(background, alpha, placement, contacts, showroom, _with_shadow(preset, tint=(1.0, 1.0, 1.0)))
+    default = apply_grounding(background, alpha, placement, contacts, showroom, preset)
+    x, y = int((contacts[0].x + contacts[1].x) / 2), int(placement.bottom) - 38
+    ratio = neutral[y, x] / np.maximum(background[y, x], 1e-6)
+    assert ratio[0] < 0.5 and np.ptp(ratio) < 1e-4  # deep and colour-neutral
+    assert np.allclose(default[..., :2], neutral[..., :2])  # red/green as before, only blue differs
+    assert preset.shadow.tint == SHADOW_TINT
+
+
+def test_the_footprint_reach_ends_the_under_car_shadow_beside_a_rising_bumper(scene):
+    """Below a bumper tip that rises far above the floor line the photo shows floor behind or beside
+    the car: with shadow.footprintReach the under-car term fades out outside the fitted footprint
+    (no tall dark bar at the car's ends); inside the footprint and in front of the floor line
+    nothing changes, and it never darkens anything."""
+    preset, showroom, placement, _, _, background = scene
+    alpha, contacts = _box_car(placement, overhang=150)
+    model = build_ground_model(alpha, placement, contacts, showroom)
+    default = apply_grounding(background, alpha, placement, contacts, showroom, preset, model=model)
+    limited = apply_grounding(
+        background, alpha, placement, contacts, showroom, _with_shadow(preset, footprint_reach=0.3), model=model
+    )
+    assert np.all(limited >= default - 1e-6)  # only ever lighter
+    win = model.window
+    gx, gy = win.grid()
+    fx, fy = model.frame.to_floor(gx, gy)
+    sd = model.footprint.sdf(fx, fy, 0.25 * model.pose.reference_scale)
+    sl = (slice(win.y0, win.y1), slice(win.x0, win.x1))
+    inside = sd <= 0.0
+    # the underbody is smoothed sideways over ~1.5 px: in front of the floor line of every column
+    # within a few px (the line jumps at the rising ends)
+    line = model.line_filled()
+    lowest = np.max([np.roll(line, k) for k in range(-6, 7)], axis=0)
+    ahead = gy > lowest[None, :] + 1.0
+    assert np.abs(limited[sl][ahead] - default[sl][ahead]).max() < 1e-6
+    assert np.abs(limited[sl][inside] - default[sl][inside]).max() < 1e-3
+    gain = _darkening(default, background)[sl] - _darkening(limited, background)[sl]
+    assert gain.max() > 0.3  # the bar below the rising end tip is gone
+    assert np.all(gain[ahead] < 1e-6)
+
+
+def test_the_footprint_limit_is_one_inside_and_fades_outside():
+    from app.pipeline.grounding import footprint_limit
+
+    sd = np.array([[-0.5, 0.0, 0.15, 0.3, 0.9]])
+    out = footprint_limit(sd, True, 0.3)
+    assert out[0, 0] == out[0, 1] == 1.0
+    assert out[0, 3] == pytest.approx(math.exp(-1.0)) and out[0, 4] < 1e-3
+    assert np.all(footprint_limit(sd, False, 0.3) == 1.0)
