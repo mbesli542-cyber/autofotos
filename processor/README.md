@@ -32,7 +32,7 @@ quality gate with a German retake hint.
 | 7 Quality gate (cropped, too small/upscale, mask, perspective, ground contact, foreign object in the outline, vehicle part missing from the cut-out) | `app/pipeline/quality.py` |
 | 8 Cut-out in linear light, edge decontamination; conservative light matching with colour guard | `composite.py`, `harmonize.py`, `light.py` |
 | 9 Branded plate: official logo + texts in wall space through the wall homography | `app/presets.py` (`BackgroundProvider`), `app/showroom/wall_branding.py`, `branding.py` |
-| 10 Grounding v3 (linear light, floor only, before the car): ground model = car pose (proxy fitted to the tyre contacts in floor metres, scale along/across the car separately, limits reported as `poseClamped`), footprint (overhangs solved from the silhouette), **floor line per column in the photo's own perspective** (between same-side tyres and beyond them along a side: the line through their contacts; the end facing the camera in 3/4 views and front/rear views: outline + 15 cm bumper clearance at the plate's local scale; through every tyre's contact); light ground/snow remnants at the tyre bottoms / along the outline removed from the alpha (smoothed cut, never vehicle pixels; a tyre's cut changes by at most 2/3 px per px of width and tapers out over ≈ 3 cm at the ends of its range or blends into the outline cut – no notch); per tyre a contact patch in physical metres aligned with the pose (tread across the axle, falloff along the rolling direction from the tyre/floor gap R − √(R² − s²)), hard core kept within the tyre's x-extent + 3 cm, soft halo, crease; underbody: dark deep under the body → lighter at the floor line → 12 cm falloff; beyond the silhouette's ends (no car above the floor) only a penumbra that fades in below the end column's outline row (or the wall/floor junction) over 2 px per px of distance and out sideways – no hard-topped band beside the bumpers; the plate's proxy shadow as calibrated ambient; hidden-tyre pools for front/rear without visible tyres; slightly cooler deep shadow (as rendered) | `app/pipeline/grounding.py` (`build_ground_model`, `clean_ground_fringe`, `apply_grounding`), `shadow.py` |
+| 10 Grounding v3 (linear light, floor only, before the car): ground model = car pose (proxy fitted to the tyre contacts in floor metres, scale along/across the car separately, limits reported as `poseClamped`), footprint (overhangs solved from the silhouette), **floor line per column in the photo's own perspective** (between same-side tyres and beyond them along a side: the line through their contacts – only when their floor distance is ≥ 0.5 × the proxy's wheelbase, otherwise they are not two tyres (`ground_contact_uncertain`); the end facing the camera in 3/4 views and front/rear views: outline + 15 cm bumper clearance at the plate's local scale; through every tyre's contact); light ground/snow remnants at the tyre bottoms / along the outline removed from the alpha (smoothed cut, never vehicle pixels; a tyre's cut changes by at most 2/3 px per px of width and tapers out over ≈ 3 cm at the ends of its range or blends into the outline cut – no notch); per tyre a contact patch in physical metres aligned with the pose (tread across the axle, falloff along the rolling direction from the tyre/floor gap R − √(R² − s²)), hard core kept within the tyre's x-extent + 3 cm, soft halo, crease; underbody: dark deep under the body → lighter at the floor line → 12 cm falloff; beyond the silhouette's ends (no car above the floor) only a penumbra that fades in below the end column's outline row (or the wall/floor junction) over 2 px per px of distance and out sideways – no hard-topped band beside the bumpers; the plate's proxy shadow as calibrated ambient; hidden-tyre pools for front/rear without visible tyres; slightly cooler deep shadow (as rendered) | `app/pipeline/grounding.py` (`build_ground_model`, `clean_ground_fringe`, `apply_grounding`), `shadow.py` |
 | 10b Floor reflection: mirror axis = the floor line; inside the car's mirror image and under the car the plate's own floor reflection (reflection pass: LED streaks, wall glow, sheen) is removed and the mirrored ORIGINAL vehicle pixels are added as a colour-neutral specular term with the plate's measured reflectance (`reflectance` in plates.json × `reflection.strength`, ≤ `maxReflectance`); gloss blur grows with the distance (`blurRate`, 4× vertically), fades out between ½ and `fade` × car height; beyond the car's ends the under-car band only fades out (the reflected rays hit the wall there) – the plate's own floor reflection beside the bumpers stays; floor pixels only | `app/pipeline/reflection.py` (`apply_reflection`) |
 | 11 Light wrap, premultiplied composite, JPEG export (4:3, 2400 × 1800 – preset `output.longEdgeMin` = `longEdgeMax` = 2400, the plates' resolution –, quality 92, sRGB, no EXIF/GPS; typically ≈ 0.75–1 MB) | `harmonize.py`, `composite.py`, `export.py` |
 
@@ -262,8 +262,9 @@ default `../public`). Sections: `background.plates` (the plate set),
 in floor metres, `minFloorLight` ≥ 0.02; optional `tint` – per-channel darkening R G B,
 0.85–1 with the largest 1, default 1 1 0.95 (slightly cooler deep shadows), 1 1 1 keeps a
 warm floor's hue; optional `footprintReach` – 0 = off (default) or 0.05–2 m: the under-car
-shadow above the floor line fades out that far outside the fitted footprint, no dark bar
-below a rising bumper tip), `reflection` (`enabled`, `strength` ≤ 1.5 ×
+shadow fades out that far outside the fitted footprint, one continuous factor above and in
+front of the floor line (no dark bar below a rising bumper tip, no dark tail beside the ends,
+no step where the line is crossed)), `reflection` (`enabled`, `strength` ≤ 1.5 ×
 the plate's measured reflectance, `maxReflectance`/`defaultReflectance` ≤ 0.3,
 `fade` 0.2–2 × car height, `blurRate` ≤ 0.2, optional `footprintReach` like the shadow's
 for the band under the car where the plate's own reflection is removed),
@@ -563,6 +564,7 @@ gate), `qualityGate` (every check with its measurements, e.g.
 `qualityGate` also carries `mask` and `segmentation`), `placement` (scale, limiting rule,
 `targetWidthRatio`, `achievedWidthRatio`, ground line), `grounding` (version 3:
 pose fit incl. `clamped` limits and `poseClamped` (+ `warnings: ["poseClamped"]`),
+`wheelbaseRatios` / `contactsPlausible` (+ `warnings: ["contactsImplausible"]`, see below),
 footprint, floor line samples, per-tyre patch/radius/x-extent, hidden tyres,
 `fringe` (alpha removed at tyre bottoms/outline), `farFloorDarkening` (floor
 ≥ 0.5 m from the car in the picture) and `farFloorDarkeningFootprint`),
@@ -571,8 +573,13 @@ vehicle correction (exposure EV, white-balance gains, measured hue/saturation
 change, guard result), branding boxes and timings. Warnings (German) flag
 mirrored plates, reduced vehicle size, low resolution, uncertain masks,
 busy backgrounds, background objects cut from the vehicle outline, a vehicle
-the detector did not find and a small vehicle part that may be missing
-(`vehicle_part_uncertain`).
+the detector did not find, a small vehicle part that may be missing
+(`vehicle_part_uncertain`) and tyre contacts that cannot be two tyres of one side
+(`ground_contact_uncertain`: matched front and rear contacts of one side closer on the floor
+than 0.5 × the proxy's wheelbase – an exhaust tip or a diffuser corner taken as a tyre; the
+floor line then ignores the side line through them, the result asks for a check: "Die Reifen
+wurden nicht sicher erkannt (z. B. Auspuff oder Diffusor statt Reifen) – bitte den Schatten
+unter dem Fahrzeug prüfen.").
 `busy_background` fires when the segmentation model's OWN output is
 fragmented (> 25 parts); BiRefNet returns 1–2 parts on every cached
 regression photo, so with it this warning practically never fires (it guards

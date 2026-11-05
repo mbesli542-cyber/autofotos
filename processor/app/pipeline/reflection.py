@@ -173,7 +173,7 @@ def apply_reflection(
         seen = np.minimum(centre, 2.0 * axis[None, :] - centre)
         fx, fy = frame.to_floor(np.broadcast_to(cols[None, :] + 0.5, band.shape), np.broadcast_to(seen, band.shape))
         sd = fp.sdf(fx, fy, FOOTPRINT_CORNER * model.pose.reference_scale)
-        band = band * footprint_limit(sd, True, cfg.footprint_reach * model.pose.reference_scale)
+        band = band * footprint_limit(sd, cfg.footprint_reach * model.pose.reference_scale)
     mirrored[..., 3] = np.maximum(mirrored[..., 3], band)
 
     # gloss: blur grows with the distance from the floor line

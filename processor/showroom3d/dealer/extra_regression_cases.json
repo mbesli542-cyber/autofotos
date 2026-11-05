@@ -60,7 +60,11 @@
    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/deed.en/",
    "landingUrl": "https://commons.wikimedia.org/wiki/File:2023_Audi_RS4_Avant_in_Navarra_Blue_02.jpg",
    "sha256": "3cf6851e6c7d68d72aeddb14099782db4e5f517f8ce129b3b0410c3c306d4f71",
-   "bodyStyle": "estate"
+   "bodyStyle": "estate",
+   "groundContacts": "the exhaust tip and the diffuser corner are detected as tyres (the front tyre is not: the far sill lies lower in the picture) - wheelbase ratio 0.24, no side line through them",
+   "expectedWarnings": [
+    "ground_contact_uncertain"
+   ]
   }
  ]
 }

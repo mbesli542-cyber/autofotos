@@ -376,6 +376,18 @@ def process_photo(
     )
     if ground.pose.clamped:
         grounding["warnings"] = ["poseClamped"]
+    if not ground.contacts_plausible:
+        # two "tyres" of one side far closer than a wheelbase (an exhaust tip or a diffuser taken
+        # as a tyre): the floor line ignores the side line through them, the result is shown
+        # for a check
+        grounding["warnings"] = [*grounding.get("warnings", []), "contactsImplausible"]
+        warnings.append(
+            QualityWarning(
+                "ground_contact_uncertain",
+                "Die Reifen wurden nicht sicher erkannt (z. B. Auspuff oder Diffusor statt Reifen) – "
+                "bitte den Schatten unter dem Fahrzeug prüfen.",
+            )
+        )
     reflection: dict = {}
     floor = apply_reflection(
         floor, vehicle_rgb, vehicle_alpha, contacts_out, showroom, placement, preset.reflection,

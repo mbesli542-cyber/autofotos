@@ -135,20 +135,31 @@ tip, the underbody band continued sideways); the removed streaks left dark grey 
 
 All three strengths keep the wood's hue (`shadow.tint` 1 1 1: hue 63–64° in every shadow),
 limit the under-car shadow and the removed-reflection band to the car's fitted footprint
-(`footprintReach` 0.3 m: no bar beside the ends) and keep the car's own reflection near the
+(`footprintReach` 0.3 m: no bar beside the ends; one continuous factor across the floor line –
+a first version applied it only above the line and left a hard 10–33 % step on the floor beside
+the bumper corners of 10 of the 12 photos, incl. the dark smudge left of the S63's bumper and the
+arcs at the CR-V's and A4's rear corners) and keep the car's own reflection near the
 car (`reflection.fade` ≤ 0.6, strength 1.2–1.5 of the measured Fresnel reflectance, capped at
 0.25–0.3): dark paint darker, chrome and light paint lighter, blurred like the plate's gloss.
 
 | | tyres | under the sill | shadow 0.3 m in front | beside the ends | variant file |
 | --- | --- | --- | --- | --- | --- |
 | earlier | 0.04–0.08 (L\* 14–19) | 0.05–0.06 (L\* 17–18) | 0.67–0.81 | 0.41–0.64 | – |
-| leicht | 0.16–0.27 (L\* 30–36) | 0.20–0.23 (L\* 36–38) | 0.93–0.98 | 0.98–1.0 | `../variants/autoexperten-haendler-leicht.json` |
-| **mittel** | 0.12–0.21 (L\* 26–31) | 0.14–0.16 (L\* 30–31) | 0.89–0.97 | 0.96–0.99 | `../variants/autoexperten-haendler.json` |
-| kräftig | 0.09–0.16 (L\* 22–27) | 0.10–0.11 (L\* 24–26) | 0.86–0.96 | 0.94–0.99 | `../variants/autoexperten-haendler-kraeftig.json` |
+| leicht | 0.16–0.27 (L\* 30–36) | 0.20–0.23 (L\* 36–38) | 0.93–0.98 | 0.99–1.0 | `../variants/autoexperten-haendler-leicht.json` |
+| **mittel** | 0.12–0.22 (L\* 26–32) | 0.14–0.16 (L\* 30–31) | 0.89–0.97 | 0.97–0.99 | `../variants/autoexperten-haendler.json` |
+| kräftig | 0.09–0.17 (L\* 22–27) | 0.10–0.11 (L\* 24–26) | 0.86–0.96 | 0.95–0.99 | `../variants/autoexperten-haendler-kraeftig.json` |
 
 "Mittel" is the recommendation and the variant file; 1 m in front of the car the shadow is 1.0
 in all three (the floor there only loses its streaks inside the car's mirror image and keeps
 the unlit wood).
+
+The RS4 from behind is the one photo whose tyre contacts are wrong: its exhaust tip and the
+diffuser corner are taken as the rear tyres and the real rear tyre as the front one (the front
+tyre is not found – the far sill lies lower in the picture than its bottom). The side line
+through them ran far below the sill and drew a brown wedge from the rear wheel to the front. Their
+floor distance is 0.24 × the proxy's wheelbase (real photos 0.69–2.5), so the ground model no
+longer trusts them (`MIN_WHEELBASE_RATIO` 0.5 in `grounding.py`): the floor line follows the
+outline + 15 cm there, and the result carries the check hint `ground_contact_uncertain`.
 
 ## Reproducing
 

@@ -46,8 +46,9 @@ floor only, never below ``shadow.minFloorLight``:
 Deep shadows are darkened per channel by ``shadow.tint`` – by default slightly less in blue
 (SHADOW_TINT), like the plates' rendered proxy shadow (no saturated orange holes); (1, 1, 1)
 keeps the floor's own hue (a warm wood floor). With ``shadow.footprintReach`` the under-car
-term above the floor line fades out outside the fitted footprint (no tall dark bar below a
-rising bumper tip, where the photo shows floor behind or beside the car).
+term fades out outside the fitted footprint, continuously across the floor line (no tall dark
+bar below a rising bumper tip, where the photo shows floor behind or beside the car, and no
+dark tail beside the car's ends).
 
 :func:`clean_ground_fringe` removes light ground/snow remnants of the cut-out at
 the tyre bottoms and along the lower outline (they are not vehicle pixels; a
@@ -107,6 +108,11 @@ BODY_CLEARANCE = 0.15
 #: between these clearances (m) below the outline.
 MIN_CLEARANCE = 0.03
 MAX_CLEARANCE = 1.0
+#: Two contacts matched to the front and the rear tyre of one side lie at least this fraction of
+#: the proxy's wheelbase (× the reference scale) apart on the floor; closer ones are not two tyres
+#: of one side (an exhaust tip or a diffuser corner taken as a tyre, the far-end tyre not found).
+#: Regression photos (standard and dealer plates): 0.69–2.5; exhaust + tyre of an RS4 from behind: 0.23–0.27.
+MIN_WHEELBASE_RATIO = 0.5
 #: A side line steeper than this (dy/dx) is a 3/4 view: its lower contact is the end facing
 #: the camera, whose face recedes – there the outline + BODY_CLEARANCE is the floor line.
 SIDE_VIEW_SLOPE = 0.12
@@ -577,11 +583,13 @@ def end_fade(rows: np.ndarray, top: np.ndarray, beyond: np.ndarray) -> np.ndarra
     return np.where(beyond[None, :] > 0.0, t * t * (3.0 - 2.0 * t), 1.0).astype(np.float32)
 
 
-def footprint_limit(sd: np.ndarray, applies: np.ndarray, reach: float) -> np.ndarray:
+def footprint_limit(sd: np.ndarray, reach: float) -> np.ndarray:
     """1 inside the car's footprint (signed floor distance `sd` ≤ 0, metres), fading out as
-    exp(−(sd / reach)²) outside it where `applies` (broadcastable bool) – elsewhere 1."""
+    exp(−(sd / reach)²) outside it – continuous wherever `sd` is (no gate by rows: a limit that
+    stops at the floor line leaves a hard horizontal step where a column outside the footprint
+    crosses it)."""
     outside = np.maximum(np.asarray(sd, np.float64), 0.0) / max(reach, 1e-6)
-    return np.where(applies, np.exp(-(outside**2)), 1.0).astype(np.float32)
+    return np.exp(-(outside**2)).astype(np.float32)
 
 
 def _steepness(values: np.ndarray, sigma: float) -> np.ndarray:
@@ -687,6 +695,23 @@ def contact_sides(plate: Plate, visible: Sequence[GroundContact]) -> list[tuple[
     return out
 
 
+def wheelbase_ratios(plate: Plate, frame: FloorFrame, visible: Sequence[GroundContact], scale: float) -> list[float]:
+    """Floor distance of every matched wheelbase pair (front and rear tyre of one side) / the
+    proxy's wheelbase × `scale` (the reference scale) – ≈ 1 for two real tyres of one side."""
+    pairs = _match(plate.visible_contacts(), [c for c in visible if not c.inferred])
+    out = []
+    for i, (pa, ca) in enumerate(pairs):
+        for pb, cb in pairs[i + 1 :]:
+            (axle_a, side_a), (axle_b, side_b) = pa.label.split("_"), pb.label.split("_")
+            if side_a != side_b or axle_a == axle_b:
+                continue
+            expected = math.dist(pa.floor, pb.floor) * scale
+            qa = [float(v) for v in frame.to_floor(ca.x, ca.y)]
+            qb = [float(v) for v in frame.to_floor(cb.x, cb.y)]
+            out.append(math.dist(qa, qb) / max(expected, 1e-6))
+    return out
+
+
 def smooth_outline(edge: np.ndarray, vehicle_width: float) -> np.ndarray:
     """The lower outline, median-filtered (jagged matte, rounded tips) and lightly blurred."""
     smooth = _fill_nearest(edge)
@@ -782,6 +807,13 @@ class GroundModel:
     visible: list[GroundContact] = field(default_factory=list)
     #: The vehicle alpha the model was built from (before clean_ground_fringe).
     alpha: np.ndarray | None = None
+    #: Matched wheelbase pairs / the proxy's wheelbase (:func:`wheelbase_ratios`); a ratio below
+    #: MIN_WHEELBASE_RATIO marks the contacts as implausible (no side line through them).
+    wheelbase_ratios: list[float] = field(default_factory=list)
+
+    @property
+    def contacts_plausible(self) -> bool:
+        return all(r >= MIN_WHEELBASE_RATIO for r in self.wheelbase_ratios)
 
     def line_filled(self) -> np.ndarray:
         return _fill_nearest(self.line)
@@ -800,6 +832,8 @@ class GroundModel:
         return {
             "pose": self.pose.as_dict(),
             "poseClamped": bool(self.pose.clamped),
+            "wheelbaseRatios": [round(r, 3) for r in self.wheelbase_ratios],
+            "contactsPlausible": self.contacts_plausible,
             "footprint": self.footprint.as_dict(),
             "floorLine": samples,
             "tyres": [t.as_dict() for t in self.tyres],
@@ -855,7 +889,12 @@ def build_ground_model(
     across_px, _ = frame.scales(cols, np.clip(_fill_nearest(probe), 0, height - 1))
 
     tyres = [_tyre(frame, pose, vehicle_alpha_out, c) for c in visible]
-    line = floor_line_model(edge, cols, across_px, tyres, contact_sides(meta, visible), vw,
+    # two "tyres" of one side far closer than a wheelbase are not both tyres (an exhaust tip or a
+    # diffuser corner taken as one): a side line through them would run far below the sill –
+    # the floor line then follows the outline (+ clearance) and the tyres only
+    ratios = wheelbase_ratios(meta, frame, visible, pose.reference_scale)
+    sides = contact_sides(meta, visible) if all(r >= MIN_WHEELBASE_RATIO for r in ratios) else []
+    line = floor_line_model(edge, cols, across_px, tyres, sides, vw,
                             LIP_CLEARANCE if not visible else BODY_CLEARANCE)  # fmt: skip
 
     hidden: list[tuple[float, float]] = []
@@ -870,7 +909,9 @@ def build_ground_model(
             tx, ty = frame.towards_camera(fx, fy)
             back = HIDDEN_AXLE_OFFSET * pose.reference_scale
             hidden.append((fx - back * tx, fy - back * ty))
-    return GroundModel(frame, pose, footprint, window, cols, edge, line, near, tyres, hidden, visible, vehicle_alpha_out)
+    return GroundModel(
+        frame, pose, footprint, window, cols, edge, line, near, tyres, hidden, visible, vehicle_alpha_out, ratios
+    )
 
 
 # --------------------------------------------------------------------------- matte clean-up
@@ -1118,9 +1159,10 @@ def apply_grounding(
     rows = gy[:, :1]
     sd = fp.sdf(fx, fy, FOOTPRINT_CORNER * pose.reference_scale)
     if cfg.footprint_reach > 0.0:
-        # above the floor line the floor seen under a rising bumper tip (or beside the ends) lies
-        # behind/beside the car once it is outside the footprint – the under-car term fades out
-        under = under * footprint_limit(sd, rows <= line_f[None, :], cfg.footprint_reach * pose.reference_scale)
+        # the floor seen under a rising bumper tip (or beside the ends) lies behind/beside the car
+        # once it is outside the footprint – the under-car term fades out there, above and in front
+        # of the floor line alike (one continuous factor: no step where the line is crossed)
+        under = under * footprint_limit(sd, cfg.footprint_reach * pose.reference_scale)
     under = cv2.GaussianBlur(under.astype(np.float32), (0, 0), sigmaX=max(0.8, UNDERBODY_SMOOTH * vw), sigmaY=0.1)
     keep = 1.0 - under
 
