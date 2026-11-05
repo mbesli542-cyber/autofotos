@@ -161,6 +161,19 @@ floor distance is 0.24 × the proxy's wheelbase (real photos 0.69–2.5), so the
 longer trusts them (`MIN_WHEELBASE_RATIO` 0.5 in `grounding.py`): the floor line follows the
 outline + 15 cm there, and the result carries the check hint `ground_contact_uncertain`.
 
+## Car light: studio light match
+
+The dealer on the results with the old car light: "the lighting is very bad – the car is too
+dark / different from the room". All three strengths therefore carry the same
+`vehicleAdjustments.studioLight` block (his decision, 2026-11-05; written by
+`dealer_backdrop.py`, `VARIANT_STUDIO_LIGHT`): ONE guarded global light mapping of the original
+vehicle pixels towards the key light of this plate around the car's spot – exposure ≤ +0.8 EV
+(half of the measured gap), contrast 0.3 only above the car's median, highlight shoulder (knee
+0.85, ≥ 65 % of the highlight detail), white balance = colour temperature only towards the warm
+studio (≤ ±6 %, reference outside the paint), never darker than the original, the paint guard
+(hue ≤ 2.5°, saturation ±10 %, near-neutral paint ≤ 1.5 ΔE, tone class ≤ 6 L\*) scaling it back.
+How it works and its limits: `processor/README.md`, "Studio light match".
+
 ## Reproducing
 
 From the repository root (`B` = Blender 4.2 LTS):

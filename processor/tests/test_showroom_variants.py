@@ -422,12 +422,17 @@ def test_the_dealer_variant_is_a_complete_valid_preset():
     preset = parse_preset(HAENDLER)
     assert HAENDLER["id"] == STANDARD["id"]  # copied over the standard file, it replaces it
     assert HAENDLER["background"]["plates"] == "autoexperten-haendler/plates.json"
-    for section in ("output", "vehicleAdjustments", "quality"):
+    for section in ("output", "quality"):
         assert HAENDLER[section] == STANDARD[section], section
     # "Schatten mittel" (the recommendation, see test_the_dealer_variant_comes_in_three_shadow_strengths)
     assert HAENDLER["shadow"] == {**STANDARD["shadow"], **dict(DEALER_STRENGTHS["mittel"][0])}
     assert HAENDLER["reflection"] == {**STANDARD["reflection"], **dict(DEALER_STRENGTHS["mittel"][1])}
     assert preset.shadow.tint == (1.0, 1.0, 1.0) and preset.shadow.footprint_reach == 0.3
+    # the conservative limits as shipped + the studio light match (the dealer's decision: the car
+    # gets a guarded global light correction towards his bright studio; tests/test_light.py)
+    adjustments = {k: v for k, v in HAENDLER["vehicleAdjustments"].items() if k != "studioLight"}
+    assert adjustments == STANDARD["vehicleAdjustments"]
+    assert preset.adjustments.studio_light.enabled
     branding = preset.branding
     assert branding.enabled and branding.logo.file == "official/AutoExperten_Logo.png"
     assert branding.city.text == "Schwetzingen" and branding.city.rule_length > 0 and branding.city.rule_thickness > 0
@@ -473,8 +478,10 @@ def test_the_dealer_variant_comes_in_three_shadow_strengths():
         shadow, reflection = DEALER_STRENGTHS[key]
         assert item["shadow"] == {**STANDARD["shadow"], **shadow}, key
         assert item["reflection"] == {**STANDARD["reflection"], **reflection}, key
+        # everything else identical – also the studio light match (vehicleAdjustments.studioLight)
         others = {k: v for k, v in item.items() if k not in ("shadow", "reflection", "name")}
         assert others == {k: v for k, v in HAENDLER.items() if k not in ("shadow", "reflection", "name")}, key
+        assert presets[key].adjustments.studio_light.enabled, key
     assert "leicht" in data["leicht"]["name"] and "kräftig" in data["kraeftig"]["name"]
     s = {k: p.shadow for k, p in presets.items()}
     for name in ("contact_opacity", "crease_opacity", "underbody_opacity", "edge_opacity", "underbody_falloff",
@@ -598,6 +605,10 @@ def test_the_pipeline_composites_a_car_onto_the_dealer_plate(fake_segmenter, thr
     )  # fmt: skip
     meta = result.metadata
     assert meta["plateUsed"] == "front_left_45"
+    # the car got the studio light match, measured on this plate and checked by the paint guard
+    adjustments = meta["adjustments"]
+    assert adjustments["mode"] == "studioLight" and adjustments["guard"]["passed"]
+    assert 0.3 < adjustments["studio"]["key"] < 0.8 and adjustments["applied"]["exposureEv"] >= 0.0
     out = _decode(result.jpeg)
     assert out.shape == (1800, 2400, 3)
     assert meta["reflection"]["platePass"] is True

@@ -387,6 +387,29 @@ STRENGTHS = {
 RECOMMENDED = "mittel"
 STRENGTH_NAMES = {"leicht": "Schatten leicht", "mittel": "Schatten mittel", "kraeftig": "Schatten kräftig"}
 
+#: The dealer's decision (2026-11-05): the car gets the guarded global studio light match
+#: (app/pipeline/light.py, vehicleAdjustments.studioLight) – every field written out,
+#: the same in all three shadow strengths.
+VARIANT_STUDIO_LIGHT = {
+    "enabled": True,
+    "exposureStrength": 0.5,
+    "keyTarget": 1.0,
+    "maxExposureEv": 0.8,
+    "contrast": 0.3,
+    "shadows": 0.0,
+    "highlightKnee": 0.85,
+    "highlightSlope": 0.65,
+    "whiteLimit": 0.985,
+    "whiteBalanceStrength": 0.6,
+    "maxWhiteBalance": 0.06,
+    "maxHueShiftDeg": 2.5,
+    "maxSaturationChange": 0.1,
+    "maxNeutralColourShift": 1.5,
+    "maxBlackLift": 4.0,
+    "maxPaintLightnessShift": 6.0,
+    "maxNewClipped": 0.002,
+}
+
 
 def strength_path(target: Path, strength: str) -> Path:
     """The variant file of a strength: the recommended one is `target` itself."""
@@ -445,6 +468,7 @@ def variant_data(standard: Path, plates: str, layout: dict, room: dict) -> dict:
     )
     for name in ("website", "phone"):  # no dealer contact data in listing photos (mobile.de)
         branding[name]["text"] = ""
+    data["vehicleAdjustments"]["studioLight"] = dict(VARIANT_STUDIO_LIGHT)
     return data
 
 
