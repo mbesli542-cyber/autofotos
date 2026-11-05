@@ -19,12 +19,12 @@ const ICONS: Record<ShootingTipIcon, LucideIcon> = {
 /** The photo tips (src/lib/shots/shooting-guide.ts) as a compact list. */
 export function ShootingTipsList({ className }: { className?: string }) {
   return (
-    <ul className={cn("flex flex-col gap-3", className)}>
+    <ul className={cn("flex flex-col gap-2.5", className)}>
       {SHOOTING_TIPS.map((tip) => {
         const Icon = ICONS[tip.icon];
         return (
           <li key={tip.id} className="flex gap-3">
-            <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-ae-blue-soft text-ae-blue">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-ae-blue-soft text-ae-blue">
               <Icon className={cn("size-[18px]", tip.icon === "landscape" && "rotate-90")} aria-hidden />
             </span>
             <span className="min-w-0 text-sm leading-snug">
@@ -73,7 +73,7 @@ export function ShootingTipsSheet({
             <h2 id={titleId} className="font-semibold">
               Tipps für perfekte Fotos
             </h2>
-            <p className="text-xs text-ae-muted">So wirken die Fotos im AutoExperten Showroom am besten.</p>
+            <p className="text-xs text-ae-muted">So wirken die Fotos im Showroom am besten.</p>
           </div>
           <button
             type="button"

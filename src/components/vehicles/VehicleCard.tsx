@@ -4,6 +4,7 @@ import { RetakeBadge, StatusBadge } from "@/components/ui/StatusBadge";
 import type { VehicleSummary } from "@/lib/domain/types";
 import { cn } from "@/lib/cn";
 import { formatDate, vehicleDisplayName } from "@/lib/format";
+import { showsStatusBadge } from "@/lib/processing/retake-summary";
 
 /**
  * Tappable vehicle row: thumbnail, name, photo progress, date and status –
@@ -52,7 +53,7 @@ export function VehicleCard({
           </span>
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
-          <StatusBadge status={vehicle.status} />
+          {showsStatusBadge(vehicle.status, retakeCount) && <StatusBadge status={vehicle.status} />}
           {retakeCount > 0 && <RetakeBadge count={retakeCount} />}
           <time className="text-xs text-ae-subtle" dateTime={vehicle.createdAt}>
             {formatDate(vehicle.createdAt)}

@@ -7,6 +7,7 @@ import {
   countRetakeShots,
   countVehicleRetakes,
   retakeCountLabel,
+  showsStatusBadge,
 } from "./retake-summary";
 import type { ShotCheckState } from "./shot-check";
 
@@ -109,5 +110,13 @@ describe("countVehicleRetakes (vehicle list badge)", () => {
 
   it("is 0 without photos", () => {
     expect(countVehicleRetakes(DEFAULT_SHOT_TEMPLATE, "veh-1", [], snapshot([rejection("front")]))).toBe(0);
+  });
+});
+
+describe("showsStatusBadge", () => {
+  it("never shows 'Vollständig' next to a shot to retake", () => {
+    expect(showsStatusBadge("complete", 1)).toBe(false);
+    expect(showsStatusBadge("complete", 0)).toBe(true);
+    for (const status of ["new", "capturing", "processed"] as const) expect(showsStatusBadge(status, 2)).toBe(true);
   });
 });

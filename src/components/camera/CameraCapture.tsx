@@ -395,6 +395,8 @@ export function CameraCapture({
   const streamReady = camera.state.status === "ready";
   const ratio = streamReady && camera.state.status === "ready" ? camera.state.width / camera.state.height : 4 / 3;
   const isPortraitStream = streamReady && ratio < 1;
+  /** Exterior shot, portrait picture: turn the phone (RotatePhonePrompt). */
+  const askToRotate = shot.category === "exterior" && isPortraitStream && !preview;
   const alreadyCaptured = isSlotCaptured(currentSlot);
   const currentCheck = checkStates.get(shot.key) ?? { kind: "none" as const };
   const shotHint =
@@ -525,7 +527,7 @@ export function CameraCapture({
                 aria-label="Live-Kamerabild"
               />
               <CameraOverlay shot={shot} />
-              {shot.category === "exterior" && isPortraitStream && !preview && <RotatePhonePrompt />}
+              {askToRotate && <RotatePhonePrompt />}
 
               {!preview && !banner && (shotHint || alreadyCaptured) && (
                 <div className="pointer-events-none absolute inset-x-3 top-3 flex flex-col items-center gap-2">
@@ -541,7 +543,12 @@ export function CameraCapture({
                 </div>
               )}
 
-              <InstructionPanel instruction={shot.instruction} tip={shot.tip} onShowTips={() => setTips("manual")} />
+              {/* While the phone should be turned, that is the tip – the instruction box stays short. */}
+              <InstructionPanel
+                instruction={shot.instruction}
+                tip={askToRotate ? null : shot.tip}
+                onShowTips={() => setTips("manual")}
+              />
 
               {camera.state.status === "starting" && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-white/80" role="status">

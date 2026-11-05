@@ -5,7 +5,7 @@
  * show) is "retake": the automatic check or a processing rejected its
  * current photo, or its saved result says the photo itself is the problem.
  */
-import type { VehiclePhoto, VehiclePhotoWithUrls } from "@/lib/domain/types";
+import type { VehiclePhoto, VehiclePhotoWithUrls, VehicleStatus } from "@/lib/domain/types";
 import { buildPhotoSlots } from "@/lib/photos/photo-slots";
 import type { ShotTemplate } from "@/lib/shots/shot-template";
 import type { PhotoChecksSnapshot } from "./photo-checks";
@@ -28,6 +28,14 @@ export function completeWithRetakesQuestion(count: number): string {
   return count === 1
     ? "1 Foto muss neu aufgenommen werden. Trotzdem abschließen?"
     : `${count} Fotos müssen neu aufgenommen werden. Trotzdem abschließen?`;
+}
+
+/**
+ * Whether the vehicle's status chip is shown next to "Neu aufnehmen": never
+ * "Vollständig" while a shot is to be retaken – the badge takes its place.
+ */
+export function showsStatusBadge(status: VehicleStatus, retakeCount: number): boolean {
+  return !(retakeCount > 0 && status === "complete");
 }
 
 /** The check states never read a photo's URLs – lists only know the stored photos. */

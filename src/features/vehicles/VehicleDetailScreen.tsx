@@ -26,7 +26,7 @@ import { toUserMessage } from "@/lib/errors";
 import { vehicleDisplayName } from "@/lib/format";
 import { buildPhotoSlots, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { processingRuns } from "@/lib/processing/processing-runs";
-import { retakeCountLabel } from "@/lib/processing/retake-summary";
+import { retakeCountLabel, showsStatusBadge } from "@/lib/processing/retake-summary";
 import { getShotProgress } from "@/lib/shots/shot-progress";
 import { canProcessVehicle } from "@/lib/vehicles/status";
 import { deleteVehicleFromDevice } from "@/lib/workflow/device-data";
@@ -165,7 +165,7 @@ export function VehicleDetailScreen({
               </div>
             )}
             <div className="absolute top-3 left-3 flex flex-wrap gap-1.5">
-              <StatusBadge status={vehicle.status} onImage />
+              {showsStatusBadge(vehicle.status, retakes.length) && <StatusBadge status={vehicle.status} onImage />}
               {retakes.length > 0 && <RetakeBadge count={retakes.length} onImage />}
             </div>
           </div>

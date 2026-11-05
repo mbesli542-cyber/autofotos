@@ -76,7 +76,7 @@ export function RetakeBadge({
           · {count}
         </span>
       )}
-      <span className="sr-only">{count === 1 ? "(1 Foto)" : `(${count} Fotos)`}</span>
+      <span className="sr-only">{count === 1 ? " (1 Foto)" : ` (${count} Fotos)`}</span>
     </span>
   );
 }
