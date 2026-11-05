@@ -25,6 +25,7 @@ import { cn } from "@/lib/cn";
 import { toUserMessage } from "@/lib/errors";
 import { vehicleDisplayName } from "@/lib/format";
 import { buildPhotoSlots, type PhotoSlot } from "@/lib/photos/photo-slots";
+import { photoChecks } from "@/lib/processing/photo-checks";
 import { processingRuns } from "@/lib/processing/processing-runs";
 import { retakeCountLabel, showsStatusBadge } from "@/lib/processing/retake-summary";
 import { getShotProgress } from "@/lib/shots/shot-progress";
@@ -89,7 +90,7 @@ export function VehicleDetailScreen({
     setDeleting(true);
     try {
       const { backend, uploads } = getAppServices();
-      await deleteVehicleFromDevice({ data: backend.data, uploads, runs: processingRuns }, vehicleId);
+      await deleteVehicleFromDevice({ data: backend.data, uploads, runs: processingRuns, checks: photoChecks }, vehicleId);
       setConfirmDelete(false);
       toast.success("Fahrzeug gelöscht.");
       router.replace("/fahrzeuge");

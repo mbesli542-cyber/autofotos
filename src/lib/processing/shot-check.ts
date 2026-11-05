@@ -18,7 +18,9 @@ import type { ProcessingWarning } from "@/lib/domain/types";
 import { isOlderCapture, isOlderThanSavedPhoto } from "@/lib/photos/capture-order";
 import type { PhotoSlot } from "@/lib/photos/photo-slots";
 import type { PhotoCheck, PhotoChecksSnapshot, SavedCapture } from "./photo-checks";
+import { PROCESSOR_UNREACHABLE_SENTENCE } from "./processor-connection";
 import { getWarningKind, warningsToCheck } from "./processing-warnings";
+import { PROCESSING_NOT_CONNECTED_MESSAGE } from "./types";
 
 export type ShotCheckState =
   | { kind: "none" }
@@ -158,7 +160,9 @@ export function checkResultMessage(shot: { order: number; title: string }, state
 export function autoCheckOffMessage(availability: PhotoChecksSnapshot["availability"]): string | null {
   switch (availability) {
     case "no_processor":
-      return "Die Showroom-Bearbeitung ist gerade nicht verbunden. Die Kamera funktioniert wie gewohnt – die Fotos werden geprüft, sobald sie wieder verbunden ist, spätestens unter „Fotos bearbeiten“.";
+      return `${PROCESSING_NOT_CONNECTED_MESSAGE} Die Kamera funktioniert wie gewohnt – die Fotos werden nicht automatisch geprüft.`;
+    case "unreachable":
+      return `${PROCESSOR_UNREACHABLE_SENTENCE} Die Kamera funktioniert wie gewohnt – die Fotos werden geprüft, sobald er wieder erreichbar ist, spätestens unter „Fotos bearbeiten“.`;
     case "offline":
       return "Keine Internetverbindung. Die Fotos werden auf dem Gerät gesichert und geprüft, sobald die Verbindung wieder da ist.";
     case "access_code":

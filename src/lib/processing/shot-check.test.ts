@@ -189,7 +189,10 @@ describe("checkResultMessage", () => {
     expect(autoCheckOffMessage("on")).toBeNull();
     expect(autoCheckOffMessage("unknown")).toBeNull();
     expect(autoCheckOffMessage("access_code")).toContain("Zugangscode");
-    expect(autoCheckOffMessage("no_processor")).toContain("nicht verbunden");
+    expect(autoCheckOffMessage("no_processor")).toContain("noch nicht verbunden");
+    // Configured but not answering: never "nicht verbunden".
+    expect(autoCheckOffMessage("unreachable")).toMatch(/^Der Showroom-Rechner ist gerade nicht erreichbar\./);
+    expect(autoCheckOffMessage("unreachable")).not.toContain("verbunden");
     expect(autoCheckOffMessage("offline")).toContain("Keine Internetverbindung");
   });
 });

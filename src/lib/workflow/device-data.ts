@@ -25,17 +25,21 @@ export interface VehicleDeletionDeps {
   uploads: { removeVehicle(vehicleId: string): Promise<void> };
   /** A processing run of the vehicle ("Fotos bearbeiten") – aborted. */
   runs: { reset(vehicleId: string): void };
+  /** The automatic checks of its photos – aborted, their stored rejections forgotten. */
+  checks: { stopVehicle(vehicleId: string): void };
 }
 
 /**
- * "Fahrzeug löschen": stops its processing run, drops its waiting captures
- * (and waits for an upload of it in progress), then deletes the vehicle with
- * its photos and results. Rejected where the backend cannot delete vehicles.
+ * "Fahrzeug löschen": stops its processing run and its automatic checks,
+ * drops its waiting captures (and waits for an upload of it in progress),
+ * then deletes the vehicle with its photos and results. Rejected where the
+ * backend cannot delete vehicles.
  */
 export async function deleteVehicleFromDevice(deps: VehicleDeletionDeps, vehicleId: string): Promise<void> {
-  const { data, uploads, runs } = deps;
+  const { data, uploads, runs, checks } = deps;
   if (!canDeleteVehicles(data)) throw new Error("This backend does not delete vehicles.");
   runs.reset(vehicleId);
+  checks.stopVehicle(vehicleId);
   await uploads.removeVehicle(vehicleId);
   await data.deleteVehicle(vehicleId);
 }

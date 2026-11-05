@@ -13,21 +13,25 @@ describe("isConfirmationTyped", () => {
 });
 
 describe("deleteVehicleFromDevice", () => {
-  it("stops the run, drops waiting captures, then deletes the vehicle", async () => {
+  it("stops the run and the automatic checks, drops waiting captures, then deletes the vehicle", async () => {
     const order: string[] = [];
     const data = { deleteVehicle: vi.fn(async () => void order.push("data")) } as unknown as DataProvider;
     const uploads = { removeVehicle: vi.fn(async () => void order.push("uploads")) };
     const runs = { reset: vi.fn(() => void order.push("runs")) };
-    await deleteVehicleFromDevice({ data, uploads, runs }, "veh-1");
-    expect(order).toEqual(["runs", "uploads", "data"]);
+    const checks = { stopVehicle: vi.fn(() => void order.push("checks")) };
+    await deleteVehicleFromDevice({ data, uploads, runs, checks }, "veh-1");
+    expect(order).toEqual(["runs", "checks", "uploads", "data"]);
     expect(uploads.removeVehicle).toHaveBeenCalledWith("veh-1");
+    expect(checks.stopVehicle).toHaveBeenCalledWith("veh-1");
   });
 
   it("is refused where the backend keeps vehicles (Supabase: no delete policy)", async () => {
     const data = {} as DataProvider;
     expect(canDeleteVehicles(data)).toBe(false);
     const uploads = { removeVehicle: vi.fn(async () => undefined) };
-    await expect(deleteVehicleFromDevice({ data, uploads, runs: { reset: vi.fn() } }, "veh-1")).rejects.toThrow();
+    const checks = { stopVehicle: vi.fn() };
+    await expect(deleteVehicleFromDevice({ data, uploads, runs: { reset: vi.fn() }, checks }, "veh-1")).rejects.toThrow();
+    expect(checks.stopVehicle).not.toHaveBeenCalled();
     expect(uploads.removeVehicle).not.toHaveBeenCalled();
   });
 });

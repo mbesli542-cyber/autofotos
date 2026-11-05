@@ -69,7 +69,7 @@ export function MoreScreen() {
       // Captures still waiting for their upload, checks and runs belong to the deleted data.
       await uploads.clear();
       processingRuns.clear();
-      photoChecks.stopAll();
+      photoChecks.clear();
       await data.clearAllData();
       toast.success("Alle Daten auf diesem Gerät wurden gelöscht.");
       setConfirmReset(false);

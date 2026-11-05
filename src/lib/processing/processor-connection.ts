@@ -25,8 +25,9 @@ export type ProcessorConnectionState =
 
 export const PROCESSING_OFFLINE_MESSAGE =
   "Keine Internetverbindung – die Bearbeitung ist wieder möglich, sobald Sie online sind.";
-export const PROCESSOR_UNREACHABLE_MESSAGE =
-  "Der Showroom-Rechner ist gerade nicht erreichbar. Bitte später erneut versuchen.";
+/** First sentence of the "unreachable" texts (also the camera's "Prüfung aus" hint). */
+export const PROCESSOR_UNREACHABLE_SENTENCE = "Der Showroom-Rechner ist gerade nicht erreichbar.";
+export const PROCESSOR_UNREACHABLE_MESSAGE = `${PROCESSOR_UNREACHABLE_SENTENCE} Bitte später erneut versuchen.`;
 
 export interface ProcessorConnectionInput {
   phase: "loading" | "ready" | "error";

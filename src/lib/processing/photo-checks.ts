@@ -121,11 +121,13 @@ export interface SavedCapture {
  * Whether captures are checked automatically:
  * - unknown:      not asked yet
  * - on
- * - no_processor: no processor connected (or the showroom is not ready)
+ * - no_processor: this deployment has no processor at all
+ * - unreachable:  a processor is configured but does not answer or cannot be
+ *                 used right now (PC asleep, restarting, showroom not ready, …)
  * - access_code:  demo mode – the access code is not stored on this device
  * - offline:      no connection
  */
-export type AutoCheckAvailability = "unknown" | "on" | "no_processor" | "access_code" | "offline";
+export type AutoCheckAvailability = "unknown" | "on" | "no_processor" | "unreachable" | "access_code" | "offline";
 
 export interface PhotoChecksSnapshot {
   availability: AutoCheckAvailability;
@@ -200,6 +202,15 @@ export function shotSlotKey(check: Pick<PhotoCheck, "vehicleId" | "shotKey">): s
  */
 function isUnavailableError(error: unknown): boolean {
   return !(error instanceof ProcessingJobFailedError) && !(error instanceof AccessCodeRequiredError);
+}
+
+/**
+ * Why checks cannot run with `status` (pure): only a deployment without any
+ * processor is "not connected" – no answer at all, a processor that does not
+ * answer or cannot be used right now is "unreachable" (try again later).
+ */
+export function unavailableReason(status: ProcessingStatus | null): "no_processor" | "unreachable" {
+  return status?.processor === "mock" ? "no_processor" : "unreachable";
 }
 
 /**
@@ -308,7 +319,7 @@ export class PhotoChecks {
     }
     const status = await this.processingStatus(force);
     let availability: AutoCheckAvailability = "on";
-    if (!canStartProcessing(status)) availability = "no_processor";
+    if (!canStartProcessing(status)) availability = unavailableReason(status);
     else if (status?.accessCodeRequired && !readStoredAccessCode()) availability = "access_code";
     this.setAvailability(availability);
     if (availability === "on") this.pump();
@@ -347,6 +358,20 @@ export class PhotoChecks {
       [...this.snapshot.checks].filter(([, check]) => check.status !== "waiting" && check.status !== "checking"),
     );
     this.set({ ...this.snapshot, checks });
+  }
+
+  /**
+   * A vehicle was deleted ("Fahrzeug löschen"): its checks are aborted (a
+   * processing nobody else waits for stops) and everything about it is
+   * forgotten – also its rejections stored on this device.
+   */
+  stopVehicle(vehicleId: string): void {
+    this.forgetWhere((check) => check.vehicleId === vehicleId, `${vehicleId}/`);
+  }
+
+  /** Every vehicle was deleted ("Alle Daten auf diesem Gerät löschen"): as stopVehicle, for all. */
+  clear(): void {
+    this.forgetWhere(() => true, "");
   }
 
   /* ---------- shared with the processing runs ---------- */
@@ -713,6 +738,26 @@ export class PhotoChecks {
     const checks = new Map(this.snapshot.checks);
     checks.delete(photoId);
     this.set({ ...this.snapshot, checks });
+    this.persist();
+  }
+
+  /**
+   * Aborts and forgets the checks matching `matches` and the saved captures
+   * whose shot key (`vehicleId/shotKey`) starts with `capturePrefix`; the
+   * stored rejections follow.
+   */
+  private forgetWhere(matches: (check: PhotoCheck) => boolean, capturePrefix: string): void {
+    const forgotten = [...this.snapshot.checks.values()].filter(matches).map((check) => check.photoId);
+    for (const photoId of forgotten) {
+      this.checkControllers.get(photoId)?.abort();
+      this.checkControllers.delete(photoId);
+      const index = this.queue.indexOf(photoId);
+      if (index >= 0) this.queue.splice(index, 1);
+    }
+    const checks = new Map(this.snapshot.checks);
+    for (const photoId of forgotten) checks.delete(photoId);
+    const captures = new Map([...this.snapshot.captures].filter(([key]) => !key.startsWith(capturePrefix)));
+    this.set({ ...this.snapshot, checks, captures });
     this.persist();
   }
 
