@@ -34,6 +34,19 @@
  *   red state survives a reload. They are only shown: a stored rejection
  *   never stops "Fotos bearbeiten" from sending the photo again (the quality
  *   gate may have changed meanwhile); results are saved with the photo anyway.
+ * - Jobs survive a reload: every submitted job is kept on this device
+ *   (job-journal.ts) until its outcome is known. After a reload or a
+ *   discarded tab its photo is checked again – by polling that job, not by
+ *   sending the photo a second time; a job the processor no longer knows
+ *   (restarted) is submitted once more (processPhoto). A job whose answer
+ *   could not be fetched (connection, processor asleep) stays known and is
+ *   polled again when the photo is checked again.
+ * - While the checks are off because the processor is not reachable (or the
+ *   device is offline), its status is asked again every
+ *   AVAILABILITY_POLL_MS – only while a page that needs the checks is shown
+ *   (`watch`) and the tab is visible – so photos taken while the dealer's PC
+ *   slept are checked once it is back.
+ * - Placeholder drawings of the demo sample vehicles are never sent.
  */
 import { getAppServices } from "@/lib/app-services";
 import type { AuthState } from "@/lib/auth/auth-store";
@@ -54,9 +67,16 @@ import {
   type PhotoProcessingResult,
   type PhotoStep,
 } from "./photo-processing";
-import { AccessCodeRequiredError, ProcessingNotConnectedError, fetchProcessingStatus } from "./processing-client";
+import { clearJobJournal, findJob, forgetJob, readJobJournal, recordJob } from "./job-journal";
+import {
+  AccessCodeRequiredError,
+  ProcessingNotConnectedError,
+  fetchProcessingStatus,
+  jobMayStillRun,
+} from "./processing-client";
 import { hasRetakeWarning, warningsToCheck, getWarningKind } from "./processing-warnings";
 import { needsRetake, retakeFallbackMessage } from "./quality-gate";
+import { isPlaceholderPhoto } from "./run-blockers";
 import { ACCESS_CODE_INVALID_CODE } from "./shot-check";
 import { getShotTreatment } from "./shot-treatment";
 import { canStartProcessing, type ProcessingStatus } from "./types";
@@ -72,6 +92,9 @@ export const MAX_PARALLEL_JOBS = 3;
 
 /** The processor status is asked again after this long. */
 const STATUS_MAX_AGE_MS = 30_000;
+
+/** While the checks are off (processor not reachable, offline), its status is asked again this often. */
+export const AVAILABILITY_POLL_MS = 60_000;
 
 const STORAGE_KEY = "ae-photo.photo-checks.v1";
 /** Rejections kept on the device (oldest dropped first). */
@@ -195,6 +218,21 @@ export function shotSlotKey(check: Pick<PhotoCheck, "vehicleId" | "shotKey">): s
 }
 
 /**
+ * Whether the processor status is asked again every AVAILABILITY_POLL_MS
+ * (pure): while the checks are off because it is not reachable or the
+ * device is offline – only while a page that needs the checks is shown
+ * (`watched`) and the tab is visible. A missing access code needs the
+ * employee, not a poll.
+ */
+export function shouldPollAvailability(availability: AutoCheckAvailability, watched: boolean, visible: boolean): boolean {
+  return watched && visible && (availability === "no_processor" || availability === "offline");
+}
+
+function documentVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState !== "hidden";
+}
+
+/**
  * The processor is gone or not reachable (no connection, 5xx, not connected):
  * nothing about the photo itself – it is checked again later.
  */
@@ -253,6 +291,9 @@ export class PhotoChecks {
   private status: ProcessingStatus | null = null;
   private statusAt = 0;
   private statusRequest: Promise<ProcessingStatus | null> | null = null;
+  /** Pages shown right now that need the checks (`watch`). */
+  private watchers = 0;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
 
   /* ---------- useSyncExternalStore API ---------- */
 
@@ -275,17 +316,26 @@ export class PhotoChecks {
 
   /**
    * Starts listening for saved captures (once per tab; browser only):
-   * restores the rejections stored on this device and follows the
-   * connection, the access code and the signed-in user.
+   * restores the rejections stored on this device, resumes the jobs
+   * submitted before a reload and follows the connection, the access code,
+   * the tab's visibility and the signed-in user.
    */
   start(): void {
     if (this.started || typeof window === "undefined") return;
     this.started = true;
     const { uploads, authStore } = getAppServices();
     this.restore();
+    this.resumeJobs();
     uploads.onUploaded((item) => void this.captureSaved(item));
     window.addEventListener("online", () => void this.refreshAvailability(true));
     window.addEventListener("offline", () => this.setAvailability("offline"));
+    document.addEventListener("visibilitychange", () => {
+      // Back on screen while the checks are off: ask right away, then every minute.
+      if (documentVisible() && shouldPollAvailability(this.snapshot.availability, this.watchers > 0, true)) {
+        void this.refreshAvailability(true);
+      }
+      this.updatePolling();
+    });
     subscribeAccessCode(() => void this.refreshAvailability());
     let user = sessionUser(authStore.getSnapshot());
     authStore.subscribe(() => {
@@ -316,9 +366,11 @@ export class PhotoChecks {
   }
 
   /**
-   * Checks the vehicle's current template photos that have no result and no
-   * check yet, or whose check could not run (e.g. right after the access
-   * code was entered in the camera, or when the checks are on again).
+   * Checks the vehicle's current template photos that have no result, no
+   * check and no stored rejection yet, or whose check could not run – when
+   * the camera, "Fotos überprüfen" or the vehicle page is shown with the
+   * checks on (also right after they came on), and after the access code
+   * was entered in the camera. Placeholder drawings (demo samples) are skipped.
    */
   async checkVehicle(vehicleId: string): Promise<void> {
     if ((await this.refreshAvailability()) !== "on") return;
@@ -331,6 +383,7 @@ export class PhotoChecks {
     const { template } = getAppServices();
     for (const photo of photos) {
       if (getShotTreatment(template, photo.shotKey) === null || photo.processedStoragePath) continue;
+      if (isPlaceholderPhoto(photo)) continue;
       const check = this.snapshot.checks.get(photo.id);
       if (!check) this.enqueue({ ...photo, preset: CHECK_PRESET });
       else if (check.status === "error") this.requeue(photo.id);
@@ -338,8 +391,28 @@ export class PhotoChecks {
     this.pump();
   }
 
+  /**
+   * A page that needs the checks is shown (camera, "Fotos überprüfen",
+   * vehicle page): while it is, the processor status is asked again every
+   * AVAILABILITY_POLL_MS as long as the checks are off because it is not
+   * reachable. Returns the function to call when the page is hidden.
+   */
+  watch(): () => void {
+    this.watchers += 1;
+    this.updatePolling();
+    let watching = true;
+    return () => {
+      if (!watching) return;
+      watching = false;
+      this.watchers -= 1;
+      this.updatePolling();
+    };
+  }
+
   /** Ends every check (signed out / another user). Stored rejections stay with their photo ids. */
   stopAll(): void {
+    // The jobs of the previous user are not resumed after a reload.
+    clearJobJournal();
     this.queue.length = 0;
     for (const controller of this.checkControllers.values()) controller.abort();
     this.checkControllers.clear();
@@ -374,6 +447,43 @@ export class PhotoChecks {
   }
 
   /* ---------- internals ---------- */
+
+  /**
+   * The jobs submitted before a reload (or a discarded tab) whose outcome is
+   * not known yet: their photos are checked again – by polling the job
+   * (createJob), not by sending the photo again.
+   */
+  private resumeJobs(): void {
+    const { template } = getAppServices();
+    const entries = readJobJournal();
+    for (const entry of entries) {
+      if (getShotTreatment(template, entry.shotKey) === null) {
+        forgetJob(entry.photoId, entry.preset);
+        continue;
+      }
+      this.enqueue({
+        id: entry.photoId,
+        vehicleId: entry.vehicleId,
+        shotKey: entry.shotKey,
+        shotOrder: entry.shotOrder,
+        title: entry.title,
+        takenAt: entry.takenAt,
+        preset: entry.preset,
+      });
+    }
+    if (entries.length > 0) void this.refreshAvailability(); // polled as soon as the checks are on
+  }
+
+  /** Starts or stops asking the processor status every AVAILABILITY_POLL_MS (shouldPollAvailability). */
+  private updatePolling(): void {
+    const poll = shouldPollAvailability(this.snapshot.availability, this.watchers > 0, documentVisible());
+    if (poll && this.pollTimer === null) {
+      this.pollTimer = setInterval(() => void this.refreshAvailability(true), AVAILABILITY_POLL_MS);
+    } else if (!poll && this.pollTimer !== null) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+  }
 
   private async processingStatus(force: boolean): Promise<ProcessingStatus | null> {
     if (!force && this.status && Date.now() - this.statusAt < STATUS_MAX_AGE_MS) return this.status;
@@ -539,13 +649,14 @@ export class PhotoChecks {
     const steps = new Set<(step: PhotoStep, progress?: number) => void>();
     const { backend } = getAppServices();
     const base = this.snapshot.checks.get(photo.id);
+    const takenAt = base?.takenAt ?? photo.takenAt;
     this.putCheck({
       photoId: photo.id,
       vehicleId: photo.vehicleId,
       shotKey: photo.shotKey,
       shotOrder: photo.shotOrder,
       title: photo.title,
-      takenAt: base?.takenAt ?? photo.takenAt,
+      takenAt,
       preset,
       status: "checking",
       message: null,
@@ -561,6 +672,20 @@ export class PhotoChecks {
         onStep: (step, progress) => {
           for (const listener of steps) listener(step, progress);
         },
+        // Submitted before a reload: its answer is fetched instead of sending the photo again.
+        resumeJobId: findJob(photo.id, preset)?.jobId ?? null,
+        onSubmitted: (jobId) =>
+          recordJob({
+            vehicleId: photo.vehicleId,
+            photoId: photo.id,
+            jobId,
+            preset,
+            startedAt: new Date().toISOString(),
+            shotKey: photo.shotKey,
+            shotOrder: photo.shotOrder,
+            title: photo.title,
+            takenAt,
+          }),
       }).finally(() => this.releaseJobSlot()),
     );
     const job: SharedJob = { promise, controller, users: 0, steps };
@@ -568,6 +693,7 @@ export class PhotoChecks {
     promise.then(
       ({ warnings }) => {
         this.jobs.delete(key);
+        forgetJob(photo.id, preset);
         const retake = hasRetakeWarning(warnings);
         this.settle(photo.id, {
           status: retake ? "retake" : "ok",
@@ -578,6 +704,8 @@ export class PhotoChecks {
       },
       (error: unknown) => {
         this.jobs.delete(key);
+        // Its answer may still come (connection or processor gone for a while): polled again later.
+        if (controller.signal.aborted || isAbort(error) || !jobMayStillRun(error)) forgetJob(photo.id, preset);
         if (controller.signal.aborted || isAbort(error)) {
           // Nobody waits for it any more (retake, reset, signed out).
           this.drop(photo.id);
@@ -703,10 +831,11 @@ export class PhotoChecks {
     for (const listener of this.settledListeners) listener(settled);
   }
 
-  /** Forgets the check of a photo (aborts it while it waits or runs). */
+  /** Forgets the check of a photo (aborts it while it waits or runs) and its job. */
   private drop(photoId: string): void {
     this.checkControllers.get(photoId)?.abort();
     this.checkControllers.delete(photoId);
+    forgetJob(photoId);
     const index = this.queue.indexOf(photoId);
     if (index >= 0) this.queue.splice(index, 1);
     if (!this.snapshot.checks.has(photoId)) return;
@@ -726,6 +855,7 @@ export class PhotoChecks {
     const previous = this.snapshot.availability;
     if (previous === availability) return;
     this.set({ ...this.snapshot, availability });
+    this.updatePolling();
     // On again (connection back, code entered, processor answering): checks that could not run are repeated.
     if (availability === "on" && previous !== "unknown") {
       for (const check of this.snapshot.checks.values()) {

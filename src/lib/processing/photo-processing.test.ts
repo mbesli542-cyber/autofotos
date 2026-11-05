@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { VehiclePhotoWithUrls } from "@/lib/domain/types";
 import { ProcessingJobFailedError, processPhoto, type PhotoProcessingDeps } from "./photo-processing";
+import { ProcessingJobNotFoundError } from "./processing-client";
 import type { ProcessingJob, ProcessingWarning } from "./types";
 
 const JOB_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -183,5 +184,60 @@ describe("processPhoto – Supabase contract adapter", () => {
     const ctx = setup("supabase", job({ result: { kind: "file", width: 1, height: 1, bytes: 1 } }));
     await expect(processPhoto(PHOTO, "autoexperten_standard", ctx.deps)).rejects.toThrow();
     expect(ctx.data.recordProcessedPhoto).not.toHaveBeenCalled();
+  });
+});
+
+describe("processPhoto – resuming a submitted job", () => {
+  const OTHER_JOB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const notFound = () =>
+    new ProcessingJobNotFoundError(404, "not_found", { userMessage: "Auftrag wurde nicht gefunden oder ist abgelaufen." });
+
+  it("reports the job id right after the submit", async () => {
+    const ctx = setup("demo", job({ result: { kind: "file", width: 3200, height: 2400, bytes: 8 } }));
+    const submitted: string[] = [];
+    await processPhoto(PHOTO, "autoexperten_standard", { ...ctx.deps, onSubmitted: (id) => submitted.push(id) });
+    expect(submitted).toEqual([JOB_ID]);
+  });
+
+  it("waits for a job submitted earlier instead of sending the photo again", async () => {
+    const ctx = setup("demo", job({ result: { kind: "file", width: 3200, height: 2400, bytes: 8 } }));
+    const onSubmitted = vi.fn();
+    await processPhoto(PHOTO, "autoexperten_standard", { ...ctx.deps, resumeJobId: OTHER_JOB, onSubmitted });
+    expect(ctx.api.submitUploadProcessing).not.toHaveBeenCalled();
+    expect(ctx.deps.loadOriginal).not.toHaveBeenCalled();
+    expect(onSubmitted).not.toHaveBeenCalled();
+    expect(ctx.api.waitForProcessingJob).toHaveBeenCalledWith(OTHER_JOB, expect.anything());
+    expect(ctx.api.downloadProcessingResult).toHaveBeenCalledWith(OTHER_JOB, expect.anything());
+    expect(ctx.data.saveProcessedPhoto).toHaveBeenCalledTimes(1);
+  });
+
+  it("submits once more when the processor no longer knows the job (restarted) – and saves that result", async () => {
+    const final = job({
+      result: { kind: "stored", processedStoragePath: "veh_1/autoexperten_standard/front_left_45/photo_1.jpg" },
+    });
+    const ctx = setup("supabase", final);
+    ctx.api.waitForProcessingJob.mockRejectedValueOnce(notFound()).mockResolvedValueOnce(final);
+    const onSubmitted = vi.fn();
+    await processPhoto(PHOTO, "autoexperten_standard", { ...ctx.deps, resumeJobId: OTHER_JOB, onSubmitted });
+    expect(ctx.api.submitPhotoProcessing).toHaveBeenCalledTimes(1);
+    expect(onSubmitted).toHaveBeenCalledWith(JOB_ID);
+    expect(ctx.api.waitForProcessingJob.mock.calls.map((call) => (call as unknown[])[0])).toEqual([OTHER_JOB, JOB_ID]);
+    expect(ctx.data.recordProcessedPhoto).toHaveBeenCalledTimes(1);
+  });
+
+  it("submits only once more: a second unknown job fails and saves nothing", async () => {
+    const ctx = setup("demo", job({ result: { kind: "file", width: 3200, height: 2400, bytes: 8 } }));
+    ctx.api.waitForProcessingJob.mockRejectedValue(notFound());
+    await expect(processPhoto(PHOTO, "autoexperten_standard", ctx.deps)).rejects.toBeInstanceOf(ProcessingJobNotFoundError);
+    expect(ctx.api.submitUploadProcessing).toHaveBeenCalledTimes(2);
+    expect(ctx.data.saveProcessedPhoto).not.toHaveBeenCalled();
+  });
+
+  it("never submits again after a rejection of the photo", async () => {
+    const ctx = setup("demo", job({ status: "failed", error: "Zu klein.", errorCode: "vehicle_too_small" }));
+    await expect(
+      processPhoto(PHOTO, "autoexperten_standard", { ...ctx.deps, resumeJobId: OTHER_JOB }),
+    ).rejects.toBeInstanceOf(ProcessingJobFailedError);
+    expect(ctx.api.submitUploadProcessing).not.toHaveBeenCalled();
   });
 });
