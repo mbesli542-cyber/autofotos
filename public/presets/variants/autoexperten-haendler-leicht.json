@@ -1,0 +1,162 @@
+{
+  "id": "autoexperten_standard",
+  "name": "AutoExperten Händler-Hintergrund (Schatten leicht)",
+  "description": "Showroom-Hintergrund des Händlers (helle Paneelwand, blaue LED-Linien, Walnuss-Lamellen, Olivenbaum, glänzendes Parkett) mit offiziellem AutoExperten Logo und Schwetzingen.",
+  "background": {
+    "plates": "autoexperten-haendler/plates.json",
+    "notes": "The dealer's own showroom image (made with an image AI): AI lettering removed (processor/showroom3d/dealer_clean.py), upscaled once to 2400 x 1800 (dealer_upscale.py, Lanczos), ONE plate.jpg for all eight exterior shots - one fixed level studio camera, the car is turned (dealer_layout.py); <shot>-shadow.png = Blender shadow pass of the proxy car at the shot's pose (render_dealer_passes.py), reflection.png = the floor's own reflection measured on the plate (dealer_backdrop.py). Official logo + Schwetzingen composited in wall space at the place of his lettering."
+  },
+  "branding": {
+    "enabled": true,
+    "clearance": 0.025,
+    "lightMatch": 0.0,
+    "logo": {
+      "file": "official/AutoExperten_Logo.png",
+      "centerX": 0.5366,
+      "top": 0.2063,
+      "maxWidth": 0.7206,
+      "maxHeight": 0.25,
+      "opacity": 1.0,
+      "mounted": true
+    },
+    "city": {
+      "text": "Schwetzingen",
+      "centerX": 0.5366,
+      "top": 0.4302,
+      "capHeight": 0.0426,
+      "tracking": 0.451,
+      "color": "#403F3F",
+      "weight": "medium",
+      "opacity": 1.0,
+      "mounted": true,
+      "align": "center",
+      "icon": "",
+      "ruleLength": 0.134,
+      "ruleGap": 0.0268,
+      "ruleThickness": 0.0056
+    },
+    "website": {
+      "text": "",
+      "centerX": 0.5,
+      "top": 0.307,
+      "capHeight": 0.0165,
+      "tracking": 0.04,
+      "color": "#4A4949",
+      "weight": "medium",
+      "opacity": 1.0,
+      "mounted": false,
+      "align": "center",
+      "icon": "",
+      "ruleLength": 0.0,
+      "ruleGap": 0.0,
+      "ruleThickness": 0.0
+    },
+    "phone": {
+      "text": "",
+      "centerX": 0.5,
+      "top": 0.338,
+      "capHeight": 0.0165,
+      "tracking": 0.04,
+      "color": "#4A4949",
+      "weight": "medium",
+      "opacity": 1.0,
+      "mounted": false,
+      "align": "center",
+      "icon": "",
+      "ruleLength": 0.0,
+      "ruleGap": 0.0,
+      "ruleThickness": 0.0
+    },
+    "mount": {
+      "shadowOpacity": 0.28,
+      "shadowOffset": 0.0016,
+      "shadowBlur": 0.0022
+    }
+  },
+  "output": {
+    "aspect": [
+      4,
+      3
+    ],
+    "longEdgeMin": 2400,
+    "longEdgeMax": 2400,
+    "jpegQuality": 92
+  },
+  "placement": {
+    "maxHeightRatio": 0.62,
+    "minMargin": 0.03,
+    "minTargetFraction": 0.9,
+    "widthScale": 1.0,
+    "depthOffsetM": 0.0
+  },
+  "shadow": {
+    "contactOpacity": 0.85,
+    "creaseOpacity": 0.7,
+    "underbodyOpacity": 0.7,
+    "edgeOpacity": 0.3,
+    "underbodyFalloff": 0.08,
+    "ambientOpacity": 0.2,
+    "ambientReach": 0.3,
+    "minFloorLight": 0.04,
+    "tint": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "footprintReach": 0.3
+  },
+  "reflection": {
+    "enabled": true,
+    "strength": 1.2,
+    "maxReflectance": 0.25,
+    "defaultReflectance": 0.1,
+    "fade": 0.4,
+    "blurRate": 0.04,
+    "footprintReach": 0.3
+  },
+  "vehicleAdjustments": {
+    "exposureEvLimit": 0.25,
+    "contrastLimit": 0.0,
+    "whiteBalanceLimit": 0.02,
+    "lightWrap": 0.1,
+    "studioLight": {
+      "enabled": true,
+      "exposureStrength": 0.5,
+      "keyTarget": 1.0,
+      "maxExposureEv": 0.8,
+      "contrast": 0.3,
+      "shadows": 0.0,
+      "highlightKnee": 0.85,
+      "highlightSlope": 0.65,
+      "whiteLimit": 0.985,
+      "whiteBalanceStrength": 0.6,
+      "maxWhiteBalance": 0.06,
+      "maxHueShiftDeg": 2.5,
+      "maxSaturationChange": 0.1,
+      "maxNeutralColourShift": 1.5,
+      "maxBlackLift": 4.0,
+      "maxPaintLightnessShift": 6.0,
+      "maxNewClipped": 0.002
+    }
+  },
+  "quality": {
+    "minSourceLongEdge": 1600,
+    "maxUpscale": 1.5,
+    "minVehicleWidthRatio": 0.45,
+    "maxUncertainFraction": 0.3,
+    "maxSplitParts": 3,
+    "minCoverage": 0.004,
+    "maxCoverage": 0.85,
+    "minFillRatio": 0.3,
+    "borderPx": 2,
+    "topTouchRatio": 0.15,
+    "minContacts": 2,
+    "maxRiseFactor": 2.6,
+    "minRiseFactor": 0.0,
+    "riseTolerance": 0.03,
+    "minAspectFactor": 0.5,
+    "maxAspectFactor": 1.9,
+    "highViewRiseFactor": 1.7,
+    "highViewAspectFactor": 0.8
+  }
+}

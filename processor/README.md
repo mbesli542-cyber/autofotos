@@ -17,7 +17,12 @@ quality gate with a German retake hint.
 > correction within hard limits; paint colour, wheels, badges, lights,
 > glass, damage and wear stay exactly as photographed. A colour guard
 > measures hue and saturation of the vehicle before/after and drops any
-> correction that would shift them (navy stays navy).
+> correction that would shift them (navy stays navy). **Dealer decision
+> (2026-11-05):** a preset may switch on the guarded *studio light match*
+> (`vehicleAdjustments.studioLight`, see "Studio light match" below) – a
+> Lightroom-like global light correction towards the bright studio plate with
+> wider, documented limits and a paint guard; still one global mapping of the
+> original pixels, nothing drawn, removed or retouched.
 
 ## Pipeline (V2 – 3D showroom plates)
 
@@ -30,9 +35,9 @@ quality gate with a German retake hint.
 | 5 Plate selection: the shot's plate; a 3/4 photo of the other side gets the mirrored plate of its front/rear group (`plateUsed` + warning) | `app/pipeline/pipeline.py` (`select_plate`) |
 | 6 Placement v2: plate target width, centred, lowest tyre contact on the plate's ground line; limited by height, margins, branding headroom, floor | `app/pipeline/placement.py` |
 | 7 Quality gate (cropped, too small/upscale, mask, perspective, ground contact, foreign object in the outline, vehicle part missing from the cut-out) | `app/pipeline/quality.py` |
-| 8 Cut-out in linear light, edge decontamination; conservative light matching with colour guard | `composite.py`, `harmonize.py`, `light.py` |
+| 8 Cut-out in linear light, edge decontamination; conservative light matching with colour guard – or (preset `vehicleAdjustments.studioLight`) the guarded studio light match | `composite.py`, `harmonize.py`, `light.py` |
 | 9 Branded plate: official logo + texts in wall space through the wall homography | `app/presets.py` (`BackgroundProvider`), `app/showroom/wall_branding.py`, `branding.py` |
-| 10 Grounding v3 (linear light, floor only, before the car): ground model = car pose (proxy fitted to the tyre contacts in floor metres, scale along/across the car separately, limits reported as `poseClamped`), footprint (overhangs solved from the silhouette), **floor line per column in the photo's own perspective** (between same-side tyres and beyond them along a side: the line through their contacts; the end facing the camera in 3/4 views and front/rear views: outline + 15 cm bumper clearance at the plate's local scale; through every tyre's contact); light ground/snow remnants at the tyre bottoms / along the outline removed from the alpha (smoothed cut, never vehicle pixels; a tyre's cut changes by at most 2/3 px per px of width and tapers out over ≈ 3 cm at the ends of its range or blends into the outline cut – no notch); per tyre a contact patch in physical metres aligned with the pose (tread across the axle, falloff along the rolling direction from the tyre/floor gap R − √(R² − s²)), hard core kept within the tyre's x-extent + 3 cm, soft halo, crease; underbody: dark deep under the body → lighter at the floor line → 12 cm falloff; beyond the silhouette's ends (no car above the floor) only a penumbra that fades in below the end column's outline row (or the wall/floor junction) over 2 px per px of distance and out sideways – no hard-topped band beside the bumpers; the plate's proxy shadow as calibrated ambient; hidden-tyre pools for front/rear without visible tyres; slightly cooler deep shadow (as rendered) | `app/pipeline/grounding.py` (`build_ground_model`, `clean_ground_fringe`, `apply_grounding`), `shadow.py` |
+| 10 Grounding v3 (linear light, floor only, before the car): ground model = car pose (proxy fitted to the tyre contacts in floor metres, scale along/across the car separately, limits reported as `poseClamped`), footprint (overhangs solved from the silhouette), **floor line per column in the photo's own perspective** (between same-side tyres and beyond them along a side: the line through their contacts – only when their floor distance is ≥ 0.5 × the proxy's wheelbase, otherwise they are not two tyres (`ground_contact_uncertain`); the end facing the camera in 3/4 views and front/rear views: outline + 15 cm bumper clearance at the plate's local scale; through every tyre's contact); light ground/snow remnants at the tyre bottoms / along the outline removed from the alpha (smoothed cut, never vehicle pixels; a tyre's cut changes by at most 2/3 px per px of width and tapers out over ≈ 3 cm at the ends of its range or blends into the outline cut – no notch); per tyre a contact patch in physical metres aligned with the pose (tread across the axle, falloff along the rolling direction from the tyre/floor gap R − √(R² − s²)), hard core kept within the tyre's x-extent + 3 cm, soft halo, crease; underbody: dark deep under the body → lighter at the floor line → 12 cm falloff; beyond the silhouette's ends (no car above the floor) only a penumbra that fades in below the end column's outline row (or the wall/floor junction) over 2 px per px of distance and out sideways – no hard-topped band beside the bumpers; the plate's proxy shadow as calibrated ambient; hidden-tyre pools for front/rear without visible tyres; slightly cooler deep shadow (as rendered) | `app/pipeline/grounding.py` (`build_ground_model`, `clean_ground_fringe`, `apply_grounding`), `shadow.py` |
 | 10b Floor reflection: mirror axis = the floor line; inside the car's mirror image and under the car the plate's own floor reflection (reflection pass: LED streaks, wall glow, sheen) is removed and the mirrored ORIGINAL vehicle pixels are added as a colour-neutral specular term with the plate's measured reflectance (`reflectance` in plates.json × `reflection.strength`, ≤ `maxReflectance`); gloss blur grows with the distance (`blurRate`, 4× vertically), fades out between ½ and `fade` × car height; beyond the car's ends the under-car band only fades out (the reflected rays hit the wall there) – the plate's own floor reflection beside the bumpers stays; floor pixels only | `app/pipeline/reflection.py` (`apply_reflection`) |
 | 11 Light wrap, premultiplied composite, JPEG export (4:3, 2400 × 1800 – preset `output.longEdgeMin` = `longEdgeMax` = 2400, the plates' resolution –, quality 92, sRGB, no EXIF/GPS; typically ≈ 0.75–1 MB) | `harmonize.py`, `composite.py`, `export.py` |
 
@@ -259,9 +264,15 @@ with the Next.js app; the processor reads it from `PROCESSOR_ASSETS_DIR`,
 default `../public`). Sections: `background.plates` (the plate set),
 `branding`, `output`, `placement` (size limits only), `shadow` (grounding v3:
 `contactOpacity`, `creaseOpacity`, `underbodyOpacity` ≥ `edgeOpacity`, distances
-in floor metres, `minFloorLight` ≥ 0.02), `reflection` (`enabled`, `strength` ≤ 1.5 ×
+in floor metres, `minFloorLight` ≥ 0.02; optional `tint` – per-channel darkening R G B,
+0.85–1 with the largest 1, default 1 1 0.95 (slightly cooler deep shadows), 1 1 1 keeps a
+warm floor's hue; optional `footprintReach` – 0 = off (default) or 0.05–2 m: the under-car
+shadow fades out that far outside the fitted footprint, one continuous factor above and in
+front of the floor line (no dark bar below a rising bumper tip, no dark tail beside the ends,
+no step where the line is crossed)), `reflection` (`enabled`, `strength` ≤ 1.5 ×
 the plate's measured reflectance, `maxReflectance`/`defaultReflectance` ≤ 0.3,
-`fade` 0.2–2 × car height, `blurRate` ≤ 0.2),
+`fade` 0.2–2 × car height, `blurRate` ≤ 0.2, optional `footprintReach` like the shadow's
+for the band under the car where the plate's own reflection is removed),
 `vehicleAdjustments`, `quality`. Unknown keys, wrong types, NaN/Infinity and
 out-of-range values are rejected (`PresetConfigError`), never replaced by
 defaults – `/health` reports them as `presetError` and jobs fail with
@@ -282,7 +293,10 @@ Inter font, each glyph's real advance – is at most 2.5 brand-wall heights
 icons, ISC, `app/showroom/icons.py`), side lines `ruleLength` ≤ 0.4 and
 `ruleGap` ≤ 0.1 (fractions of the wall width), `ruleThickness` ≤ 0.01 (> 0
 when there are lines). Look variants (reference branding, glossier floor,
-car further back): `public/presets/variants/` (README there). Both
+car further back, the dealer's own backdrop as ONE fixed studio plate –
+`autoexperten-haendler.json`, plate set `public/presets/autoexperten-haendler/`,
+built by `showroom3d/dealer_*.py`): `public/presets/variants/` (README there);
+`scripts/visual_regression.py --preset-file <variant.json>` runs one. Both
 placement fields are maxima fitted per photo (`app/pipeline/room_depth.py`,
 metadata `placement.roomFit`): the depth offset, then the width scale, is
 reduced until the floor rule binds no harder than on the plate's spot and the
@@ -290,7 +304,105 @@ car's fitted footprint keeps 0.5 m to the wall (or no less than on the
 plate's spot); at 0 / 1.0 nothing is searched (the shipped look). The
 code clamps every vehicle adjustment to `HARD_LIMITS` in
 `app/pipeline/light.py`, so the JSON cannot make the vehicle correction
-aggressive.
+aggressive; the studio light match (`vehicleAdjustments.studioLight`, the
+dealer variant) is validated against `STUDIO_LIGHT_RANGES` (`app/presets.py`,
+every field required) and clamped to the same maxima again in `light.py`.
+
+### Studio light match (dealer decision, 2026-11-05)
+
+The dealer found the cars on his bright studio plate "too dark / lit differently
+from the room". He decided that the car may get a Lightroom-like **global** light
+correction towards the studio, beyond the conservative limits (±0.25 EV, white
+balance ±2 %, no contrast) – as normal photo editing, never misrepresenting
+colour or condition (mobile.de: the photos show the actual condition). With
+`vehicleAdjustments.studioLight.enabled` (only the dealer variant; the shipped
+preset is unchanged) `light.py` does, measured on the ORIGINAL vehicle pixels and
+on the plate around the car's spot:
+
+1. **Studio light** (`measure_studio`): key = median luminance of the plate
+   behind/around the car (dealer plate ≈ 0.49 linear), white = 95th percentile of
+   the brand wall above the car (≈ 0.69), neutral = colour of the bright wall
+   (≈ 6200–6450 K).
+2. **Paint and white-balance reference** (`analyse_paint`): the paint = smooth
+   pixels of the opaque core (local CIELAB std < 3). ONE class decision, used by
+   the finder and the guard: *chromatic* when ≥ 30 % of them have C* ≥ 8 (then
+   the dominant hue at its dominant lightness), else *near-neutral* (white,
+   silver, grey, black – also grey-blue, sage, champagne-grey …: the dominant
+   lightness). The white-balance reference is the car's neutral parts OUTSIDE the
+   (dilated) paint – glass, tyres, trim, chrome; never the paint itself (a navy
+   or brown-black paint photographed at C* < 6 is no white reference). With less
+   than 2 % of the car as reference the white balance stays off
+   (`whiteBalance.skipped: noNeutralReference`); without a measurable paint
+   nothing is corrected (`limitedBy.all: paintNotFound`).
+3. **Plan**: exposure = `exposureStrength` × log2(`keyTarget` × key / car median
+   luminance), 0 … `maxExposureEv`. White balance = colour **temperature only**:
+   the reference's CCT moves `whiteBalanceStrength` of the way (mired) to the
+   studio's CCT; its green–magenta tint (Duv, CIE 1960) stays the car's own, so a
+   slightly magenta wall never tints a white car pink; ≤ `maxWhiteBalance` per
+   channel, luminance of neutral pixels kept (`cct_duv`, Planckian locus after
+   Krystek). Metadata `measured.whiteBalance`: carCct/carDuv, studioCct, targetCct.
+4. **One global mapping** (`apply_studio_light`, the same function for every
+   pixel, no spatial filter): white balance (fading out for the brightest pixels,
+   brightest channel 0.88 … 0.98: blown highlights stay neutral white), then a
+   luminance curve in log2 space around the car's median – exposure (fading out
+   below L* ≈ 3 … 20: the deepest blacks keep their level), `contrast` **only
+   above the median** (`c·x·(1 − x/x_white)`, fading in over the first stop and
+   back to 0 at white: wheels, chrome and light panels brighten, nothing below the
+   median and nothing near white is pushed), optional `shadows` lift (also
+   anchored) – applied ratio-preserving (every pixel keeps its R:G:B ratio, i.e.
+   hue and linear saturation). Then the **highlight shoulder** on the brightest
+   channel: up to `highlightKnee` the curve rules; above, a lifted pixel rises at
+   most to the ceiling `W − s·(W − p)` (`W` = `whiteLimit`, `p` as photographed),
+   with `s` chosen so the ceiling meets the curve at the knee and never below
+   `highlightSlope` (a strong lift moves the knee down instead of flattening the
+   highlights more); rounded corner, monotone, nothing new clips. The tone part
+   never darkens a pixel (every term ≥ 0, the shoulder never goes below `p`); the
+   white balance keeps the luminance of neutral pixels, a coloured pixel's moves
+   by at most its channel gains.
+5. **Paint guard** (`paint_guard`), paint before/after: hue (chroma-weighted
+   median of the per-pixel hue shift, 90th percentile ≤ 2×) and saturation
+   C*/(L*+16) of EVERY paint pixel with a measurable hue (C* ≥ 5, ≥ 20 % of the
+   paint – else reported as `null` = not measured, never 0); for near-neutral paint
+   additionally its colour in the a*b* plane (exposure-normalised: (a*, b*)/(L*+16)
+   compared at the photographed lightness); tone class (median and black point);
+   shading (L* 10–90 % spread ≥ 90 %, bright panels L* 50–95 % ≥ 85 %); the car's
+   darkest 2 %; newly clipped pixels; highlight detail (skipped when the bright
+   pixels are uniform). Bisection scales back first the white balance (75 % of the
+   colour budget), then the curve shape, then the exposure until every limit
+   holds; metadata `adjustments` (mode `studioLight`) lists what was measured,
+   planned, applied (incl. the effective highlight slope), the paint before/after
+   and which guard limited what (`guard.limitedBy`).
+
+| Limit (dealer variant / hard maximum) | |
+| --- | --- |
+| Exposure | 0 … +0.8 EV / +1.0 EV, never darker |
+| Contrast above the median / shadow lift | 0.3 / 0.3 · 0 / 0.5 EV |
+| Highlight shoulder: knee / minimum detail slope | 0.85 / 0.6 … 0.95 · 0.65 / ≥ 0.4 |
+| White balance (colour temperature only) | ±6 % / ±8 % per channel |
+| Paint hue (every paint pixel with C* ≥ 5, chroma-weighted median; 90th pct ≤ 2×) | 2.5° / 3° |
+| Paint saturation C*/(L*+16) (same pixels, exposure-invariant) | ±10 % / ±10 % |
+| Near-neutral paint (finder class): colour shift in a*b*, exposure-normalised | 1.5 / 2.0 ΔE |
+| Tone class: paint median L* (and black point of dark paint) | +4 L* for L* ≤ 25 ramping to +6 L* from L* 45 / +5 … +10 |
+| Paint shading: whole paint / bright panels | ≥ 90 % / ≥ 85 % |
+| The car's darkest 2 % (tyres, trim) | +2 L* |
+| Newly clipped vehicle pixels | 0.2 % / 0.3 % |
+| Highlight detail (std of bright pixels, sRGB) | ≥ 55 % |
+
+Never: local retouching (damage, scratches, dirt, badges stay), removing
+reflections, relighting, generative models. A global mapping cannot change the
+light direction (a backlit car keeps its shaded side) and cannot brighten a
+saturated paint much without changing it (its brightest channel is already
+near white), so those cars change little. Measured on
+the 12 dealer test cases (incl. his S63): exposure 0 … +0.51 EV (limited by the
+paint's tone class on every dark car), contrast 0.3, white balance off on the
+black A4 (no neutral reference outside the paint); paint hue (chroma-weighted
+median) ≤ 1.7°, saturation −8 … +7 %, near-neutral paint colour ≤ 1.1 ΔE (the
+white A5: a* within +0.3), black paint ≤ +4 L*, no new clipping, no pixel of the
+car darker than photographed (at most −0.3 L* from the white balance on coloured
+pixels).
+(`processor/tests/test_light.py` covers the guards, incl. grey-blue, sage,
+plum-grey, champagne, dark navy and dark green paint, a magenta studio wall and
+navy paint as its own "white" reference).
 
 **Showroom plates** – ONE physical 3D showroom (Blender,
 `processor/showroom3d/render_plates.py`, CC0 assets) rendered from eight
@@ -555,16 +667,23 @@ gate), `qualityGate` (every check with its measurements, e.g.
 `qualityGate` also carries `mask` and `segmentation`), `placement` (scale, limiting rule,
 `targetWidthRatio`, `achievedWidthRatio`, ground line), `grounding` (version 3:
 pose fit incl. `clamped` limits and `poseClamped` (+ `warnings: ["poseClamped"]`),
+`wheelbaseRatios` / `contactsPlausible` (+ `warnings: ["contactsImplausible"]`, see below),
 footprint, floor line samples, per-tyre patch/radius/x-extent, hidden tyres,
 `fringe` (alpha removed at tyre bottoms/outline), `farFloorDarkening` (floor
 ≥ 0.5 m from the car in the picture) and `farFloorDarkeningFootprint`),
 `reflection` (plate pass used, reflectance range, removed/added amounts), the
 vehicle correction (exposure EV, white-balance gains, measured hue/saturation
-change, guard result), branding boxes and timings. Warnings (German) flag
+change, guard result; with the studio light match: studio light, measured car
+luminance, planned/applied parameters, paint before/after and `guard.limitedBy`), branding boxes and timings. Warnings (German) flag
 mirrored plates, reduced vehicle size, low resolution, uncertain masks,
 busy backgrounds, background objects cut from the vehicle outline, a vehicle
-the detector did not find and a small vehicle part that may be missing
-(`vehicle_part_uncertain`).
+the detector did not find, a small vehicle part that may be missing
+(`vehicle_part_uncertain`) and tyre contacts that cannot be two tyres of one side
+(`ground_contact_uncertain`: matched front and rear contacts of one side closer on the floor
+than 0.5 × the proxy's wheelbase – an exhaust tip or a diffuser corner taken as a tyre; the
+floor line then ignores the side line through them, the result asks for a check: "Die Reifen
+wurden nicht sicher erkannt (z. B. Auspuff oder Diffusor statt Reifen) – bitte den Schatten
+unter dem Fahrzeug prüfen.").
 `busy_background` fires when the segmentation model's OWN output is
 fragmented (> 25 parts); BiRefNet returns 1–2 parts on every cached
 regression photo, so with it this warning practically never fires (it guards
@@ -701,8 +820,12 @@ exists.
   model; separating the interior from the see-through scenery would remain
   unsolved even then.
 - **Lighting:** harmonisation is limited to the conservative, guarded
-  exposure/white-balance correction (`light.py`, `HARD_LIMITS` + colour guard)
-  and the light wrap at the silhouette. Outdoor reflections in the paint stay –
+  exposure/white-balance correction (`light.py`, `HARD_LIMITS` + colour guard),
+  or – the dealer's decision, `vehicleAdjustments.studioLight` – the guarded
+  global studio light match, and the light wrap at the silhouette. A global
+  mapping cannot change the light DIRECTION: a backlit car (the S63 photo) keeps
+  its shaded side; dark paint is lifted only as far as its tone class allows,
+  saturated paint only as far as its brightest channel allows. Outdoor reflections in the paint stay –
   they are part of the photographed car. A tested showroom relighting
   (exposure target from the plate, contrast, white balance, floor bounce, edge
   reflection) lightened correctly exposed dark paint, needed a second colour

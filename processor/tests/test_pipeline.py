@@ -112,6 +112,7 @@ def test_grounding_v3_and_reflection_are_reported(run):
     grounding = meta["grounding"]
     assert grounding["version"] == 3 and grounding["pose"]["matched"] == 2
     assert grounding["poseClamped"] is False and "warnings" not in grounding
+    assert grounding["contactsPlausible"] is True and grounding["wheelbaseRatios"]
     tyres = grounding["tyres"]
     assert len(tyres) == 2 and all(t["width"] > 0 and not t["inferred"] for t in tyres)
     assert all(t["extentPx"][1] > t["extentPx"][0] and 0.2 < t["radiusM"] < 0.5 for t in tyres)
@@ -120,6 +121,20 @@ def test_grounding_v3_and_reflection_are_reported(run):
     reflection = meta["reflection"]
     assert reflection["enabled"] is True and reflection["platePass"] is True
     assert 0.0 < reflection["maxStrength"] <= 0.2 + 1e-6
+
+
+def test_implausible_tyre_contacts_get_a_check_hint(run, monkeypatch):
+    """Two "tyres" of one side far closer than a wheelbase (an exhaust tip taken as a tyre): the
+    result is kept, but the employee is asked to check the shadow under the car."""
+    from app.pipeline import grounding
+
+    assert not any(w.code == "ground_contact_uncertain" for w in run().warnings)
+    monkeypatch.setattr(grounding, "MIN_WHEELBASE_RATIO", 10.0)  # every wheelbase "too short"
+    result = run()
+    hint = next(w for w in result.warnings if w.code == "ground_contact_uncertain")
+    assert "Schatten unter dem Fahrzeug prüfen" in hint.message
+    assert result.metadata["grounding"]["contactsPlausible"] is False
+    assert "contactsImplausible" in result.metadata["grounding"]["warnings"]
 
 
 def test_debug_output_shows_the_ground_model(run, tmp_path):

@@ -5,12 +5,15 @@ from __future__ import annotations
 import dataclasses
 import math
 
+import cv2
 import numpy as np
 import pytest
 
 from app.pipeline.color import srgb_to_linear
 from app.pipeline.grounding import (
+    BODY_CLEARANCE,
     END_FADE_SLOPE,
+    MIN_WHEELBASE_RATIO,
     SHADOW_TINT,
     GroundContact,
     apply_grounding,
@@ -415,3 +418,99 @@ def test_the_debug_overlay_shows_the_ground_model(scene):
     assert np.abs(overlay.astype(int) - plate.astype(int)).sum() > 0
     small = draw_ground_model(plate[::2, ::2].copy(), model, transform=lambda x, y: (x / 2, y / 2))
     assert small.shape == plate[::2, ::2].shape
+
+
+# --------------------------------------------------------------------------- dealer look: hue, footprint
+
+
+def _with_shadow(preset, **changes):
+    return dataclasses.replace(preset, shadow=dataclasses.replace(preset.shadow, **changes))
+
+
+def test_a_neutral_tint_keeps_the_floors_own_hue(scene):
+    """shadow.tint (1, 1, 1): every channel darkened alike – a warm wood floor keeps its hue in the
+    deep shadow instead of turning reddish-grey (the default tint darkens blue 5 % less)."""
+    preset, showroom, placement, alpha, contacts, background = scene
+    neutral = apply_grounding(background, alpha, placement, contacts, showroom, _with_shadow(preset, tint=(1.0, 1.0, 1.0)))
+    default = apply_grounding(background, alpha, placement, contacts, showroom, preset)
+    x, y = int((contacts[0].x + contacts[1].x) / 2), int(placement.bottom) - 38
+    ratio = neutral[y, x] / np.maximum(background[y, x], 1e-6)
+    assert ratio[0] < 0.5 and np.ptp(ratio) < 1e-4  # deep and colour-neutral
+    assert np.allclose(default[..., :2], neutral[..., :2])  # red/green as before, only blue differs
+    assert preset.shadow.tint == SHADOW_TINT
+
+
+def test_the_footprint_reach_ends_the_under_car_shadow_beside_a_rising_bumper(scene):
+    """Below a bumper tip that rises far above the floor line the photo shows floor behind or beside
+    the car: with shadow.footprintReach the under-car term fades out outside the fitted footprint
+    (no tall dark bar at the car's ends); inside the footprint nothing changes, it never darkens
+    anything – and the fade is ONE continuous factor across the floor line: no hard horizontal step
+    where a column outside the footprint crosses it (a limit gated to the rows above the line left
+    a 10–33 % one-row step beside the bumper corners of 10 of 12 dealer photos)."""
+    preset, showroom, placement, _, _, background = scene
+    alpha, contacts = _box_car(placement, overhang=150)
+    model = build_ground_model(alpha, placement, contacts, showroom)
+    default = apply_grounding(background, alpha, placement, contacts, showroom, preset, model=model)
+    limited = apply_grounding(
+        background, alpha, placement, contacts, showroom, _with_shadow(preset, footprint_reach=0.3), model=model
+    )
+    assert np.all(limited >= default - 1e-6)  # only ever lighter
+    win = model.window
+    gx, gy = win.grid()
+    fx, fy = model.frame.to_floor(gx, gy)
+    sd = model.footprint.sdf(fx, fy, 0.25 * model.pose.reference_scale)
+    sl = (slice(win.y0, win.y1), slice(win.x0, win.x1))
+    assert np.abs(limited[sl][sd <= 0.0] - default[sl][sd <= 0.0]).max() < 1e-3
+    gain = _darkening(default, background)[sl] - _darkening(limited, background)[sl]
+    assert gain.max() > 0.3  # the bar below the rising end tip is gone
+
+    # continuity on the floor at and beside the raised ends: no hard one-row step of the shadow
+    # ratio (> 3 % and > 3 × the steps 3 rows above/below – a soft gradient is fine); the gated
+    # limit left 193 such pixels here, along the floor line beside both ends
+    left, right = placement.left, placement.left + placement.width
+    cols = np.arange(W)
+    ends = ((cols > left - 60) & (cols < left + 0.15 * placement.width)) | (
+        (cols > right - 0.15 * placement.width) & (cols < right + 60)
+    )
+    floor = cv2.erode((alpha < 0.002).astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    below_junction = np.arange(1, H)[:, None] > float(np.max(showroom.floor_top)) + 3  # wall/floor seam
+    ratio = np.log(np.maximum(limited.mean(axis=-1), 1e-5)) - np.log(np.maximum(background.mean(axis=-1), 1e-5))
+    step = np.abs(np.diff(ratio, axis=0))
+    nearby = np.maximum(np.roll(step, 3, axis=0), np.roll(step, -3, axis=0))
+    ok = floor[1:] & floor[:-1] & ends[None, :] & below_junction
+    assert ok.sum() > 1000
+    assert not np.any(ok & (step > 0.03) & (step > 3.0 * nearby))
+
+
+def test_the_footprint_limit_is_one_inside_and_fades_outside():
+    from app.pipeline.grounding import footprint_limit
+
+    sd = np.array([[-0.5, 0.0, 0.15, 0.3, 0.9]])
+    out = footprint_limit(sd, 0.3)
+    assert out[0, 0] == out[0, 1] == 1.0
+    assert out[0, 3] == pytest.approx(math.exp(-1.0)) and out[0, 4] < 1e-3
+    assert np.all(np.diff(out[0]) <= 0.0)  # smooth, monotone in the floor distance – no gate
+
+
+def test_two_tyres_of_one_side_far_closer_than_a_wheelbase_are_not_trusted(scene):
+    """An exhaust tip or a diffuser corner taken as a tyre (an RS4 from behind: exhaust, diffuser
+    and the rear tyre): two "tyres" of one side far closer on the floor than the proxy's wheelbase
+    (× the reference scale) are implausible – no side line runs through them (it ran far below the
+    sill and drew a dark wedge); the floor line follows the outline (+ clearance) and the tyres."""
+    preset, showroom, placement, alpha, contacts, background = scene
+    model = build_ground_model(alpha, placement, contacts, showroom)
+    assert model.contacts_plausible and min(model.wheelbase_ratios) > 0.8
+    assert model.as_dict()["contactsPlausible"] is True
+
+    close_alpha, close = _box_car(placement, wheels=(0.62, 0.8))
+    implausible = build_ground_model(close_alpha, placement, close, showroom)
+    assert len(implausible.wheelbase_ratios) == 1 and implausible.wheelbase_ratios[0] < MIN_WHEELBASE_RATIO
+    assert implausible.contacts_plausible is False
+    assert implausible.as_dict()["contactsPlausible"] is False
+    # left of the "tyres" the box's flat bottom: a side line through the contacts would lie on the
+    # contact row; without it the floor line is the outline + BODY_CLEARANCE at the local scale
+    i = int(np.argmin(np.abs(implausible.cols - (placement.left + 0.3 * placement.width))))
+    x, edge = implausible.cols[i], implausible.edge[i]
+    across, _ = implausible.frame.scales(np.array([x]), np.array([edge]))
+    assert implausible.line[i] == pytest.approx(edge + BODY_CLEARANCE * float(across[0]), abs=2.0)
+    assert implausible.line[i] < close[0].y - 10

@@ -15,7 +15,9 @@ before the car is composited) does exactly that, in linear light:
   mirror (the reflected underside): there the plate's own reflection is removed
   (as shadowed by the grounding) – no LED streak runs under the car; beyond the
   car's ends (rays hit the wall there) that band only fades out, like the
-  underbody shadow – no hard-topped strip cut out of the plate's reflection;
+  underbody shadow – no hard-topped strip cut out of the plate's reflection; with
+  ``reflection.footprintReach`` that band also fades out where the floor it shows (or
+  mirrors) lies outside the car's fitted footprint (below a rising bumper tip);
 - the mirrored ORIGINAL vehicle pixels (nothing regenerated) are added as a
   colour-neutral specular term with the floor's reflectance measured on the
   plate (reflection / mirrored wall radiance, plates.json ``reflectance``) ×
@@ -37,7 +39,7 @@ import cv2
 import numpy as np
 
 from ..presets import ReflectionConfig, ShowroomPlate
-from .grounding import GroundModel, _fill_nearest, build_ground_model, end_fade
+from .grounding import FOOTPRINT_CORNER, GroundModel, _fill_nearest, build_ground_model, end_fade, footprint_limit
 from .placement import PlacementResult
 from .shadow import floor_weight
 
@@ -162,7 +164,17 @@ def apply_reflection(
     # cut out of the plate's own floor reflection beside the bumpers)
     gap = (centre >= edge[None, :] - behind) & (centre <= 2.0 * axis[None, :] - edge[None, :])
     ends = end_fade(centre, np.maximum(edge, np.asarray(plate.floor_top, np.float64)[x0:x1]), beyond)
-    mirrored[..., 3] = np.maximum(mirrored[..., 3], gap.astype(np.float32) * sideways[None, :] * ends)
+    band = gap.astype(np.float32) * sideways[None, :] * ends
+    if cfg.footprint_reach > 0.0:
+        # only floor really under the car: below a rising bumper tip the photo shows floor behind
+        # or beside the car (its reflected rays miss the car); the mirrored band below the floor
+        # line follows the floor it mirrors
+        fp, frame = model.footprint, model.frame
+        seen = np.minimum(centre, 2.0 * axis[None, :] - centre)
+        fx, fy = frame.to_floor(np.broadcast_to(cols[None, :] + 0.5, band.shape), np.broadcast_to(seen, band.shape))
+        sd = fp.sdf(fx, fy, FOOTPRINT_CORNER * model.pose.reference_scale)
+        band = band * footprint_limit(sd, cfg.footprint_reach * model.pose.reference_scale)
+    mirrored[..., 3] = np.maximum(mirrored[..., 3], band)
 
     # gloss: blur grows with the distance from the floor line
     weights = _levels_weights(np.maximum(distance, 0.0), levels)

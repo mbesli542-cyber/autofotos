@@ -100,6 +100,15 @@ class ShadowConfig:
     ambient_reach: float = 0.6
     #: The floor keeps at least this fraction of its light (no black holes).
     min_floor_light: float = 0.04
+    #: Relative darkening per channel (R, G, B): (1, 1, 0.95) = deep shadows slightly cooler, like
+    #: the shipped plates' rendered proxy shadow on their floor; (1, 1, 1) multiplies all channels
+    #: alike – the floor's own hue is kept (a warm wood floor does not turn reddish-grey).
+    tint: tuple[float, float, float] = (1.0, 1.0, 0.95)
+    #: 0 = off. Otherwise the under-car shadow above the floor line (the floor seen under the
+    #: body and beside the silhouette's ends) fades out with the floor distance (m) outside the
+    #: fitted footprint: below a rising bumper tip the photo shows floor behind or beside the
+    #: car, not under it – no tall dark bar at the car's ends.
+    footprint_reach: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -125,6 +134,89 @@ class ReflectionConfig:
     #: Gloss blur: Gaussian sigma (px) per px of distance from the floor line (horizontal;
     #: vertically 4× as much – glossy floors stretch reflections towards the camera).
     blur_rate: float = 0.04
+    #: 0 = off. Otherwise the floor under the car (and its mirror image), where the plate's own
+    #: reflection is removed, fades out with the floor distance (m) outside the fitted footprint
+    #: (like shadow.footprintReach) – no removed strip beside a rising bumper tip.
+    footprint_reach: float = 0.0
+
+
+#: Ranges of vehicleAdjustments.studioLight (the dealer's decision, 2026-11-05: the car may get a
+#: Lightroom-like GLOBAL light correction towards the studio). Values outside are configuration
+#: errors; app/pipeline/light.py clamps to the same maxima again. The paint guard limits can only
+#: be made stricter: hue <= 3 degrees, saturation <= ±10 %, the colour of near-neutral paint
+#: <= 2 ΔE(a*b*), black paint lifted by <= 5 L*, …
+STUDIO_LIGHT_RANGES: dict[str, tuple[float, float]] = {
+    "exposure_strength": (0.0, 1.0),
+    "key_target": (0.5, 1.5),
+    "max_exposure_ev": (0.0, 1.0),
+    "contrast": (0.0, 0.3),
+    "shadows": (0.0, 0.5),
+    "highlight_knee": (0.6, 0.95),
+    "highlight_slope": (0.4, 1.0),
+    "white_limit": (0.9, 0.995),
+    "white_balance_strength": (0.0, 1.0),
+    "max_white_balance": (0.0, 0.08),
+    "max_hue_shift_deg": (0.0, 3.0),
+    "max_saturation_change": (0.0, 0.10),
+    "max_neutral_colour_shift": (0.0, 2.0),
+    "max_black_lift": (0.0, 5.0),
+    "max_paint_lightness_shift": (0.0, 10.0),
+    "max_new_clipped": (0.0, 0.003),
+}
+
+
+@dataclass(frozen=True)
+class StudioLightConfig:
+    """Global light match of the VEHICLE layer to the studio plate (app/pipeline/light.py).
+
+    Off unless a preset sets ``vehicleAdjustments.studioLight`` – then with EVERY field written
+    out (nothing silently defaulted). Exposure towards the studio's key light, extra contrast in
+    the upper half of the car's tones, a highlight shoulder, an optional shadow lift and a white
+    balance towards the studio's colour temperature – all global tone/colour mappings of the
+    original pixels (the tone part ratio-preserving, never darkening), scaled back automatically by
+    the paint guard.
+    """
+
+    enabled: bool = False
+    #: Fraction (log2 space) of the exposure difference between the car's median luminance and
+    #: ``key_target`` × the studio's key light near the car that is applied.
+    exposure_strength: float = 0.0
+    key_target: float = 1.0
+    #: Exposure lift at most (EV). The car is never darkened.
+    max_exposure_ev: float = 0.0
+    #: Extra contrast in the upper half of the car's tones (log-space slope − 1 just above the
+    #: car's median luminance, back to 0 at white). Never below the median: nothing is darkened.
+    contrast: float = 0.0
+    #: Lift of the shadow tones (EV at 1/6 of the median; 0 at the median and in the deepest blacks).
+    shadows: float = 0.0
+    #: Highlight shoulder: the curve's result stays untouched up to ``highlight_knee`` (brightest
+    #: channel, linear); above, highlights are compressed towards ``white_limit`` with at least
+    #: ``highlight_slope`` of their tonal detail (the knee moves down when a strong lift would
+    #: otherwise compress them more). Nothing new clips, nothing ends darker than photographed.
+    highlight_knee: float = 0.85
+    highlight_slope: float = 0.5
+    white_limit: float = 0.985
+    #: Fraction of the colour TEMPERATURE difference (mired) between the car's neutral parts
+    #: (glass, tyres, trim – never the paint) and the studio's light that is applied; the car's own
+    #: green–magenta tint stays …
+    white_balance_strength: float = 0.0
+    #: … at most this much per channel (relative gain, luminance kept).
+    max_white_balance: float = 0.0
+    #: Paint guard (measured on the paint: large uniform body areas, before vs after): hue and
+    #: saturation C*/(L*+16) of every paint pixel with a measurable hue (C* >= 5, weighted by its
+    #: chroma) – also in near-neutral tinted paint …
+    max_hue_shift_deg: float = 2.5
+    max_saturation_change: float = 0.10
+    #: … and for near-neutral paint (white, silver, grey, black) the shift of its colour in the
+    #: a*b* plane (exposure-normalised, ΔE units).
+    max_neutral_colour_shift: float = 1.5
+    #: Tone class of the paint: black / very dark paint (median L* <= 25) is lifted at most
+    #: ``max_black_lift`` (median AND 10th percentile L*), paint from L* 45 at most
+    #: ``max_paint_lightness_shift``, linear in between (no step at a class boundary).
+    max_black_lift: float = 4.0
+    max_paint_lightness_shift: float = 8.0
+    #: Vehicle pixels that newly reach full white (chrome, headlights, white paint).
+    max_new_clipped: float = 0.002
 
 
 @dataclass(frozen=True)
@@ -132,13 +224,15 @@ class VehicleAdjustments:
     """Configured maxima for corrections on the VEHICLE layer.
 
     These are additionally clamped by hard limits in app/pipeline/light.py –
-    configuration can never make vehicle corrections aggressive.
+    configuration can never make vehicle corrections aggressive. ``studio_light`` (off by
+    default) replaces the conservative correction with the guarded studio light match.
     """
 
     exposure_ev_limit: float = 0.25
     contrast_limit: float = 0.0
     white_balance_limit: float = 0.02
     light_wrap: float = 0.10
+    studio_light: StudioLightConfig = field(default_factory=StudioLightConfig)
 
 
 @dataclass(frozen=True)
@@ -283,6 +377,11 @@ EXTERIOR_SHOTS = frozenset(
 #: "extra" stands for every extra_NN photo). Interior shots never do (cockpit, seats).
 DETAIL_BACKDROP_SHOTS = frozenset({"wheel_detail", "special_detail", "extra"})
 EXTRA_SHOT_PREFIX = "extra_"
+
+
+def _snake_to_camel(name: str) -> str:
+    head, *rest = name.split("_")
+    return head + "".join(part.capitalize() for part in rest)
 
 
 def _camel_to_snake(name: str) -> str:
@@ -550,7 +649,27 @@ def _parse_shadow(data) -> ShadowConfig:
         raise PresetConfigError("shadow.edgeOpacity must not exceed shadow.underbodyOpacity (darkest under the car)")
     if shadow.min_floor_light < 0.02:
         raise PresetConfigError("shadow.minFloorLight must be at least 0.02 (never pure black)")
+    if not all(TINT_RANGE[0] <= v <= TINT_RANGE[1] for v in shadow.tint) or max(shadow.tint) != 1.0:
+        raise PresetConfigError(
+            f"shadow.tint must be three values {TINT_RANGE[0]}..{TINT_RANGE[1]} with the largest 1 "
+            f"(relative darkening per channel, R G B), got {list(shadow.tint)}"
+        )
+    _check_footprint_reach("shadow", shadow.footprint_reach)
     return shadow
+
+
+#: shadow.tint: per-channel darkening relative to the most darkened channel – a mild cast at most.
+TINT_RANGE = (0.85, 1.0)
+#: shadow/reflection.footprintReach: 0 (off) or metres of floor outside the fitted footprint.
+FOOTPRINT_REACH_RANGE = (0.05, 2.0)
+
+
+def _check_footprint_reach(section: str, value: float) -> None:
+    if value != 0.0 and not FOOTPRINT_REACH_RANGE[0] <= value <= FOOTPRINT_REACH_RANGE[1]:
+        raise PresetConfigError(
+            f"{section}.footprintReach must be 0 (off) or {FOOTPRINT_REACH_RANGE[0]}..{FOOTPRINT_REACH_RANGE[1]} "
+            f"(metres of floor outside the car's footprint), got {value}"
+        )
 
 
 #: detailBackdrop ranges: (min, max) per field (fractions unless noted).
@@ -621,7 +740,40 @@ def _parse_reflection(data) -> ReflectionConfig:
         raise PresetConfigError("reflection.fade must be 0.2..2 (× the vehicle height)")
     if reflection.blur_rate > 0.2:
         raise PresetConfigError("reflection.blurRate must be 0..0.2 (px blur per px of distance)")
+    _check_footprint_reach("reflection", reflection.footprint_reach)
     return reflection
+
+
+def _parse_studio_light(data) -> StudioLightConfig:
+    owner = "vehicleAdjustments.studioLight"
+    if not isinstance(data, dict):
+        raise PresetConfigError(f"{owner} must be an object")
+    # every field written out: a light correction of the vehicle never hides behind a default
+    required = {_snake_to_camel(f.name) for f in fields(StudioLightConfig)}
+    missing = sorted(required - set(data))
+    if missing:
+        raise PresetConfigError(f"{owner} needs every field, missing: {', '.join(missing)}")
+    config = _merge(StudioLightConfig(), data, owner)
+    for name, (low, high) in STUDIO_LIGHT_RANGES.items():
+        value = getattr(config, name)
+        if not low <= value <= high:
+            raise PresetConfigError(f"{owner}.{_snake_to_camel(name)} must be {low}..{high}, got {value}")
+    return config
+
+
+def _parse_vehicle_adjustments(data) -> VehicleAdjustments:
+    if data is None:
+        return VehicleAdjustments()
+    if not isinstance(data, dict):
+        raise PresetConfigError("vehicleAdjustments must be an object")
+    flat = {k: v for k, v in data.items() if k != "studioLight"}
+    for key in flat:
+        if _camel_to_snake(key) == "studio_light":
+            raise PresetConfigError(f"Unknown preset field '{key}' in vehicleAdjustments")
+    adjustments = _build(VehicleAdjustments, flat, "vehicleAdjustments")
+    if "studioLight" in data:
+        adjustments = replace(adjustments, studio_light=_parse_studio_light(data["studioLight"]))
+    return adjustments
 
 
 def parse_preset(data: dict) -> Preset:
@@ -695,7 +847,7 @@ def parse_preset(data: dict) -> Preset:
         shot_placement=shots,
         shadow=_parse_shadow(data.get("shadow")),
         reflection=_parse_reflection(data.get("reflection")),
-        adjustments=_build(VehicleAdjustments, data.get("vehicleAdjustments"), "vehicleAdjustments"),
+        adjustments=_parse_vehicle_adjustments(data.get("vehicleAdjustments")),
         quality=_parse_quality(data.get("quality")),
         detail_backdrop=_parse_detail_backdrop(data.get("detailBackdrop")),
     )

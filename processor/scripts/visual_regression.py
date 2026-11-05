@@ -14,6 +14,8 @@ Usage (from processor/)::
     .venv/bin/python scripts/visual_regression.py --label old-photos --legacy-dir /path/to/cars
     .venv/bin/python scripts/visual_regression.py --compare baseline wip
     .venv/bin/python scripts/visual_regression.py --label wip --collage-only
+    .venv/bin/python scripts/visual_regression.py --label haendler \
+        --preset-file ../public/presets/variants/autoexperten-haendler.json
 
 Output (``--out``, default ``/opt/ae-regression/runs/<label>/``)::
 
@@ -789,10 +791,15 @@ def summary_entry(record: dict) -> dict:
 def run_cases(args, cases: list[Case], out: Path, label: str, set_name: str) -> int:
     from app.config import Settings
     from app.pipeline import pipeline as pipeline_module
-    from app.presets import BackgroundProvider, load_preset
+    from app.presets import BackgroundProvider, load_preset, parse_preset
 
     settings = Settings.from_env()
-    preset = apply_overrides(load_preset(settings, args.preset), args.preset_override)
+    if args.preset_file is not None:
+        # a look variant (public/presets/variants/*.json) – its plate set is resolved in presets/
+        base = parse_preset(json.loads(args.preset_file.read_text(encoding="utf-8")))
+    else:
+        base = load_preset(settings, args.preset)
+    preset = apply_overrides(base, args.preset_override)
     backgrounds = BackgroundProvider(settings)
     segmenter = CachedSegmenter(
         settings,
@@ -831,6 +838,7 @@ def run_cases(args, cases: list[Case], out: Path, label: str, set_name: str) -> 
         "createdAt": _now_iso(),
         "pipelineVersion": getattr(pipeline_module, "PIPELINE_VERSION", None),
         "preset": args.preset,
+        "presetFile": str(args.preset_file) if args.preset_file is not None else None,
         "presetOverrides": list(args.preset_override),
         # the preset as loaded once at the start (the JSON may change while the run is going on)
         "presetEffective": json_safe(dataclasses.asdict(preset)) if dataclasses.is_dataclass(preset) else None,
@@ -1362,6 +1370,11 @@ def main(argv: list[str] | None = None) -> int:
         help="comparison: segment portrait/square photos on the whole frame (no window pass)",
     )
     parser.add_argument("--preset", default=DEFAULT_PRESET)
+    parser.add_argument(
+        "--preset-file",
+        type=Path,
+        help="run a preset JSON file instead of --preset, e.g. a look variant from public/presets/variants/",
+    )
     parser.add_argument(
         "--preset-override",
         action="append",
