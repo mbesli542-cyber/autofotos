@@ -12,6 +12,12 @@
  *             shown subtly, not counted as "bitte prüfen"
  * Unknown codes count as "check" and show the processor's own text – a hint
  * that asks for a check is never hidden.
+ *
+ * A photo WITHOUT a processed result can carry one stored hint: the
+ * processor's rejection (code "rejected:<errorCode>", e.g.
+ * "rejected:vehicle_cropped", with its German reason) – saved with the photo
+ * so every device knows the shot must be retaken (export, red shot). It is a
+ * "retake" hint; a processed result replaces it.
  */
 import type { ProcessingWarning } from "@/lib/domain/types";
 
@@ -45,8 +51,42 @@ const MAX_TOTAL_BYTES = 12_000;
 
 const KIND_RANK: Record<ProcessingWarningKind, number> = { retake: 0, check: 1, info: 2 };
 
+/** Code prefix of a stored rejection (the processor refused the photo, nothing was processed). */
+export const REJECTION_CODE_PREFIX = "rejected:";
+
 export function getWarningKind(code: string): ProcessingWarningKind {
+  if (code.startsWith(REJECTION_CODE_PREFIX)) return "retake";
   return WARNING_KINDS.get(code) ?? "check";
+}
+
+/** The hint that stores the processor's rejection of a photo (`errorCode`: the job's reason, e.g. "vehicle_cropped"). */
+export function rejectionWarning(errorCode: string, message: string): ProcessingWarning {
+  return { code: `${REJECTION_CODE_PREFIX}${errorCode}`, message };
+}
+
+export function isRejectionWarning(warning: Pick<ProcessingWarning, "code">): boolean {
+  return warning.code.startsWith(REJECTION_CODE_PREFIX);
+}
+
+/**
+ * The stored rejection of a photo without a processed result – its German
+ * reason; null when the photo has a result or was not rejected.
+ */
+export function storedRejection(
+  photo: { processedStoragePath: string | null; processingWarnings: readonly ProcessingWarning[] },
+): string | null {
+  if (photo.processedStoragePath) return null;
+  return photo.processingWarnings.find(isRejectionWarning)?.message ?? null;
+}
+
+/**
+ * The hints a stored photo carries (both data backends): every hint of its
+ * processed result – without a result only a stored rejection (anything else
+ * belonged to a result that no longer exists).
+ */
+export function storedPhotoWarnings(processedStoragePath: string | null, value: unknown): ProcessingWarning[] {
+  const warnings = parseProcessingWarnings(value);
+  return processedStoragePath ? warnings : warnings.filter(isRejectionWarning).slice(0, 1);
 }
 
 /** The hints that ask for a check or a retake – retakes first, otherwise in the processor's order. */

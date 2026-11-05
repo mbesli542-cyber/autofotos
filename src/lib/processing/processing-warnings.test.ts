@@ -3,8 +3,12 @@ import {
   getWarningKind,
   hasRetakeWarning,
   infoWarnings,
+  isRejectionWarning,
   needsResultCheck,
   parseProcessingWarnings,
+  rejectionWarning,
+  storedPhotoWarnings,
+  storedRejection,
   warningsToCheck,
 } from "./processing-warnings";
 
@@ -40,6 +44,25 @@ describe("processor hints on a result", () => {
     expect(needsResultCheck([warning("low_resolution"), warning("vehicle_reduced")])).toBe(false);
     expect(hasRetakeWarning(hints)).toBe(true);
     expect(hasRetakeWarning([warning("mask_uncertain")])).toBe(false);
+  });
+
+  it("knows a stored rejection as a retake – kept only on a photo without a result", () => {
+    const rejected = rejectionWarning("vehicle_cropped", "Das Fahrzeug ist im Foto angeschnitten.");
+    expect(rejected).toEqual({ code: "rejected:vehicle_cropped", message: "Das Fahrzeug ist im Foto angeschnitten." });
+    expect(getWarningKind(rejected.code)).toBe("retake");
+    expect(isRejectionWarning(rejected)).toBe(true);
+    expect(isRejectionWarning(warning("plate_mirrored"))).toBe(false);
+    // The longest retake code still fits the stored code length.
+    expect(parseProcessingWarnings([rejectionWarning("source_resolution_too_low", "x")])[0]?.code).toBe(
+      "rejected:source_resolution_too_low",
+    );
+
+    expect(storedPhotoWarnings(null, [warning("mask_uncertain"), rejected])).toEqual([rejected]);
+    expect(storedPhotoWarnings(null, [warning("mask_uncertain")])).toEqual([]);
+    expect(storedPhotoWarnings("x.jpg", [warning("mask_uncertain")])).toEqual([warning("mask_uncertain")]);
+    expect(storedRejection({ processedStoragePath: null, processingWarnings: [rejected] })).toBe(rejected.message);
+    expect(storedRejection({ processedStoragePath: "x.jpg", processingWarnings: [rejected] })).toBeNull();
+    expect(storedRejection({ processedStoragePath: null, processingWarnings: [] })).toBeNull();
   });
 
   it("keeps only usable hints from untrusted data", () => {

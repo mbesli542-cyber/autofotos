@@ -431,6 +431,30 @@ describe("SupabaseDataProvider – the processor's hints on a processed version"
     expect(rowToPhoto({ ...row, processed_storage_path: null }).processingWarnings).toEqual([]);
     expect(PHOTO_COLUMNS.split(", ")).toContain("processing_warnings");
   });
+
+  it("reads a stored rejection back for a photo without a processed version (every device knows it)", () => {
+    const rejected = { code: "rejected:vehicle_too_small", message: "Fahrzeug im Originalfoto zu klein. Bitte näher fotografieren." };
+    const row: VehiclePhotoRow = {
+      id: "p2",
+      vehicle_id: VEHICLE_ID,
+      shot_key: "rear",
+      shot_order: 7,
+      title: "Hinten",
+      original_storage_path: `${VEHICLE_ID}/rear/p2.jpg`,
+      processed_storage_path: null,
+      processed_preset: null,
+      processing_warnings: [removed, rejected],
+      thumbnail_storage_path: null,
+      width: null,
+      height: null,
+      taken_at: "2026-10-28T09:00:00+00:00",
+      archived_at: null,
+      created_at: "2026-10-28T09:00:00+00:00",
+      updated_at: "2026-10-28T09:00:00+00:00",
+    };
+    // Only the rejection – other hints belonged to a result that no longer exists.
+    expect(rowToPhoto(row).processingWarnings).toEqual([rejected]);
+  });
 });
 
 describe("SupabaseDataProvider.listVehicles", () => {
@@ -613,7 +637,13 @@ describe("SupabaseDataProvider before the hints migration (20261028000100) was a
 
   /** PostgREST of a database without vehicle_photos.processing_warnings (or with it: `hasColumn`). */
   function postgrest({ hasColumn = false, otherMissingColumn = false } = {}) {
-    const requests: { method: string; path: string; select: string | null; body: Record<string, unknown> | null }[] = [];
+    const requests: {
+      method: string;
+      path: string;
+      select: string | null;
+      body: Record<string, unknown> | null;
+      params: URLSearchParams;
+    }[] = [];
     const json = (status: number, body: unknown) =>
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     const fetchImpl = async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -621,7 +651,7 @@ describe("SupabaseDataProvider before the hints migration (20261028000100) was a
       const method = init.method ?? "GET";
       const select = url.searchParams.get("select");
       const body = typeof init.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : null;
-      requests.push({ method, path: url.pathname, select, body });
+      requests.push({ method, path: url.pathname, select, body, params: url.searchParams });
       if (otherMissingColumn) {
         return json(400, { code: "42703", details: null, hint: null, message: "column vehicle_photos.focus does not exist" });
       }
@@ -722,6 +752,37 @@ describe("SupabaseDataProvider before the hints migration (20261028000100) was a
     const broken = postgrest({ otherMissingColumn: true });
     await expect(new SupabaseDataProvider(broken.client).listPhotos(VEHICLE_ID)).rejects.toBeInstanceOf(AppError);
     expect(broken.requests).toHaveLength(1);
+  });
+
+  const REJECTION = {
+    photoId: "p1",
+    errorCode: "vehicle_cropped",
+    message: "Das Fahrzeug ist im Foto angeschnitten. Bitte das ganze Fahrzeug mit etwas Abstand neu fotografieren.",
+  };
+
+  it("keeps a rejection with the photo – only on a photo without a processed result", async () => {
+    const { client, requests } = postgrest({ hasColumn: true });
+    await new SupabaseDataProvider(client).recordPhotoRejection(REJECTION);
+    expect(requests).toHaveLength(1);
+    const [request] = requests;
+    expect([request?.method, request?.path, request?.body]).toEqual([
+      "PATCH",
+      "/rest/v1/vehicle_photos",
+      { processing_warnings: [{ code: "rejected:vehicle_cropped", message: REJECTION.message }] },
+    ]);
+    // Conditional: a result saved meanwhile is never marked as rejected; nothing else changes.
+    expect(request?.params.get("id")).toBe("eq.p1");
+    expect(request?.params.get("processed_storage_path")).toBe("is.null");
+  });
+
+  it("before the migration: the rejection stays on this device – no error, asked once", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { client, requests } = postgrest();
+    const provider = new SupabaseDataProvider(client);
+    await provider.recordPhotoRejection(REJECTION);
+    await provider.recordPhotoRejection(REJECTION);
+    expect(requests).toHaveLength(1);
+    warn.mockRestore();
   });
 });
 

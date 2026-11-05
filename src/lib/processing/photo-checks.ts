@@ -30,10 +30,12 @@
  * - A check that could not run because the processor is gone (connection,
  *   5xx, not connected) waits again instead of reporting an error; the
  *   camera then shows that the check is off.
- * - Rejections are kept on this device (localStorage, best effort) so the
- *   red state survives a reload. They are only shown: a stored rejection
- *   never stops "Fotos bearbeiten" from sending the photo again (the quality
- *   gate may have changed meanwhile); results are saved with the photo anyway.
+ * - Rejections are kept with the photo (processPhoto → data.recordPhotoRejection,
+ *   so other devices show them and do not check the photo again by
+ *   themselves) and on this device (localStorage, best effort) so the red
+ *   state survives a reload. They are only shown: a stored rejection never
+ *   stops "Fotos bearbeiten" from sending the photo again (the quality gate
+ *   may have changed meanwhile); results are saved with the photo anyway.
  */
 import { getAppServices } from "@/lib/app-services";
 import type { AuthState } from "@/lib/auth/auth-store";
@@ -55,7 +57,7 @@ import {
   type PhotoStep,
 } from "./photo-processing";
 import { AccessCodeRequiredError, ProcessingNotConnectedError, fetchProcessingStatus } from "./processing-client";
-import { hasRetakeWarning, warningsToCheck, getWarningKind } from "./processing-warnings";
+import { hasRetakeWarning, storedRejection, warningsToCheck, getWarningKind } from "./processing-warnings";
 import { needsRetake, retakeFallbackMessage } from "./quality-gate";
 import { ACCESS_CODE_INVALID_CODE } from "./shot-check";
 import { getShotTreatment } from "./shot-treatment";
@@ -316,9 +318,10 @@ export class PhotoChecks {
   }
 
   /**
-   * Checks the vehicle's current template photos that have no result and no
-   * check yet, or whose check could not run (e.g. right after the access
-   * code was entered in the camera, or when the checks are on again).
+   * Checks the vehicle's current template photos that have no result, no
+   * stored rejection and no check yet, or whose check could not run (e.g.
+   * right after the access code was entered in the camera, or when the
+   * checks are on again).
    */
   async checkVehicle(vehicleId: string): Promise<void> {
     if ((await this.refreshAvailability()) !== "on") return;
@@ -331,6 +334,8 @@ export class PhotoChecks {
     const { template } = getAppServices();
     for (const photo of photos) {
       if (getShotTreatment(template, photo.shotKey) === null || photo.processedStoragePath) continue;
+      // Rejected already (kept with the photo, e.g. checked on another device): not sent again by itself.
+      if (storedRejection(photo) !== null) continue;
       const check = this.snapshot.checks.get(photo.id);
       if (!check) this.enqueue({ ...photo, preset: CHECK_PRESET });
       else if (check.status === "error") this.requeue(photo.id);

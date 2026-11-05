@@ -270,6 +270,77 @@ describe("MockDataProvider – the processor's hints on a processed version", ()
   });
 });
 
+describe("MockDataProvider.recordPhotoRejection – the processor's rejection kept with the photo", () => {
+  const REJECTION = {
+    errorCode: "vehicle_cropped",
+    message: "Das Fahrzeug ist im Foto angeschnitten. Bitte das ganze Fahrzeug mit etwas Abstand neu fotografieren.",
+  };
+  const STORED = { code: "rejected:vehicle_cropped", message: REJECTION.message };
+
+  async function setup() {
+    const db = createDemoDatabase(`test-${createId()}`);
+    const provider = new MockDataProvider(db);
+    const vehicle = await provider.createVehicle(NEW_VEHICLE);
+    const save = (photoId: string, takenAt: string) =>
+      provider.savePhoto({
+        photoId,
+        vehicleId: vehicle.id,
+        shotKey: "rear",
+        shotOrder: 7,
+        title: "Hinten",
+        file: new Blob([photoId], { type: "image/jpeg" }),
+        thumbnail: null,
+        width: 4000,
+        height: 3000,
+        takenAt,
+      });
+    const hints = () =>
+      provider.listPhotos(vehicle.id).then((photos) => photos.map((item) => [item.id, item.processingWarnings]));
+    return { db, provider, vehicle, save, hints };
+  }
+
+  it("keeps it with a photo without a result – read back by every later listing", async () => {
+    const { db, provider, save, hints } = await setup();
+    const photo = await save("first", "2026-10-28T10:00:00.000Z");
+    await provider.recordPhotoRejection({ photoId: photo.id, ...REJECTION });
+    expect(await hints()).toEqual([["first", [STORED]]]);
+    // A fresh provider on the same data (a reload) still knows it.
+    const reloaded = await new MockDataProvider(db).listPhotos(photo.vehicleId);
+    expect(reloaded[0]?.processingWarnings).toEqual([STORED]);
+    expect(reloaded[0]?.processedStoragePath).toBeNull();
+  });
+
+  it("is replaced by a later result and never marks a photo that has one", async () => {
+    const { provider, save, hints } = await setup();
+    const photo = await save("first", "2026-10-28T10:00:00.000Z");
+    await provider.recordPhotoRejection({ photoId: photo.id, ...REJECTION });
+    const result = new Blob(["showroom"], { type: "image/jpeg" });
+    await provider.saveProcessedPhoto({ photo, preset: "autoexperten_standard", file: result, warnings: [REMOVED] });
+    expect(await hints()).toEqual([["first", [REMOVED]]]);
+    // A late rejection (e.g. a second processing) leaves the saved result as it is.
+    await provider.recordPhotoRejection({ photoId: photo.id, ...REJECTION });
+    expect(await hints()).toEqual([["first", [REMOVED]]]);
+  });
+
+  it("a retake starts without it", async () => {
+    const { provider, save, hints } = await setup();
+    const photo = await save("first", "2026-10-28T10:00:00.000Z");
+    await provider.recordPhotoRejection({ photoId: photo.id, ...REJECTION });
+    await save("retake", "2026-10-28T10:05:00.000Z");
+    expect(await hints()).toEqual([["retake", []]]);
+  });
+
+  it("drops other hints left on a record without a result", async () => {
+    const { db, provider, save, hints } = await setup();
+    const photo = await save("first", "2026-10-28T10:00:00.000Z");
+    const record = await db.get<StoredPhoto>(DEMO_STORES.photos, photo.id);
+    if (!record) throw new Error("record missing");
+    await db.put(DEMO_STORES.photos, { ...record, processingWarnings: [REMOVED, STORED] });
+    expect(await hints()).toEqual([["first", [STORED]]]);
+    await provider.archivePhoto(photo.id);
+  });
+});
+
 describe("MockDataProvider.recordProcessedPhoto – the photo was archived meanwhile", () => {
   /**
    * A result arrives for "old" while a retake (or "Foto löschen") archives it.

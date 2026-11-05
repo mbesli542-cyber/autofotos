@@ -266,6 +266,19 @@ describe("PhotoChecks", () => {
     expect(processPhoto).toHaveBeenCalledTimes(2);
   });
 
+  it("does not send a photo again by itself whose rejection is kept with it (e.g. from another device)", async () => {
+    vi.mocked(processPhoto).mockResolvedValue({ warnings: [] });
+    const checks = started();
+    env.photos = [
+      { ...savedPhoto("p_kept_rear", "rear"), processingWarnings: [{ code: "rejected:vehicle_too_small", message: TOO_SMALL }] },
+      savedPhoto("p_kept_front", "front"),
+    ];
+    await checks.checkVehicle("veh_1");
+    await vi.waitFor(() => expect(statusOf(checks, "p_kept_front")).toBe("ok"));
+    expect(checks.getSnapshot().checks.has("p_kept_rear")).toBe(false);
+    expect(vi.mocked(processPhoto).mock.calls.map(([photo]) => photo.id)).toEqual(["p_kept_front"]);
+  });
+
   it("never runs more than MAX_PARALLEL_JOBS processings together with a run", async () => {
     const jobs = gate();
     let inFlight = 0;

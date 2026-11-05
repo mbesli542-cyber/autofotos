@@ -9,6 +9,7 @@
  */
 import type {
   DataProvider,
+  RecordPhotoRejectionInput,
   RecordProcessedPhotoInput,
   SavePhotoInput,
   SaveProcessedPhotoInput,
@@ -41,7 +42,11 @@ import {
 } from "@/lib/naming/file-naming";
 import { IdbDatabase } from "@/lib/offline/idb";
 import { isOlderThanSavedPhoto } from "@/lib/photos/capture-order";
-import { parseProcessingWarnings } from "@/lib/processing/processing-warnings";
+import {
+  parseProcessingWarnings,
+  rejectionWarning,
+  storedPhotoWarnings,
+} from "@/lib/processing/processing-warnings";
 import { DEMO_STORES, migrateDemoData } from "./migrations";
 import { buildSeedData, STATIC_PATH_PREFIX, type StoredPhoto } from "./seed";
 
@@ -81,7 +86,7 @@ function stripArchived(photo: StoredPhoto): VehiclePhoto {
   delete rest.archivedAt;
   return {
     ...(rest as VehiclePhoto),
-    processingWarnings: photo.processedStoragePath ? parseProcessingWarnings(photo.processingWarnings) : [],
+    processingWarnings: storedPhotoWarnings(photo.processedStoragePath, photo.processingWarnings),
   };
 }
 
@@ -361,6 +366,18 @@ export class MockDataProvider implements DataProvider {
       processingWarnings,
       updatedAt,
     }));
+    if (!stored) throw new AppError("not_found");
+  }
+
+  async recordPhotoRejection(input: RecordPhotoRejectionInput): Promise<void> {
+    await this.ensureReady();
+    const rejection = parseProcessingWarnings([rejectionWarning(input.errorCode, input.message)]);
+    // In one transaction: a result saved meanwhile is never marked as rejected.
+    const stored = await this.db.update<StoredPhoto>(STORES.photos, input.photoId, (current) =>
+      current.processedStoragePath
+        ? current
+        : { ...current, processingWarnings: rejection, updatedAt: new Date().toISOString() },
+    );
     if (!stored) throw new AppError("not_found");
   }
 }

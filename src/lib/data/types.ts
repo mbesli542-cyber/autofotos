@@ -73,6 +73,15 @@ export interface RecordProcessedPhotoInput {
   warnings: readonly ProcessingWarning[];
 }
 
+/** The processor refused a photo ("Foto neu aufnehmen"): nothing was processed. */
+export interface RecordPhotoRejectionInput {
+  photoId: string;
+  /** The job's reason, e.g. "vehicle_cropped" (quality gate). */
+  errorCode: string;
+  /** The processor's German reason. */
+  message: string;
+}
+
 /** A vehicle's "Interne Fahrzeugnummer" (only vehicles that have one). */
 export interface VehicleReference {
   id: string;
@@ -122,6 +131,13 @@ export interface DataProvider {
   saveProcessedPhoto(input: SaveProcessedPhotoInput): Promise<VehiclePhoto>;
   /** Links a result that the processing service already stored (with the processor's hints). */
   recordProcessedPhoto(input: RecordProcessedPhotoInput): Promise<void>;
+  /**
+   * Keeps the processor's rejection with a photo that has NO processed
+   * result (a "rejected:<errorCode>" hint, processing-warnings.ts), so every
+   * device knows the shot must be retaken. A photo with a result is left as
+   * it is; a later result replaces the rejection.
+   */
+  recordPhotoRejection(input: RecordPhotoRejectionInput): Promise<void>;
 }
 
 export interface Backend {

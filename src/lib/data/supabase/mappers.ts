@@ -6,7 +6,7 @@ import {
   type VehicleInput,
   type VehiclePhoto,
 } from "@/lib/domain/types";
-import { parseProcessingWarnings } from "@/lib/processing/processing-warnings";
+import { storedPhotoWarnings } from "@/lib/processing/processing-warnings";
 
 export interface VehicleRow {
   id: string;
@@ -94,8 +94,8 @@ export function rowToPhoto(row: VehiclePhotoRow): VehiclePhoto {
     originalStoragePath: row.original_storage_path,
     processedStoragePath: row.processed_storage_path,
     processedPreset: isProcessingPresetId(row.processed_preset) ? row.processed_preset : null,
-    // Hints belong to a processed version (a row without one has none).
-    processingWarnings: row.processed_storage_path ? parseProcessingWarnings(row.processing_warnings) : [],
+    // Hints belong to a processed version; a row without one keeps only a stored rejection.
+    processingWarnings: storedPhotoWarnings(row.processed_storage_path, row.processing_warnings),
     thumbnailStoragePath: row.thumbnail_storage_path,
     width: row.width,
     height: row.height,

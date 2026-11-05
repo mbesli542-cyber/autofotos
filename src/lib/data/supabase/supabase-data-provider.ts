@@ -9,6 +9,7 @@
 import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
 import type {
   DataProvider,
+  RecordPhotoRejectionInput,
   RecordProcessedPhotoInput,
   SavePhotoInput,
   SaveProcessedPhotoInput,
@@ -40,7 +41,7 @@ import {
   STORAGE_BUCKETS,
   type StorageBucket,
 } from "@/lib/naming/file-naming";
-import { parseProcessingWarnings } from "@/lib/processing/processing-warnings";
+import { parseProcessingWarnings, rejectionWarning } from "@/lib/processing/processing-warnings";
 import {
   PHOTO_COLUMNS,
   rowToPhoto,
@@ -475,5 +476,21 @@ export class SupabaseDataProvider implements DataProvider {
     if (error) throw toAppError(error);
     // A re-processed result reuses its path – make viewers fetch the new file.
     this.signedUrlCache.delete(`${STORAGE_BUCKETS.processed}/${input.processedStoragePath}`);
+  }
+
+  async recordPhotoRejection(input: RecordPhotoRejectionInput): Promise<void> {
+    // Without the hints column (migration missing) the rejection stays on this device only.
+    if (!this.storesWarnings) return;
+    const { error } = await this.client
+      .from("vehicle_photos")
+      .update({ processing_warnings: parseProcessingWarnings([rejectionWarning(input.errorCode, input.message)]) })
+      .eq("id", input.photoId)
+      // Conditional: a result saved meanwhile is never marked as rejected.
+      .is("processed_storage_path", null);
+    if (isMissingWarningsColumn(error)) {
+      this.noteMissingWarningsColumn();
+      return;
+    }
+    if (error) throw toAppError(error);
   }
 }
