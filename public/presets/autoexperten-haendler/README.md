@@ -161,6 +161,21 @@ floor distance is 0.24 × the proxy's wheelbase (real photos 0.69–2.5), so the
 longer trusts them (`MIN_WHEELBASE_RATIO` 0.5 in `grounding.py`): the floor line follows the
 outline + 15 cm there, and the result carries the check hint `ground_contact_uncertain`.
 
+## Quality gate: photos from above
+
+The gate's "photo from above" rule compares the photo with the plate's proxy car (contact rise
+of the 3/4 views and bbox aspect, `quality.highViewRiseFactor` / `highViewAspectFactor`). His
+studio camera (1.6 m, the car 4.5 m away) sees the proxy with more rise (0.1905 vs 0.1546 /
+0.1591 in the earlier 3D room) and a lower aspect (1.934 / 1.937 vs 2.144 / 2.136). With the
+shipped factors 1.7 / 0.8 the Lada photographed from a window above (regression case
+`too_high`: rise factor 1.48, aspect factor 0.798) was accepted – a toy car seen from above in a
+level studio. All three files therefore use the earlier room's ABSOLUTE thresholds on this plate,
+the more generous of its front/rear 3/4 plates: 1.42 (= 1.7 × 0.1591 / 0.1905) and 0.88
+(≈ 0.8 × 2.1355 / 1.9372) – never stricter than before for a normal photo (here at most 1.35:
+Clio, 1.34: MG 5), `too_high` is rejected again ("Die Perspektive passt nicht zum Showroom …").
+`dealer_backdrop.py` writes them (`VARIANT_QUALITY`); `test_the_dealer_gate_keeps_the_earlier_rooms_high_view_thresholds`
+checks the relation on the plate set.
+
 ## Car light: studio light match
 
 The dealer on the results with the old car light: "the lighting is very bad – the car is too

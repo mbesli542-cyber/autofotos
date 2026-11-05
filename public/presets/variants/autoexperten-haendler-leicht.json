@@ -156,7 +156,7 @@
     "riseTolerance": 0.03,
     "minAspectFactor": 0.5,
     "maxAspectFactor": 1.9,
-    "highViewRiseFactor": 1.7,
-    "highViewAspectFactor": 0.8
+    "highViewRiseFactor": 1.42,
+    "highViewAspectFactor": 0.88
   }
 }
