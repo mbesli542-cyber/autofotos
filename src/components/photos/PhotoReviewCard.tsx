@@ -9,7 +9,7 @@ function describeState(slot: PhotoSlot, variant: PhotoVariant, check: ShotCheckS
   if (slot.pending) return check?.kind === "checking" ? "wird gespeichert und geprüft" : "wird gespeichert";
   if (check?.kind === "retake" || check?.kind === "checking") return shotCheckDescription(check) ?? "";
   if (processedNeedsCheck(slot, variant) || (check?.kind === "ok" && check.hint)) return SHOT_CHECK_LABELS.hint;
-  if (check?.kind === "ok" || check?.kind === "saved") return shotCheckDescription(check) ?? "";
+  if (check?.kind === "ok" || check?.kind === "saved" || check?.kind === "error") return shotCheckDescription(check) ?? "";
   return slot.photo ? "aufgenommen" : "fehlt";
 }
 
