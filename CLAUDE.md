@@ -112,6 +112,7 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Shot completion / ordering / navigation (pure) | `src/lib/shots/shot-progress.ts` |
 | Vehicle validation & status rules (pure) | `src/lib/vehicles/` |
 | File & storage naming (`AE_{ref}_{nn}_{shot}.jpg`) | `src/lib/naming/file-naming.ts` |
+| Export "Alle Fotos speichern" (listing set + summary, share sheet in parts / ZIP, per-photo "Speichern"; unique "Interne Fahrzeugnummer") | `src/lib/export/` (`listing-export.ts`, `device-save.ts`, `zip.ts` store-only ZIP writer, `export-files.ts`), `src/components/export/`, `src/lib/vehicles/reference.ts`, `DataProvider.getPhotoFile` |
 | Backend contracts (`DataProvider`, `AuthService`) | `src/lib/data/types.ts` |
 | Demo mode (IndexedDB) | `src/lib/data/mock/` |
 | Supabase implementation | `src/lib/data/supabase/` |

@@ -103,7 +103,32 @@ Photos are **always ordered by this template** (never by upload time).
 Export names are deterministic: `AE_{internalReference}_01_front_left_45.jpg`
 (`buildExportFileName` in `src/lib/naming/file-naming.ts`). Additional photos
 ("Weitere Fotos hinzufügen") are stored as `extra_01`, `extra_02`, … after
-the 15 required shots.
+the 15 required shots. The "Interne Fahrzeugnummer" is unique
+(`src/lib/vehicles/reference.ts`, compared as the file names would, ignoring
+case): "Diese Fahrzeugnummer ist schon vergeben."
+
+### Export ("Alle Fotos speichern")
+
+On the vehicle page (primary in the "Bearbeitet" view) – and per photo with
+"Speichern" in the large view, for the version shown:
+
+1. A summary first (`src/lib/export/listing-export.ts`, pure): "15 Fotos
+   bereit" or e.g. "13 bearbeitet · 1 noch nicht bearbeitet · 1 muss neu
+   aufgenommen werden", with the shots to look at. Per template shot the
+   processed result, otherwise the original (marked); extra photos as
+   originals after them. Rejected shots are left out unless ticked.
+2. Phones: the share sheet (`navigator.share({ files })` when `canShare` is
+   true – iOS "Bilder sichern"), in parts of at most 10 files / 48 MB
+   (Chrome on Android's limit), one tap each. The files are loaded while the
+   summary is read, so the share starts from a fresh tap. Cancelling is no
+   error; any other refusal offers the ZIP.
+3. Desktop and fallback: `AE_{ref}_Fotos.zip`, built in the browser by a
+   dependency-free store-only ZIP writer (`src/lib/export/zip.ts`, refuses
+   archives that would need ZIP64).
+
+The files come from `DataProvider.getPhotoFile` – IndexedDB in demo mode, a
+Storage download with the signed-in session in Supabase mode (no signed URL,
+no service key, no extra API route).
 
 ---
 
@@ -891,12 +916,13 @@ src/
     login/, offline/, manifest.ts, layout.tsx, globals.css
   features/                    screen components (compose components + hooks)
   components/                  reusable UI
-    brand/ layout/ ui/ vehicles/ photos/ camera/ processing/ auth/ providers/
+    brand/ layout/ ui/ vehicles/ photos/ camera/ processing/ export/ auth/ providers/
   hooks/                       auth, data loading, upload queue, camera stream
   lib/
     shots/        shot template + pure progress/ordering logic
     vehicles/     validation, status rules, summaries
     naming/       export names & storage paths
+    export/       listing export: set + summary, share sheet/download, ZIP writer, file loader
     data/         DataProvider/AuthService + mock (IndexedDB) & Supabase impls
     workflow/     operations that keep vehicle status in sync (incl. saveVehicleData)
     offline/      IndexedDB helper, upload queue
