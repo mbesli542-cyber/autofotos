@@ -157,6 +157,40 @@ describe("PhotoChecks", () => {
     expect(checks.getSnapshot().availability).toBe("on");
   });
 
+  it("forgets a deleted vehicle: its running check is aborted, its stored rejection removed – others stay", async () => {
+    vi.mocked(processPhoto).mockRejectedValueOnce(new ProcessingJobFailedError("vehicle_too_small", TOO_SMALL));
+    const checks = started();
+    save({ ...savedPhoto("p_other_rear", "rear"), vehicleId: "veh_2" });
+    await vi.waitFor(() => expect(statusOf(checks, "p_other_rear")).toBe("retake"));
+    vi.mocked(processPhoto).mockRejectedValueOnce(new ProcessingJobFailedError("vehicle_too_small", TOO_SMALL));
+    save(savedPhoto("p_del_fl", "front_left_45"));
+    await vi.waitFor(() => expect(statusOf(checks, "p_del_fl")).toBe("retake"));
+    let signal: AbortSignal | undefined;
+    vi.mocked(processPhoto).mockImplementationOnce(
+      (_photo, _preset, options) =>
+        new Promise<PhotoProcessingResult>((_resolve, reject) => {
+          signal = options.signal;
+          options.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        }),
+    );
+    save(savedPhoto("p_del_front", "front"));
+    await vi.waitFor(() => expect(signal).toBeDefined());
+
+    checks.stopVehicle("veh_1");
+    expect(signal?.aborted).toBe(true);
+    expect([...checks.getSnapshot().checks.keys()]).toEqual(["p_other_rear"]);
+    expect([...checks.getSnapshot().captures.keys()]).toEqual(["veh_2/rear"]);
+    await flush();
+    expect(statusOf(checks, "p_del_front")).toBeUndefined();
+    // Only the other vehicle's rejection comes back after a reload.
+    expect([...started().getSnapshot().checks.keys()]).toEqual(["p_other_rear"]);
+
+    checks.clear();
+    expect(checks.getSnapshot().checks.size).toBe(0);
+    expect(checks.getSnapshot().captures.size).toBe(0);
+    expect(started().getSnapshot().checks.size).toBe(0);
+  });
+
   it("keeps a rejection with the processor's reason – also after a reload of the page", async () => {
     vi.mocked(processPhoto).mockRejectedValue(new ProcessingJobFailedError("vehicle_too_small", TOO_SMALL));
     const checks = started();
@@ -181,7 +215,14 @@ describe("PhotoChecks", () => {
     status = { ...CONNECTED, connected: false, showroomSource: null };
     const offline = started();
     save(savedPhoto("p_off_front", "front"));
-    await vi.waitFor(() => expect(offline.getSnapshot().availability).toBe("no_processor"));
+    // Configured but not answering (PC asleep): "nicht erreichbar", never "nicht verbunden".
+    await vi.waitFor(() => expect(offline.getSnapshot().availability).toBe("unreachable"));
+    env.uploaded = [];
+
+    status = { ...CONNECTED, connected: false, processor: "mock", showroomSource: null };
+    const none = started();
+    save(savedPhoto("p_none_left", "left_side"));
+    await vi.waitFor(() => expect(none.getSnapshot().availability).toBe("no_processor"));
     env.uploaded = [];
 
     status = { ...CONNECTED, accessCodeRequired: true };
@@ -191,6 +232,7 @@ describe("PhotoChecks", () => {
     await flush();
     expect(processPhoto).not.toHaveBeenCalled();
     expect(statusOf(offline, "p_off_front")).toBe("waiting");
+    expect(statusOf(none, "p_none_left")).toBe("waiting");
     expect(statusOf(demo, "p_off_rear")).toBe("waiting");
   });
 
@@ -228,7 +270,7 @@ describe("PhotoChecks", () => {
     const settled: string[] = [];
     checks.onSettled((check) => settled.push(check.photoId));
     save(savedPhoto("p_gone_front", "front"));
-    await vi.waitFor(() => expect(checks.getSnapshot().availability).toBe("no_processor"));
+    await vi.waitFor(() => expect(checks.getSnapshot().availability).toBe("unreachable"));
     await vi.waitFor(() => expect(statusOf(checks, "p_gone_front")).toBe("waiting"));
     expect(settled).toEqual([]);
 

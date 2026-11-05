@@ -8,10 +8,15 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { PageLoading } from "@/components/ui/Spinner";
 import { VehicleCard } from "@/components/vehicles/VehicleCard";
+import { useVehicleRetakeShots } from "@/hooks/use-retake-shots";
 import { useVehicleSummaries } from "@/hooks/use-vehicle-data";
+import type { VehicleSummary } from "@/lib/domain/types";
+
+const NO_SUMMARIES: readonly VehicleSummary[] = [];
 
 export function VehicleListScreen() {
   const { state, reload } = useVehicleSummaries();
+  const retakes = useVehicleRetakeShots(state.status === "ready" ? state.summaries : NO_SUMMARIES);
 
   return (
     <>
@@ -53,7 +58,7 @@ export function VehicleListScreen() {
             <ul className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" aria-label="Fahrzeugliste">
               {state.summaries.map((summary) => (
                 <li key={summary.vehicle.id}>
-                  <VehicleCard summary={summary} />
+                  <VehicleCard summary={summary} retakeCount={retakes.get(summary.vehicle.id).length} />
                 </li>
               ))}
             </ul>

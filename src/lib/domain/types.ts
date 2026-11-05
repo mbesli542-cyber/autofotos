@@ -131,4 +131,6 @@ export interface VehicleSummary {
   capturedRequiredCount: number;
   requiredCount: number;
   thumbnailUrl: string | null;
+  /** Active photos (e.g. for the "Neu aufnehmen" badge of the automatic check). */
+  photos: readonly VehiclePhoto[];
 }

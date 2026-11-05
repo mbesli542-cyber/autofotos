@@ -9,6 +9,7 @@ export type AppErrorCode =
   | "not_found"
   | "unauthorized"
   | "storage"
+  | "storage_full"
   | "unsupported_file"
   | "file_too_large"
   | "invalid"
@@ -20,6 +21,7 @@ export const USER_ERROR_MESSAGES: Record<AppErrorCode, string> = {
   not_found: "Der Eintrag wurde nicht gefunden.",
   unauthorized: "Ihre Sitzung ist abgelaufen. Bitte melden Sie sich erneut an.",
   storage: "Foto konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
+  storage_full: "Der Speicher auf diesem Gerät ist voll. Bitte bereits gespeicherte Fahrzeuge löschen.",
   unsupported_file: "Dieses Bildformat wird nicht unterstützt (JPG, PNG, WebP oder HEIC).",
   file_too_large: "Das Foto ist zu groß (max. 50 MB).",
   invalid: "Die Eingaben sind ungültig. Bitte prüfen Sie die Angaben.",
@@ -68,6 +70,39 @@ export function isRejectedFileError(error: unknown): boolean {
   return error instanceof AppError && (error.code === "unsupported_file" || error.code === "file_too_large");
 }
 
+/** DOMException names of a full browser storage (IndexedDB, Cache, localStorage). */
+const QUOTA_ERROR_NAMES = new Set(["QuotaExceededError", "NS_ERROR_DOM_QUOTA_REACHED"]);
+
+/**
+ * The browser refused to store data because the device's storage (or the
+ * site's share of it) is full – also when it is the cause of a wrapped error
+ * (e.g. AppError("storage", { cause })). Retrying never helps; deleting does.
+ */
+export function isQuotaExceededError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
+    const { name, code } = current as { name?: unknown; code?: unknown };
+    if (typeof name === "string" && QUOTA_ERROR_NAMES.has(name)) return true;
+    // Legacy DOMException codes (QUOTA_EXCEEDED_ERR, Firefox's NS_ERROR_DOM_QUOTA_REACHED).
+    if (current instanceof DOMException && (code === 22 || code === 1014)) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/** The device's storage is full (a quota error, or the AppError made from one). */
+export function isStorageFullError(error: unknown): boolean {
+  return (error instanceof AppError && error.code === "storage_full") || isQuotaExceededError(error);
+}
+
+/**
+ * The error to throw when a write to the device's storage failed: "storage
+ * full" when the browser says so, the generic storage error otherwise.
+ */
+export function storageError(cause: unknown): AppError {
+  return new AppError(isQuotaExceededError(cause) ? "storage_full" : "storage", { cause });
+}
+
 /** Best-effort detection of connectivity problems. */
 export function isNetworkError(error: unknown): boolean {
   if (typeof navigator !== "undefined" && navigator.onLine === false) return true;
@@ -83,6 +118,7 @@ export function isNetworkError(error: unknown): boolean {
 
 /** Converts anything thrown into a German message for the UI. */
 export function toUserMessage(error: unknown, fallback?: string): string {
+  if (isQuotaExceededError(error)) return USER_ERROR_MESSAGES.storage_full;
   if (error instanceof AppError) {
     return error.userMessage ?? USER_ERROR_MESSAGES[error.code];
   }

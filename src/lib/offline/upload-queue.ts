@@ -15,7 +15,7 @@
  * Retries are idempotent because the queue id is used as the photo id.
  */
 import type { VehiclePhoto } from "@/lib/domain/types";
-import { AppError, isRejectedFileError, toUserMessage } from "@/lib/errors";
+import { AppError, isRejectedFileError, isStorageFullError, toUserMessage } from "@/lib/errors";
 import { prepareImage, type PreparedImage } from "@/lib/camera/image-utils";
 import { createId } from "@/lib/ids";
 import { isOlderCapture, isOlderThanSavedPhoto } from "@/lib/photos/capture-order";
@@ -60,6 +60,13 @@ export interface UploadItem {
    * large): it is not retried automatically and can only be discarded.
    */
   retryable: boolean;
+  /**
+   * true: the device's storage refused to keep the capture – it lives in
+   * memory only and is lost when the app is closed before it is saved.
+   */
+  unpersisted?: boolean;
+  /** true: the last attempt failed because the device's storage is full (retrying alone does not help). */
+  storageFull?: boolean;
 }
 
 export interface UploadQueueSnapshot {
@@ -111,6 +118,8 @@ export class UploadQueue {
   private readonly discarding = new Map<string, Promise<void>>();
   private running = false;
   private runPromise: Promise<void> = Promise.resolve();
+  /** The upload in progress (its vehicle; settles when it ended either way). */
+  private inFlight: { vehicleId: string; settled: Promise<void> } | null = null;
   private restorePromise: Promise<void> | null = null;
 
   constructor(
@@ -197,7 +206,7 @@ export class UploadQueue {
   retry(id: string): void {
     if (this.discarding.has(id)) return;
     if (this.items.find((item) => item.id === id)?.status !== "failed") return;
-    this.updateItem(id, { status: "queued", error: null });
+    this.updateItem(id, { status: "queued", error: null, storageFull: false });
     void this.run();
   }
 
@@ -207,7 +216,7 @@ export class UploadQueue {
     this.items = this.items.map((item) => {
       if (item.status !== "failed" || !item.retryable || this.discarding.has(item.id)) return item;
       changed = true;
-      return { ...item, status: "queued", error: null };
+      return { ...item, status: "queued", error: null, storageFull: false };
     });
     if (changed) {
       this.emit();
@@ -291,6 +300,21 @@ export class UploadQueue {
     await this.db.clear([STORE]);
   }
 
+  /**
+   * Removes every capture of a vehicle that is being deleted: records,
+   * previews and persisted copies. Resolves once an upload of that vehicle
+   * in progress has ended, so nothing of it is written afterwards.
+   */
+  async removeVehicle(vehicleId: string): Promise<void> {
+    // Captures left over from an earlier session are known once restored.
+    await this.restorePromise;
+    const records = [...this.records.values()].filter((record) => record.vehicleId === vehicleId);
+    const persisted = records.filter((record) => !this.unpersisted.has(record.id));
+    for (const record of records) this.forget(record.id);
+    await Promise.all(persisted.map((record) => this.db.delete(STORE, record.id)));
+    if (this.inFlight?.vehicleId === vehicleId) await this.inFlight.settled;
+  }
+
   /* ---------- internals ---------- */
 
   private toItem(record: PendingUploadRecord, status: UploadItemStatus): UploadItem {
@@ -305,6 +329,8 @@ export class UploadQueue {
       thumbnailUrl: null,
       error: record.lastError,
       retryable: record.retryable !== false,
+      unpersisted: this.unpersisted.has(record.id),
+      storageFull: false,
     };
   }
 
@@ -369,7 +395,9 @@ export class UploadQueue {
             this.forget(record.id);
             continue;
           }
-          await this.processor(record, prepared);
+          const upload = this.processor(record, prepared);
+          this.inFlight = { vehicleId: record.vehicleId, settled: upload.then(() => undefined, () => undefined) };
+          await upload;
           const done = this.items.find((item) => item.id === record.id);
           // Listeners first – while the capture is still in the queue – so no screen
           // shows the shot without it in between (e.g. the replaced photo's check).
@@ -388,6 +416,7 @@ export class UploadQueue {
           // Removed meanwhile (saved, or the queue was cleared): nothing to keep.
           if (!this.records.has(record.id)) continue;
           const retryable = !isRejectedFileError(error);
+          const storageFull = isStorageFullError(error);
           const message = toUserMessage(
             error,
             "Foto konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
@@ -396,10 +425,18 @@ export class UploadQueue {
           this.records.set(record.id, updated);
           try {
             await this.db.put(STORE, updated);
+            // Stored now (e.g. vehicles were deleted meanwhile): it survives closing the app.
+            this.unpersisted.delete(record.id);
           } catch {
             // keep in memory
           }
-          this.updateItem(record.id, { status: "failed", error: message, retryable });
+          this.updateItem(record.id, {
+            status: "failed",
+            error: message,
+            retryable,
+            storageFull,
+            unpersisted: this.unpersisted.has(record.id),
+          });
         }
       }
     } finally {

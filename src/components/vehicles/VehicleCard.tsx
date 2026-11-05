@@ -1,15 +1,28 @@
 import { Camera, CarFront, ChevronRight } from "lucide-react";
 import Link from "next/link";
-import { StatusBadge } from "@/components/ui/StatusBadge";
+import { RetakeBadge, StatusBadge } from "@/components/ui/StatusBadge";
 import type { VehicleSummary } from "@/lib/domain/types";
 import { cn } from "@/lib/cn";
 import { formatDate, vehicleDisplayName } from "@/lib/format";
+import { showsStatusBadge } from "@/lib/processing/retake-summary";
 
-/** Tappable vehicle row: thumbnail, name, photo progress, date and status. */
-export function VehicleCard({ summary, href }: { summary: VehicleSummary; href?: string }) {
+/**
+ * Tappable vehicle row: thumbnail, name, photo progress, date and status –
+ * and "Neu aufnehmen" while `retakeCount` shots are rejected (never shown as
+ * complete then).
+ */
+export function VehicleCard({
+  summary,
+  href,
+  retakeCount = 0,
+}: {
+  summary: VehicleSummary;
+  href?: string;
+  retakeCount?: number;
+}) {
   const { vehicle, capturedRequiredCount, requiredCount, thumbnailUrl } = summary;
   const name = vehicleDisplayName(vehicle);
-  const complete = capturedRequiredCount >= requiredCount;
+  const complete = capturedRequiredCount >= requiredCount && retakeCount === 0;
 
   return (
     <Link
@@ -40,7 +53,8 @@ export function VehicleCard({ summary, href }: { summary: VehicleSummary; href?:
           </span>
         </p>
         <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
-          <StatusBadge status={vehicle.status} />
+          {showsStatusBadge(vehicle.status, retakeCount) && <StatusBadge status={vehicle.status} />}
+          {retakeCount > 0 && <RetakeBadge count={retakeCount} />}
           <time className="text-xs text-ae-subtle" dateTime={vehicle.createdAt}>
             {formatDate(vehicle.createdAt)}
           </time>

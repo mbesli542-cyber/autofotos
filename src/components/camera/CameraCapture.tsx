@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, CloudOff, LayoutGrid, RotateCcw, ShieldOff } from "lucide-react";
+import { ArrowLeft, CloudOff, HardDrive, LayoutGrid, RotateCcw, ShieldOff } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
@@ -17,6 +17,7 @@ import { CAMERA_CONFIG } from "@/lib/camera/config";
 import { checkPhotoFile, PHOTO_FILE_ACCEPT } from "@/lib/camera/photo-file";
 import { noopQualityChecker, type CaptureQualityWarning } from "@/lib/camera/quality";
 import type { Vehicle, VehiclePhotoWithUrls } from "@/lib/domain/types";
+import { storageFullMessage, summarizeFailedUploads } from "@/lib/offline/upload-status";
 import { isOlderThanSavedPhoto } from "@/lib/photos/capture-order";
 import { buildPhotoSlots, isSlotCaptured, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { storeAccessCode } from "@/lib/processing/access-code-storage";
@@ -27,6 +28,7 @@ import {
   getFirstMissingShotKey,
   getNextShotKeyAfterCapture,
 } from "@/lib/shots/shot-progress";
+import { readShootingTipsPrefs, shouldShowShootingTips, writeShootingTipsPrefs } from "@/lib/shots/shooting-guide";
 import { getOrderedShots, getShot, type ShotDefinition, type ShotTemplate } from "@/lib/shots/shot-template";
 import { AutoCheckInfo } from "./AutoCheckInfo";
 import { CameraErrorPanel } from "./CameraErrorPanel";
@@ -35,6 +37,8 @@ import { CapturePreview } from "./CapturePreview";
 import { CaptureControls } from "./CaptureControls";
 import { CheckBanner, ShotCheckChip, type CheckBannerState } from "./CheckBanner";
 import { InstructionPanel } from "./InstructionPanel";
+import { RotatePhonePrompt } from "./RotatePhonePrompt";
+import { ShootingTipsSheet } from "./ShootingTips";
 import { ShotProgress } from "./ShotProgress";
 
 interface PreviewState {
@@ -135,6 +139,13 @@ export function CameraCapture({
   /** Result of the last finished automatic check (shown briefly). */
   const [banner, setBanner] = useState<CheckBannerState | null>(null);
   const [showCheckInfo, setShowCheckInfo] = useState(false);
+  /**
+   * "Tipps für perfekte Fotos": opens by itself once per device when the camera
+   * opens for a vehicle without any photo ("auto"), or from the instruction box ("manual").
+   */
+  const [tips, setTips] = useState<"auto" | "manual" | null>(() =>
+    shouldShowShootingTips(readShootingTipsPrefs(), photos.length === 0 && pending.length === 0) ? "auto" : null,
+  );
 
   const reviewHref = cameraReturnHref(vehicle.id, "fotos");
   /** Close button / after a single retake: back to where the retake was started. */
@@ -167,12 +178,12 @@ export function CameraCapture({
   const previousSlot = slots.find((slot) => slot.key === previousKey) ?? null;
   const nextKeyInOrder = shot ? getAdjacentShotKey(template, shot.key, 1) : null;
 
-  const failedItems = pending.filter((item) => item.status === "failed");
-  /** Failed uploads a retry can still save. */
-  const failedCount = failedItems.filter((item) => item.retryable).length;
+  const failed = summarizeFailedUploads(pending);
+  /** Failed uploads a retry can still save (`failed.storageFull` of them: only after deleting vehicles). */
+  const failedCount = failed.retryable;
   /** Files the server refused for good – only "Verwerfen" (large view in "Fotos überprüfen") helps. */
-  const refusedCount = failedItems.length - failedCount;
-  const savingCount = pending.length - failedItems.length;
+  const refusedCount = failed.refused;
+  const savingCount = pending.length - failed.retryable - failed.refused;
   const capturedCount = capturedKeys.size;
   const remainingCount = shots.length - capturedCount;
   /** Shots the automatic check rejected (template order). */
@@ -237,11 +248,25 @@ export function CameraCapture({
     }
   }, [checkSnapshot.availability, vehicle.id]);
 
+  // Shown by itself once per device – also when the camera is left without closing the tips.
+  useEffect(() => {
+    if (tips === "auto") writeShootingTipsPrefs({ autoShown: true });
+  }, [tips]);
+
   useEffect(() => {
     if (!banner) return;
     const timer = setTimeout(() => setBanner(null), CHECK_BANNER_MS[banner.kind]);
     return () => clearTimeout(timer);
   }, [banner]);
+
+  // The device's storage is full: told for every capture it refuses – retrying alone never
+  // helps, and a capture kept in memory only is lost when the app is closed.
+  const storageFullRef = useRef(failed.storageFull);
+  useEffect(() => {
+    const previous = storageFullRef.current;
+    storageFullRef.current = failed.storageFull;
+    if (failed.storageFull > previous && shownRef.current) toast.error(storageFullMessage({ unpersisted: failed.unpersisted }));
+  }, [failed.storageFull, failed.unpersisted, toast]);
 
   // Routes stay mounted (React Activity): the browser's Back shows this camera
   // again as it was left (a new visit gets a fresh camera, see CameraScreen).
@@ -258,6 +283,7 @@ export function CameraCapture({
       setFlashKey(0);
       setBanner(null);
       setShowCheckInfo(false);
+      // The tips stay: their dialog closes while the camera is hidden and opens again with it.
     };
   }, [returnTo]);
 
@@ -365,6 +391,9 @@ export function CameraCapture({
   const streamReady = camera.state.status === "ready";
   const ratio = streamReady && camera.state.status === "ready" ? camera.state.width / camera.state.height : 4 / 3;
   const isPortraitStream = streamReady && ratio < 1;
+  /** Exterior shot, portrait picture: turn the phone (RotatePhonePrompt, then the instruction box). */
+  const portraitExterior = shot.category === "exterior" && isPortraitStream;
+  const askToRotate = portraitExterior && !preview;
   const alreadyCaptured = isSlotCaptured(currentSlot);
   const currentCheck = checkStates.get(shot.key) ?? { kind: "none" as const };
   const shotHint =
@@ -416,7 +445,24 @@ export function CameraCapture({
           <span className="short:hidden">
             {capturedCount} von {shots.length} aufgenommen · noch {remainingCount}
           </span>
-          {failedCount > 0 ? (
+          {failedCount > 0 && failed.storageFull > 0 ? (
+            // Full storage: retrying only helps after vehicles were deleted – the toast and the label say so.
+            <button
+              type="button"
+              onClick={() => {
+                toast.error(storageFullMessage(failed));
+                getAppServices().uploads.retryAll();
+              }}
+              aria-label={`${failedCount} nicht gespeichert · Speicher voll – bitte Fahrzeuge löschen, dann erneut versuchen`}
+              className="flex items-center gap-1 rounded-full bg-ae-danger/25 px-2 py-0.5 font-semibold text-ae-danger short:ml-3"
+            >
+              <HardDrive className="size-3" aria-hidden />
+              <span>
+                {failedCount}
+                <span className="short:hidden"> nicht gespeichert · Speicher voll</span>
+              </span>
+            </button>
+          ) : failedCount > 0 ? (
             <button
               type="button"
               onClick={() => getAppServices().uploads.retryAll()}
@@ -495,6 +541,7 @@ export function CameraCapture({
                 aria-label="Live-Kamerabild"
               />
               <CameraOverlay shot={shot} />
+              {portraitExterior && <RotatePhonePrompt paused={Boolean(preview)} />}
 
               {!preview && !banner && (shotHint || alreadyCaptured) && (
                 <div className="pointer-events-none absolute inset-x-3 top-3 flex flex-col items-center gap-2">
@@ -510,9 +557,12 @@ export function CameraCapture({
                 </div>
               )}
 
+              {/* While the phone should be turned, that is the hint – the instruction box stays short. */}
               <InstructionPanel
                 instruction={shot.instruction}
-                showRotateHint={shot.category === "exterior" && isPortraitStream}
+                tip={shot.tip}
+                rotate={askToRotate}
+                onShowTips={() => setTips("manual")}
               />
 
               {camera.state.status === "starting" && (
@@ -558,6 +608,8 @@ export function CameraCapture({
           />
         </div>
       </div>
+
+      {tips && <ShootingTipsSheet onClose={() => setTips(null)} />}
 
       {showCheckInfo && checkOffMessage && (
         <AutoCheckInfo

@@ -18,6 +18,7 @@ import { LoadingButton } from "@/components/ui/LoadingButton";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { PageLoading } from "@/components/ui/Spinner";
 import { usePhotoChecks } from "@/hooks/use-photo-checks";
+import { useOnline } from "@/hooks/use-online";
 import { useProcessingAccessCode } from "@/hooks/use-processing-access-code";
 import { useProcessingStatus } from "@/hooks/use-processing-status";
 import { usePendingUploads } from "@/hooks/use-upload-queue";
@@ -36,6 +37,7 @@ import {
 } from "@/lib/processing/presets";
 import { knownOutcomeOf } from "@/lib/processing/photo-checks";
 import { needsResultCheck } from "@/lib/processing/processing-warnings";
+import { getProcessorConnection } from "@/lib/processing/processor-connection";
 import { getRetakeStatus } from "@/lib/processing/quality-gate";
 import { PROCESSING_BLOCKER_MESSAGES, getProcessingBlocker } from "@/lib/processing/run-blockers";
 import { countByTreatment, selectPhotosForProcessing } from "@/lib/processing/shot-treatment";
@@ -52,6 +54,7 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
   const storedAccessCode = useProcessingAccessCode();
   const pendingUploads = usePendingUploads(vehicleId);
   const run = useProcessingRun(vehicleId);
+  const online = useOnline();
   const [chosenPreset, setChosenPreset] = useState<ProcessingPresetId>(DEFAULT_PROCESSING_PRESET);
   // Only styles the processor implements can ever be the selected one.
   const preset = isProcessingPresetAvailable(chosenPreset) ? chosenPreset : DEFAULT_PROCESSING_PRESET;
@@ -100,17 +103,16 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
   ).length;
 
   const status = processing.state.status;
-  const connection: ProcessorConnectionState =
-    processing.state.phase === "loading"
-      ? PROCESSOR_UI_HINT === "real"
-        ? "checking"
-        : "disconnected"
-      : status?.connected
-        ? "connected"
-        : "disconnected";
+  const connection: ProcessorConnectionState = getProcessorConnection({
+    phase: processing.state.phase,
+    status,
+    online,
+    uiHint: PROCESSOR_UI_HINT,
+  });
   const needsAccessCode = Boolean(status?.accessCodeRequired) && (!storedAccessCode || accessCodeError !== null);
   const blocker = getProcessingBlocker(photos, pendingUploads);
-  const canStart = canStartProcessing(status) && photos.length > 0 && !needsAccessCode && blocker === null;
+  const canStart =
+    connection === "connected" && canStartProcessing(status) && photos.length > 0 && !needsAccessCode && blocker === null;
   /** New photos (retakes) that can be processed now. */
   const readyPhotos = [...retakes.values()].flatMap((retake) => (retake.kind === "ready" ? [retake.photo] : []));
 
@@ -224,6 +226,7 @@ export function ProcessingScreen({ vehicleId }: { vehicleId: string }) {
             state={connection}
             showroomError={connection === "connected" ? (status?.showroomError ?? null) : null}
             connectionError={status?.connectionError ?? null}
+            onRetry={processing.refresh}
           />
         </div>
 

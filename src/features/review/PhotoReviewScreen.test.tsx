@@ -204,3 +204,99 @@ describe("<PhotoReviewScreen />", () => {
     expect(getAppServices().uploads.getSnapshot().items.filter((item) => item.vehicleId === vehicle.id)).toEqual([]);
   });
 });
+
+/** All required photos, capture NOT completed; `rejected`: shots whose saved result asks for a retake. */
+async function vehicleReadyToComplete(rejected: string[]) {
+  const { backend, template } = getAppServices();
+  const data = backend.data;
+  const vehicle = await data.createVehicle({
+    manufacturer: "Opel",
+    model: "Astra",
+    color: null,
+    licensePlate: null,
+    vin: null,
+    mileage: null,
+    firstRegistration: null,
+    internalReference: null,
+    notes: null,
+  });
+  for (const shot of template.shots) {
+    const { photo } = await savePhotoAndSyncStatus(data, template, {
+      photoId: crypto.randomUUID(),
+      vehicleId: vehicle.id,
+      shotKey: shot.key,
+      shotOrder: shot.order,
+      title: shot.title,
+      file: new Blob(["jpeg"], { type: "image/jpeg" }),
+      thumbnail: null,
+      width: 4000,
+      height: 3000,
+      takenAt: new Date().toISOString(),
+    });
+    if (rejected.includes(shot.key)) {
+      await data.saveProcessedPhoto({
+        photo,
+        preset: "autoexperten_standard",
+        file: new Blob(["result"], { type: "image/jpeg" }),
+        warnings: [{ code: "plate_mirrored", message: "Das Foto zeigt die andere Fahrzeugseite." }],
+      });
+    }
+  }
+  return vehicle;
+}
+
+describe("<PhotoReviewScreen /> – never 'Vollständig' while a shot is red", () => {
+  it("shows '15 / 15 · 1 neu aufnehmen' and asks before completing", async () => {
+    const vehicle = await vehicleReadyToComplete(["front"]);
+    render(
+      <ToastProvider>
+        <PhotoReviewScreen vehicleId={vehicle.id} />
+      </ToastProvider>,
+    );
+    expect(await screen.findByText("1 neu aufnehmen")).toBeInTheDocument();
+    expect(screen.getByText("15 / 15 Fotos")).toBeInTheDocument();
+    expect(screen.queryByText("Vollständig")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Aufnahmen abschließen" }));
+    const question = await screen.findByRole("dialog", {
+      name: "1 Foto muss neu aufgenommen werden. Trotzdem abschließen?",
+    });
+    fireEvent.click(within(question).getByRole("button", { name: "Abbrechen" }));
+    expect((await getAppServices().backend.data.getVehicle(vehicle.id))?.status).toBe("capturing");
+
+    fireEvent.click(screen.getByRole("button", { name: "Aufnahmen abschließen" }));
+    fireEvent.click(within(question).getByRole("button", { name: "Trotzdem abschließen" }));
+    await waitFor(async () =>
+      expect((await getAppServices().backend.data.getVehicle(vehicle.id))?.status).toBe("complete"),
+    );
+  });
+
+  it("uses the plural for several red shots", async () => {
+    const vehicle = await vehicleReadyToComplete(["front", "rear"]);
+    render(
+      <ToastProvider>
+        <PhotoReviewScreen vehicleId={vehicle.id} />
+      </ToastProvider>,
+    );
+    expect(await screen.findByText("2 neu aufnehmen")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Aufnahmen abschließen" }));
+    expect(
+      await screen.findByRole("dialog", { name: "2 Fotos müssen neu aufgenommen werden. Trotzdem abschließen?" }),
+    ).toBeInTheDocument();
+  });
+
+  it("completes without a question when no shot is red", async () => {
+    const vehicle = await vehicleReadyToComplete([]);
+    render(
+      <ToastProvider>
+        <PhotoReviewScreen vehicleId={vehicle.id} />
+      </ToastProvider>,
+    );
+    expect(await screen.findByText("Vollständig")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Aufnahmen abschließen" }));
+    await waitFor(async () =>
+      expect((await getAppServices().backend.data.getVehicle(vehicle.id))?.status).toBe("complete"),
+    );
+    expect(screen.queryByRole("dialog", { name: /Trotzdem abschließen/ })).not.toBeInTheDocument();
+  });
+});

@@ -11,7 +11,7 @@ export function ProgressBar({
   max: number;
   label: string;
   className?: string;
-  tone?: "blue" | "success";
+  tone?: "blue" | "success" | "danger";
 }) {
   const ratio = max === 0 ? 0 : Math.min(1, Math.max(0, value / max));
   return (
@@ -26,7 +26,7 @@ export function ProgressBar({
       <div
         className={cn(
           "h-full rounded-full transition-[width] duration-300",
-          tone === "success" ? "bg-ae-success" : "bg-ae-blue",
+          tone === "success" ? "bg-ae-success" : tone === "danger" ? "bg-ae-danger" : "bg-ae-blue",
         )}
         style={{ width: `${ratio * 100}%` }}
       />

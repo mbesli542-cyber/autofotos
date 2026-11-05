@@ -188,7 +188,8 @@ describe("<VehicleDetailScreen />", () => {
     const hero = view.container.querySelector("section");
     if (!hero) throw new Error("no hero");
     const badge = within(hero).getByText("Bearbeitet");
-    expect(badge).toHaveClass("bg-ae-bg", "absolute");
+    expect(badge).toHaveClass("bg-ae-bg");
+    expect(badge.parentElement).toHaveClass("absolute");
     expect(badge).not.toHaveClass("bg-ae-blue/15");
   });
 
@@ -288,5 +289,82 @@ describe("<VehicleDetailScreen />", () => {
       save.mockRestore();
       await uploads.discard(refused.id);
     }
+  });
+
+  it("says that the device's storage is full instead of only 'noch nicht gespeichert'", async () => {
+    const vehicle = await processedVehicleWithExtra();
+    const { backend, uploads } = getAppServices();
+    const quota = new DOMException("Speicher voll", "QuotaExceededError");
+    const save = vi.spyOn(backend.data, "savePhoto").mockRejectedValue(new AppError("storage_full", { cause: quota }));
+    const full = await uploads.enqueue({
+      vehicleId: vehicle.id,
+      shotKey: "front",
+      shotOrder: 2,
+      title: "Vorne",
+      file: new Blob(["jpeg"], { type: "image/jpeg" }),
+      takenAt: new Date().toISOString(),
+    });
+    try {
+      await waitFor(() =>
+        expect(uploads.getSnapshot().items.find((item) => item.id === full.id)).toMatchObject({
+          status: "failed",
+          storageFull: true,
+        }),
+      );
+      render(page(vehicle.id, "original"));
+      expect(
+        await screen.findByText(
+          "1 Foto konnte nicht gespeichert werden: Der Speicher auf diesem Gerät ist voll. Bitte bereits gespeicherte Fahrzeuge löschen. Sie bleiben auf diesem Gerät.",
+        ),
+      ).toBeInTheDocument();
+      // After deleting vehicles a retry saves it.
+      expect(screen.getByRole("button", { name: "Erneut versuchen" })).toBeInTheDocument();
+    } finally {
+      save.mockRestore();
+      await uploads.discard(full.id);
+    }
+  });
+});
+
+describe("<VehicleDetailScreen /> – rejected shots and deleting the vehicle", () => {
+  const MIRRORED: ProcessingWarning = { code: "plate_mirrored", message: "Das Foto zeigt die andere Fahrzeugseite." };
+
+  it("shows 'Neu aufnehmen' next to the status while a shot is rejected – not 'Alle Pflichtfotos vorhanden'", async () => {
+    const vehicle = await processedVehicleWithExtra({ front: [MIRRORED] });
+    const view = render(page(vehicle.id, "original"));
+    await screen.findByRole("heading", { level: 2, name: "Porsche Macan" });
+    const hero = view.container.querySelector("section");
+    if (!hero) throw new Error("no hero");
+    await waitFor(() => expect(within(hero).getByText("Neu aufnehmen")).toBeInTheDocument());
+    expect(within(hero).getByText("1 neu aufnehmen")).toBeInTheDocument();
+    expect(within(hero).queryByText("Alle Pflichtfotos vorhanden")).not.toBeInTheDocument();
+  });
+
+  it("has no 'Neu aufnehmen' badge without rejected shots", async () => {
+    const vehicle = await processedVehicleWithExtra();
+    const view = render(page(vehicle.id, "original"));
+    await screen.findByRole("heading", { level: 2, name: "Porsche Macan" });
+    const hero = view.container.querySelector("section");
+    expect(within(hero as HTMLElement).queryByText("Neu aufnehmen")).not.toBeInTheDocument();
+    expect(within(hero as HTMLElement).getByText("Alle Pflichtfotos vorhanden")).toBeInTheDocument();
+  });
+
+  it("'Fahrzeug löschen' asks first, then removes the vehicle with its photos and goes to the list", async () => {
+    const vehicle = await processedVehicleWithExtra();
+    const { backend } = getAppServices();
+    router.replace.mockClear();
+    render(page(vehicle.id, "original"));
+    fireEvent.click(await screen.findByRole("button", { name: "Fahrzeug löschen" }));
+    const question = await screen.findByRole("dialog", { name: "Fahrzeug löschen?" });
+    expect(question).toHaveTextContent("Porsche Macan wird mit allen Fotos und bearbeiteten Ergebnissen von diesem Gerät gelöscht.");
+    fireEvent.click(within(question).getByRole("button", { name: "Abbrechen" }));
+    expect(await backend.data.getVehicle(vehicle.id)).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Fahrzeug löschen" }));
+    fireEvent.click(within(question).getByRole("button", { name: "Fahrzeug löschen" }));
+    await waitFor(() => expect(router.replace).toHaveBeenCalledWith("/fahrzeuge"));
+    expect(await backend.data.getVehicle(vehicle.id)).toBeNull();
+    expect(await backend.data.listPhotos(vehicle.id)).toEqual([]);
+    expect(screen.getByText("Fahrzeug gelöscht.")).toBeInTheDocument();
   });
 });

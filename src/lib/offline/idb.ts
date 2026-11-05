@@ -14,6 +14,20 @@ export interface IdbStoreDefinition {
 
 type MemoryStores = Map<string, Map<IDBValidKey, unknown>>;
 
+/** Records of one store to delete (deleteMany). */
+export interface IdbDeletion {
+  store: string;
+  /** Records with these keys. */
+  keys?: readonly IDBValidKey[];
+  /** Records whose index `name` has the value `value`. */
+  index?: { name: string; value: IDBValidKey };
+  /** Records whose (string) key starts with one of these prefixes. */
+  keyPrefixes?: readonly string[];
+}
+
+/** Upper bound of the string keys starting with a prefix. */
+const PREFIX_END = "\uffff";
+
 export function isIndexedDbAvailable(): boolean {
   return typeof indexedDB !== "undefined";
 }
@@ -196,6 +210,49 @@ export class IdbDatabase {
     const tx = db.transaction(storeName, "readwrite");
     tx.objectStore(storeName).delete(key);
     await transactionToPromise(tx);
+  }
+
+  /**
+   * Deletes records of several stores in ONE readwrite transaction (all or
+   * nothing): by key, by index value and by key prefix – without reading the
+   * records themselves (e.g. large photo blobs).
+   */
+  async deleteMany(deletions: readonly IdbDeletion[]): Promise<void> {
+    const db = await this.open();
+    if (!db) {
+      for (const deletion of deletions) this.deleteFromMemory(deletion);
+      return;
+    }
+    const storeNames = [...new Set(deletions.map((deletion) => deletion.store))];
+    if (storeNames.length === 0) return;
+    const tx = db.transaction(storeNames, "readwrite");
+    const committed = transactionToPromise(tx);
+    for (const { store: name, keys, index, keyPrefixes } of deletions) {
+      const store = tx.objectStore(name);
+      for (const key of keys ?? []) store.delete(key);
+      for (const prefix of keyPrefixes ?? []) store.delete(IDBKeyRange.bound(prefix, `${prefix}${PREFIX_END}`));
+      if (index) {
+        const request = store.index(index.name).getAllKeys(index.value);
+        // Still inside the transaction: the deletes are queued before it can commit.
+        request.onsuccess = () => {
+          for (const key of request.result) store.delete(key);
+        };
+      }
+    }
+    await committed;
+  }
+
+  private deleteFromMemory({ store: name, keys, index, keyPrefixes }: IdbDeletion): void {
+    const store = this.memoryStore(name);
+    for (const key of keys ?? []) store.delete(key);
+    const keyPath = index
+      ? (this.stores.find((s) => s.name === name)?.indexes?.find((i) => i.name === index.name)?.keyPath ?? index.name)
+      : null;
+    for (const [key, value] of [...store]) {
+      const byPrefix = typeof key === "string" && (keyPrefixes ?? []).some((prefix) => key.startsWith(prefix));
+      const byIndex = index && keyPath !== null && (value as Record<string, unknown>)[keyPath] === index.value;
+      if (byPrefix || byIndex) store.delete(key);
+    }
   }
 
   async clear(storeNames: readonly string[]): Promise<void> {

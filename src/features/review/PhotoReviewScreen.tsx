@@ -1,13 +1,14 @@
 "use client";
 
-import { CircleCheck, ImagePlus, Pencil } from "lucide-react";
+import { CircleCheck, ImagePlus, Pencil, RotateCcw } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { PageContainer, StickyActions } from "@/components/layout/PageContainer";
 import { PhotoGrid } from "@/components/photos/PhotoGrid";
 import { PhotoViewer } from "@/components/photos/PhotoViewer";
 import { Button, ButtonLink } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { ProgressBar } from "@/components/ui/ProgressBar";
@@ -23,6 +24,7 @@ import { checkPhotoFile, PHOTO_FILE_ACCEPT } from "@/lib/camera/photo-file";
 import { toUserMessage } from "@/lib/errors";
 import { vehicleDisplayName } from "@/lib/format";
 import { buildPhotoSlots, type PhotoSlot } from "@/lib/photos/photo-slots";
+import { completeWithRetakesQuestion, countRetakeShots, retakeCountLabel } from "@/lib/processing/retake-summary";
 import { getShotProgress } from "@/lib/shots/shot-progress";
 import { getNextExtraShot } from "@/lib/shots/shot-template";
 import { canProcessVehicle } from "@/lib/vehicles/status";
@@ -41,6 +43,11 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
   const extraRetake = useExtraPhotoRetake(vehicleId);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [completing, setCompleting] = useState(false);
+  /** "Trotzdem abschließen?" – asked while shots are to be retaken. */
+  const [confirmComplete, setConfirmComplete] = useState(false);
+
+  // The route stays mounted while hidden: leaving it dismisses the question.
+  useEffect(() => () => setConfirmComplete(false), []);
 
   const photos = useMemo(() => (state.status === "ready" ? state.photos : []), [state]);
   const slots = useMemo(() => buildPhotoSlots(template, photos, pending), [template, photos, pending]);
@@ -48,6 +55,8 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
   const { states: checks } = useShotCheckStates(vehicleId, slots.required);
   const savedKeys = useMemo(() => new Set(photos.map((photo) => photo.shotKey)), [photos]);
   const progress = getShotProgress(template, savedKeys);
+  /** Shots the automatic check or a processing rejected – the set is never "Vollständig" then. */
+  const retakeCount = countRetakeShots(checks.values());
   const uploadsInProgress = pending.some((item) => item.status !== "failed");
 
   const detailHref = `/fahrzeuge/${vehicleId}`;
@@ -70,10 +79,11 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
     reload();
   }
 
-  async function handleComplete() {
+  async function completeNow() {
     setCompleting(true);
     try {
       await completeCapture(getAppServices().backend.data, template, vehicleId);
+      setConfirmComplete(false);
       toast.success("Aufnahmen abgeschlossen.");
       reload();
     } catch (error) {
@@ -81,6 +91,11 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
     } finally {
       setCompleting(false);
     }
+  }
+
+  function handleComplete() {
+    if (retakeCount > 0) setConfirmComplete(true);
+    else void completeNow();
   }
 
   async function handleAddFiles(event: ChangeEvent<HTMLInputElement>) {
@@ -114,8 +129,8 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
           takenAt: pickedFileTakenAt(file),
         });
       }
-    } catch {
-      toast.error("Foto konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.");
+    } catch (error) {
+      toast.error(toUserMessage(error, "Foto konnte nicht gespeichert werden. Bitte versuchen Sie es erneut."));
       return;
     }
     toast.success(files.length === 1 ? "Zusatzfoto wird gespeichert…" : `${files.length} Zusatzfotos werden gespeichert…`);
@@ -145,7 +160,13 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
           <h2 className="text-xl font-bold tracking-tight tabular-nums">
             {progress.captured} / {progress.required} Fotos
           </h2>
-          {progress.isComplete ? (
+          {retakeCount > 0 ? (
+            <span className="flex items-center gap-1 text-sm font-semibold text-ae-danger" role="status">
+              <RotateCcw className="size-4" aria-hidden />
+              {progress.isComplete ? "" : `Noch ${progress.remaining} offen · `}
+              {retakeCountLabel(retakeCount)}
+            </span>
+          ) : progress.isComplete ? (
             <span className="flex items-center gap-1 text-sm font-semibold text-ae-success">
               <CircleCheck className="size-4" aria-hidden />
               Vollständig
@@ -158,7 +179,7 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
           value={progress.captured}
           max={progress.required}
           label="Fotofortschritt"
-          tone={progress.isComplete ? "success" : "blue"}
+          tone={retakeCount > 0 ? "danger" : progress.isComplete ? "success" : "blue"}
           className="mb-2"
         />
         <p className="mb-5 text-xs text-ae-subtle">Tippen Sie auf ein Foto für die Großansicht.</p>
@@ -243,6 +264,17 @@ export function PhotoReviewScreen({ vehicleId }: { vehicleId: string }) {
         tabIndex={-1}
       />
       {extraRetake.input}
+
+      <ConfirmDialog
+        open={confirmComplete}
+        title={completeWithRetakesQuestion(retakeCount)}
+        description="Die rot markierten Fotos wurden abgelehnt – den Grund zeigt die Großansicht. Sie können sie auch später noch neu aufnehmen."
+        confirmLabel="Trotzdem abschließen"
+        tone="primary"
+        busy={completing}
+        onConfirm={() => void completeNow()}
+        onCancel={() => setConfirmComplete(false)}
+      />
 
       <PhotoViewer
         slots={allSlots}

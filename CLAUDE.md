@@ -109,6 +109,7 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Area | Location |
 | --- | --- |
 | Shot standard (15 shots, overlays, instructions) | `src/lib/shots/shot-template.ts` |
+| Shooting guide ("Tipps für perfekte Fotos" – by itself once per device; rotate prompt for exterior shots in portrait) | `src/lib/shots/shooting-guide.ts`, `src/components/camera/ShootingTips.tsx`, `RotatePhonePrompt.tsx` |
 | Shot completion / ordering / navigation (pure) | `src/lib/shots/shot-progress.ts` |
 | Vehicle validation & status rules (pure) | `src/lib/vehicles/` |
 | File & storage naming (`AE_{ref}_{nn}_{shot}.jpg`) | `src/lib/naming/file-naming.ts` |
@@ -117,12 +118,16 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Supabase implementation | `src/lib/data/supabase/` |
 | Status-syncing workflow operations | `src/lib/workflow/vehicle-workflow.ts` |
 | Offline-tolerant upload queue (refused files, "Verwerfen") | `src/lib/offline/upload-queue.ts` |
+| Failed-upload texts (storage full, captures kept in memory only) | `src/lib/offline/upload-status.ts` |
+| Demo-mode storage safety (`persist()`, storage full → `storage_full`, "Fahrzeug löschen", "Alle Daten auf diesem Gerät löschen") | `src/lib/offline/persistent-storage.ts`, `src/lib/workflow/device-data.ts`, `src/lib/errors.ts` |
 | Photo slots, capture-order rule (shared with `add_vehicle_photo`) | `src/lib/photos/photo-slots.ts`, `src/lib/photos/capture-order.ts` |
 | "Fahrzeugdaten" save without overwriting changes made elsewhere | `saveVehicleData` in `src/lib/workflow/vehicle-workflow.ts` |
 | Camera (stream, capture, picked-file check, quality-check interface) | `src/lib/camera/` (`photo-file.ts`: JPG/PNG/WebP/HEIC ≤ 50 MB), `src/components/camera/` |
 | Processing contract, config, presets, real processor, client, adapters | `src/lib/processing/` |
 | Processing runs (per vehicle, outside the screen), start blockers, processor hints | `src/lib/processing/processing-runs.ts`, `run-blockers.ts`, `processing-warnings.ts`, `src/components/processing/ProcessingWarningList.tsx` |
 | Instant per-photo check in the camera (auto-processing after a capture is saved, green/red shot segments; one job per photo shared with runs) | `src/lib/processing/photo-checks.ts`, `shot-check.ts`, `src/hooks/use-photo-checks.ts`, `src/components/camera/CheckBanner.tsx`, `AutoCheckInfo.tsx` |
+| "Neu aufnehmen" summaries (review header, completion question, list badge, Kamera tab) | `src/lib/processing/retake-summary.ts`, `src/hooks/use-retake-shots.ts` |
+| Processing connection wording (offline / Showroom-Rechner unreachable / not set up) | `src/lib/processing/processor-connection.ts` |
 | Data backend decision (`NEXT_PUBLIC_DATA_BACKEND`) | `src/lib/data/backend-mode.ts` |
 | Demo data migrations (IndexedDB) | `src/lib/data/mock/migrations.ts` |
 | API routes | `src/app/api/processing-status`, `process-photo`, `process-upload`, `process-job/[jobId]` (+ `/result`) |
