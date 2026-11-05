@@ -734,17 +734,6 @@ export function CameraCapture({
               />
               <CameraOverlay shot={shot} />
 
-              {/* Only until a shot is chosen (nothing to frame yet while every photo is there). */}
-              {!preview && shotHint && (
-                <div className="pointer-events-none absolute inset-x-3 top-3 flex flex-col items-center gap-2">
-                  <p
-                    className="max-w-sm rounded-xl bg-ae-warning px-3 py-1.5 text-center text-xs font-semibold text-black"
-                    role="status"
-                  >
-                    {shotHint}
-                  </p>
-                </div>
-              )}
 
 
               {camera.state.status === "starting" && (
@@ -771,15 +760,18 @@ export function CameraCapture({
             </div>
             {/*
               Only the short instruction lies on the viewfinder – the photo hint is in the header's status
-              line. At the viewfinder's bottom edge, but as wide as the stage: in a narrow portrait
-              viewfinder (9:16 on a small phone) the text keeps few lines and stays below the framing guide.
+              line. As wide as the stage (a narrow 9:16 portrait viewfinder keeps few lines) and where the
+              framing guide leaves room: above it for exterior shots, below it for interior and detail
+              shots (the hint to choose a shot goes with it – only until a shot is chosen).
             */}
             {!preview && camera.state.status !== "error" && (
               <InstructionPanel
                 instruction={shot.instruction}
                 rotate={askToRotate}
+                notice={shotHint}
                 onShowTips={() => setTips("manual")}
-                style={{ bottom: `calc((100cqh - min(100cqh, 100cqw / ${ratio})) / 2 + 0.75rem)` }}
+                placement={shot.category === "exterior" ? "top" : "bottom"}
+                edge={`calc((100cqh - min(100cqh, 100cqw / ${ratio})) / 2 + 0.75rem)`}
               />
             )}
           </div>

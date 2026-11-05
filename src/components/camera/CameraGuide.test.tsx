@@ -187,9 +187,16 @@ describe("'Tipps für perfekte Fotos'", () => {
     expect(stage).not.toHaveTextContent(/Lenkrad/);
     const box = screen.getByText("Fotografieren Sie das Cockpit möglichst symmetrisch.").closest("div.absolute") as HTMLElement;
     expect(box.parentElement).toBe(stage);
-    // Its bottom edge follows the viewfinder's (container units of the stage).
+    // Below the guide for interior and detail shots: its bottom edge follows the viewfinder's
+    // (container units of the stage).
+    expect(box).toHaveAttribute("data-placement", "bottom");
     expect(box.style.bottom).toMatch(/100cqh/);
     expect(box.closest('[aria-label="Live-Kamerabild"]')).toBeNull();
+    // Exterior guides leave the top third free (sky above the car): the box sits there.
+    fireEvent.click(screen.getByRole("button", { name: /^1\. Vorne links \(45°\)/ }));
+    const exterior = screen.getByText("Positionieren Sie das Fahrzeug wie in der Vorlage.").closest("div.absolute") as HTMLElement;
+    expect(exterior).toHaveAttribute("data-placement", "top");
+    expect(exterior.style.top).toMatch(/100cqh/);
   });
 });
 
