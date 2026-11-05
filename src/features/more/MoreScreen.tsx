@@ -17,6 +17,7 @@ import { toUserMessage } from "@/lib/errors";
 import { formatStorageSize, requestPersistentStorage, storageUsageBytes } from "@/lib/offline/persistent-storage";
 import { photoChecks } from "@/lib/processing/photo-checks";
 import { endProcessingSession, processingRuns } from "@/lib/processing/processing-runs";
+import { resetShootingTipsPrefs } from "@/lib/shots/shooting-guide";
 import { getOrderedShots, SHOT_CATEGORY_LABELS } from "@/lib/shots/shot-template";
 import { DELETE_ALL_CONFIRMATION } from "@/lib/workflow/device-data";
 
@@ -56,8 +57,10 @@ export function MoreScreen() {
   }, [isDemo, storageVersion]);
 
   async function handleSignOut() {
-    // Nothing of this user's processing goes on or is continued after a reload on this device.
+    // Nothing of this user's processing goes on or is continued after a reload on this device,
+    // and the next person sees the photo tips once by themselves, too.
     endProcessingSession();
+    resetShootingTipsPrefs();
     await getAppServices().authStore.signOut();
     router.replace("/login");
   }

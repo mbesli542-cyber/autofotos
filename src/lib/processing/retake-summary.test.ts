@@ -114,6 +114,19 @@ describe("vehicleRetakeShotKeys (vehicle lists, Kamera tab)", () => {
   it("is empty without photos", () => {
     expect(vehicleRetakeShotKeys(DEFAULT_SHOT_TEMPLATE, "veh-1", [], snapshot([rejection("front")]))).toEqual([]);
   });
+
+  it("lists a rejection kept with the photo (checked on another device) – the same rule as every screen", () => {
+    const rejectedElsewhere = photo("front", {
+      processingWarnings: [{ code: "rejected:vehicle_cropped", message: "Das Fahrzeug ist angeschnitten." }],
+    });
+    expect(vehicleRetakeShotKeys(DEFAULT_SHOT_TEMPLATE, "veh-1", [rejectedElsewhere], snapshot([]))).toEqual(["front"]);
+    // A result saved later (e.g. "Fotos bearbeiten" on another device) wins over this device's old rejection.
+    const processed = photo("front", {
+      processedStoragePath: "vehicle-processed/veh-1/autoexperten_standard/front/photo-front.jpg",
+      processedPreset: "autoexperten_standard",
+    });
+    expect(vehicleRetakeShotKeys(DEFAULT_SHOT_TEMPLATE, "veh-1", [processed], snapshot([rejection("front")]))).toEqual([]);
+  });
 });
 
 describe("needsCamera (Kamera tab)", () => {

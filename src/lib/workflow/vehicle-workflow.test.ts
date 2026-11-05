@@ -156,9 +156,10 @@ describe("'Interne Fahrzeugnummer' stays unique (export file names)", () => {
 
   async function setup() {
     const data = new MockDataProvider(createDemoDatabase(`workflow-${createId()}`));
-    // The demo seed has FZ-2041 (S 63 AMG).
+    // A real vehicle with FZ-2041 (the untouched demo samples go with it, their numbers never count).
+    const owner = await data.createVehicle({ ...INPUT, internalReference: "FZ-2041" });
     const taken = (await data.listVehicleReferences()).find((entry) => entry.internalReference === "FZ-2041");
-    if (!taken) throw new Error("seed without FZ-2041");
+    if (taken?.id !== owner.id) throw new Error("FZ-2041 not listed");
     return { data, taken };
   }
 

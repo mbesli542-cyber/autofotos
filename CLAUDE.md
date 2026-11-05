@@ -109,25 +109,28 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Area | Location |
 | --- | --- |
 | Shot standard (15 shots, overlays, instructions) | `src/lib/shots/shot-template.ts` |
-| Shooting guide ("Tipps für perfekte Fotos" – by itself once per device; rotate prompt for exterior shots in portrait) | `src/lib/shots/shooting-guide.ts`, `src/components/camera/ShootingTips.tsx`, `RotatePhonePrompt.tsx` |
+| Shooting guide ("Tipps für perfekte Fotos" – by itself once per device and again after a sign-out; per-shot `tip`; "Bitte Smartphone quer halten" for exterior shots in portrait, briefly in the header's status line, then in the instruction box) | `src/lib/shots/shooting-guide.ts`, `src/components/camera/ShootingTips.tsx`, `InstructionPanel.tsx` |
 | Shot completion / ordering / navigation (pure) | `src/lib/shots/shot-progress.ts` |
 | Vehicle validation & status rules (pure) | `src/lib/vehicles/` |
 | File & storage naming (`AE_{ref}_{nn}_{shot}.jpg`) | `src/lib/naming/file-naming.ts` |
-| Export "Alle Fotos speichern" (listing set + summary, share sheet in parts / ZIP, per-photo "Speichern"; unique "Interne Fahrzeugnummer") | `src/lib/export/` (`listing-export.ts`, `device-save.ts`, `zip.ts` store-only ZIP writer, `export-files.ts`), `src/components/export/`, `src/lib/vehicles/reference.ts`, `DataProvider.getPhotoFile` |
+| Export "Alle Fotos speichern" (listing set + summary – rejected shots by the check rule below, only with "trotzdem mitspeichern" –, share sheet in parts / ZIP, per-photo "Speichern"; unique "Interne Fahrzeugnummer", untouched demo samples never block one) | `src/lib/export/` (`listing-export.ts`, `device-save.ts`, `zip.ts` store-only ZIP writer, `zip-blob.ts`, `export-files.ts`), `src/components/export/`, `src/lib/vehicles/reference.ts`, `DataProvider.getPhotoFile` |
 | Backend contracts (`DataProvider`, `AuthService`) | `src/lib/data/types.ts` |
 | Demo mode (IndexedDB) | `src/lib/data/mock/` |
 | Supabase implementation | `src/lib/data/supabase/` |
 | Status-syncing workflow operations | `src/lib/workflow/vehicle-workflow.ts` |
 | Offline-tolerant upload queue (refused files, "Verwerfen") | `src/lib/offline/upload-queue.ts` |
 | Failed-upload texts (storage full, captures kept in memory only) | `src/lib/offline/upload-status.ts` |
-| Demo-mode storage safety (`persist()`, storage full → `storage_full`, "Fahrzeug löschen", "Alle Daten auf diesem Gerät löschen") | `src/lib/offline/persistent-storage.ts`, `src/lib/workflow/device-data.ts`, `src/lib/errors.ts` |
+| Demo-mode storage safety (`persist()`, storage full → `storage_full`, "Fahrzeug löschen" – also its runs, checks and kept jobs –, "Alle Daten auf diesem Gerät löschen" with typed "LÖSCHEN", sample vehicles removed with the first real one) | `src/lib/offline/persistent-storage.ts`, `src/lib/workflow/device-data.ts`, `src/lib/data/mock/seed.ts`, `src/lib/errors.ts` |
 | Photo slots, capture-order rule (shared with `add_vehicle_photo`) | `src/lib/photos/photo-slots.ts`, `src/lib/photos/capture-order.ts` |
 | "Fahrzeugdaten" save without overwriting changes made elsewhere | `saveVehicleData` in `src/lib/workflow/vehicle-workflow.ts` |
 | Camera (stream, capture, picked-file check, quality-check interface) | `src/lib/camera/` (`photo-file.ts`: JPG/PNG/WebP/HEIC ≤ 50 MB), `src/components/camera/` |
 | Processing contract, config, presets, real processor, client, adapters | `src/lib/processing/` |
-| Processing runs (per vehicle, outside the screen; resumed after a reload by the same user only, forgotten on sign-out via `endProcessingSession`; screen wake lock while running), start blockers, processor hints | `src/lib/processing/processing-runs.ts`, `stored-runs.ts`, `run-blockers.ts`, `processing-warnings.ts`, `src/lib/device/screen-wake-lock.ts`, `src/components/processing/ProcessingWarningList.tsx` |
-| Instant per-photo check in the camera (auto-processing after a capture is saved, green/red shot segments, interior/detail only "Gespeichert"; one job per photo shared with runs; submitted jobs kept on the device per user and polled again after a reload, 404 → resubmitted once; page open checks only photos without a check (`checkOnOpen`), never resends a failed one; a rejection is kept with the photo for every device: `rejected:<code>` in `processing_warnings` while there is no result, `DataProvider.recordPhotoRejection`; 60 s availability poll while the processor is unreachable) | `src/lib/processing/photo-checks.ts`, `job-journal.ts`, `shot-check.ts`, `src/hooks/use-photo-checks.ts`, `src/components/camera/CheckBanner.tsx` (header status line), `AutoCheckInfo.tsx` |
-| "Neu aufnehmen" summaries (review header, completion question, list badge, Kamera tab) | `src/lib/processing/retake-summary.ts`, `src/hooks/use-retake-shots.ts` |
+| Processing runs (per vehicle, outside the screen; kept on the device and resumed after a reload by the same user only; screen wake lock while running), start blockers, processor hints | `src/lib/processing/processing-runs.ts`, `stored-runs.ts`, `run-blockers.ts`, `processing-warnings.ts`, `src/lib/device/screen-wake-lock.ts`, `src/components/processing/ProcessingWarningList.tsx` |
+| Instant per-photo check in the camera (auto-processing after a capture is saved, green/red shot segments, interior/detail only "Gespeichert"; one job per photo shared with runs; page open checks only photos without a check, result or stored rejection – `checkOnOpen` –, never resends a failed one; 60 s availability poll while the Showroom-Rechner is `unreachable`, none while `no_processor`) | `src/lib/processing/photo-checks.ts`, `src/hooks/use-photo-checks.ts`, `src/components/camera/AutoCheckInfo.tsx` |
+| Check/run persistence on the device (submitted jobs per user, polled again after a reload, 404 → resubmitted once; rejections and failed checks; running runs) – forgotten per vehicle by "Fahrzeug löschen", all by sign-out (`endProcessingSession`) and the device reset | `src/lib/processing/job-journal.ts`, `stored-runs.ts`, `photo-checks.ts` (`stopVehicle`, `clear`, `stopAll`) |
+| Which check state a shot shows – ONE rule for camera, review, vehicle page, lists/Kamera tab and export: check in progress > a result (saved by this tab's check, else with the photo) > the rejection kept with the photo (`rejected:<code>` in `processing_warnings` while it has no result, written by `processPhoto` via `DataProvider.recordPhotoRejection`, known on every device) > the outcome kept on this device; one wording (`SHOT_CHECK_LABELS`) | `src/lib/processing/shot-check.ts` (`getShotCheckState`), `processing-warnings.ts` (`storedRejection`) |
+| Camera header (step, title, progress, "noch N", chips for failed/refused uploads, storage full, retakes, "Prüfung aus", and the ONE status line for check results, "Noch N Fotos neu aufnehmen", "Speicher voll" and "Bitte Smartphone quer halten" – nothing on the framing guide); next red shot after a retake | `src/components/camera/CameraCapture.tsx`, `CheckBanner.tsx` (`checkStatusContent`), `ShotProgress.tsx`, `src/lib/shots/shot-progress.ts` (`getRetakeContinuation`) |
+| "Neu aufnehmen" summaries (review header, completion question, list badge, Kamera tab – never "Vollständig" while a shot is red) | `src/lib/processing/retake-summary.ts`, `src/hooks/use-retake-shots.ts` |
 | Processing connection wording (offline / Showroom-Rechner unreachable / not set up) | `src/lib/processing/processor-connection.ts` |
 | Data backend decision (`NEXT_PUBLIC_DATA_BACKEND`) | `src/lib/data/backend-mode.ts` |
 | Demo data migrations (IndexedDB) | `src/lib/data/mock/migrations.ts` |
@@ -160,6 +163,12 @@ dev only (404 in production unless `ENABLE_DEV_TOOLS=true`): `/dev/processing-te
   `refs`, `purity`): set state in async callbacks, not synchronously in effects.
 - Always order photos by the shot template (`sortPhotosByShotOrder`), never by
   time.
+- Device-local stores (`localStorage` keys `ae-photo.*`: runs, job journal,
+  check outcomes, shooting-tips flag): "Abmelden" clears them
+  (`endProcessingSession` + `resetShootingTipsPrefs` in `MoreScreen`),
+  "Fahrzeug löschen" forgets the vehicle's entries. A new store must be added
+  there. A check state is decided only by `getShotCheckState` – never read the
+  stored rejection or the device's checks on their own in a screen.
 - Demo mode is automatic when `NEXT_PUBLIC_SUPABASE_URL`/key are missing or
   empty (or forced with `NEXT_PUBLIC_DATA_BACKEND=demo`). The data backend and the
   image processor (`IMAGE_PROCESSOR=mock` = none connected, `real`) are decided

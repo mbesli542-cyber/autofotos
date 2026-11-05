@@ -30,7 +30,7 @@ import {
   storedRejection,
   warningsToCheck,
 } from "@/lib/processing/processing-warnings";
-import type { ShotCheckState } from "@/lib/processing/shot-check";
+import { SHOT_CHECK_LABELS, type ShotCheckState } from "@/lib/processing/shot-check";
 import { sortPhotosByShotOrder } from "@/lib/shots/shot-progress";
 import { EXTRA_SHOT_ORDER_OFFSET, type ShotTemplate } from "@/lib/shots/shot-template";
 
@@ -299,7 +299,8 @@ export function describeExportPlan(plan: ExportPlan): string {
 export function exportItemLabel(entry: ExportItem): string {
   switch (entry.status) {
     case "processed":
-      return entry.needsCheck ? "Bearbeitet – bitte Ergebnis prüfen" : "Bearbeitet";
+      // The one wording of a result to look at (shot-check.ts SHOT_CHECK_LABELS.hint), as in the large view.
+      return entry.needsCheck ? `Bearbeitet · ${SHOT_CHECK_LABELS.hint}` : "Bearbeitet";
     case "original":
       return "Noch nicht bearbeitet – das Original wird gespeichert";
     case "retake":

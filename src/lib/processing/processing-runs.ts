@@ -399,10 +399,15 @@ export class ProcessingRuns {
     return { ...(await this.complete(run, generation, accessDenied)), preset: stored.preset };
   }
 
-  /** Back to the style selection; uploads and polls still on their way are aborted. */
+  /**
+   * Back to the style selection; uploads and polls still on their way are
+   * aborted, and a run kept on this device is forgotten – also one of an
+   * earlier page load that was not continued yet ("Fahrzeug löschen").
+   */
   reset(vehicleId: string): void {
     const run = this.runs.get(vehicleId);
     if (run) this.resetRun(run);
+    forgetRun(vehicleId);
   }
 
   /** Ends every run (the session ended or another user signed in); nothing of them is continued after a reload. */
@@ -690,10 +695,12 @@ export const processingRuns = new ProcessingRuns();
 /**
  * Signing out on this device: every run and check of the user ends, and
  * nothing of them is continued after a reload – also when no run or check
- * was started in this page load (stored runs and the job journal are
- * forgotten). The next person starts with the style selection.
+ * was started in this page load (stored runs, the job journal and the check
+ * outcomes kept on the device are forgotten; a rejection stays saved with
+ * its photo). The next person starts with the style selection.
  */
 export function endProcessingSession(): void {
   processingRuns.clear();
   photoChecks.stopAll();
+  photoChecks.clear();
 }

@@ -2,6 +2,7 @@ import { ChevronDown, CircleCheck, Info, RotateCcw, Save, TriangleAlert, X } fro
 import { Spinner } from "@/components/ui/Spinner";
 import { cn } from "@/lib/cn";
 import { shotCheckDetail, shotCheckLabel, type CheckMessage, type ShotCheckState } from "@/lib/processing/shot-check";
+import { ROTATE_PROMPT } from "@/lib/shots/shooting-guide";
 
 export interface CheckBannerState extends CheckMessage {
   /** Changes with every finished check (restarts the banner's timer). */
@@ -11,11 +12,15 @@ export interface CheckBannerState extends CheckMessage {
    * hint: passed, but the processor asks to look at the result.
    * retakes_left: after a retake the camera moved on to the next rejected
    * shot ("Noch N Fotos neu aufnehmen").
+   * storage_full: the device's storage refused a capture (not tied to a shot).
    */
-  kind: "ok" | "hint" | "retake" | "error" | "retakes_left";
+  kind: "ok" | "hint" | "retake" | "error" | "retakes_left" | "storage_full";
 }
 
 type Tone = "ok" | "hint" | "retake" | "error" | "saved" | "checking" | "neutral";
+
+/** The status line's content asking to turn the phone (exterior shot, portrait picture). */
+export const ROTATE_STATUS_ID = "rotate";
 
 /** What the status line shows: the finished check (banner) or the current shot's state. */
 export interface CheckStatusContent {
@@ -44,24 +49,30 @@ function stateTone(state: ShotCheckState): Tone {
 
 /**
  * The content of the camera's check status line (pure): a banner of a
- * finished check (or of the retakes still to do) while it is shown, else the
- * current shot's own state once it is captured – with the same wording as on
- * every other screen (SHOT_CHECK_LABELS). null: nothing to show.
+ * finished check (or of the retakes still to do, or of a full storage) while
+ * it is shown, else – briefly, `rotate` – the request to turn the phone for
+ * an exterior shot taken in portrait, else the current shot's own state once
+ * it is captured – with the same wording as on every other screen
+ * (SHOT_CHECK_LABELS). null: nothing to show.
  */
 export function checkStatusContent(
   banner: CheckBannerState | null,
   shot: { key: string },
   state: ShotCheckState,
   captured: boolean,
+  rotate = false,
 ): CheckStatusContent | null {
   if (banner) {
     return {
       id: `banner:${banner.id}`,
-      tone: banner.kind === "retakes_left" ? "retake" : banner.kind,
+      tone: banner.kind === "retakes_left" || banner.kind === "storage_full" ? "retake" : banner.kind,
       label: banner.label,
       detail: banner.detail,
       retakeShotKey: banner.kind === "retake" && banner.shotKey !== shot.key ? banner.shotKey : null,
     };
+  }
+  if (rotate) {
+    return { id: ROTATE_STATUS_ID, tone: "hint", label: ROTATE_PROMPT.label, detail: ROTATE_PROMPT.detail, retakeShotKey: null };
   }
   if (!captured) return null;
   return {

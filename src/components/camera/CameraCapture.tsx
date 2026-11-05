@@ -37,16 +37,26 @@ import {
   getNextShotKeyAfterCapture,
   getRetakeContinuation,
 } from "@/lib/shots/shot-progress";
-import { readShootingTipsPrefs, shouldShowShootingTips, writeShootingTipsPrefs } from "@/lib/shots/shooting-guide";
+import {
+  readShootingTipsPrefs,
+  ROTATE_PROMPT_MS,
+  shouldShowShootingTips,
+  writeShootingTipsPrefs,
+} from "@/lib/shots/shooting-guide";
 import { getOrderedShots, getShot, type ShotDefinition, type ShotTemplate } from "@/lib/shots/shot-template";
 import { AutoCheckInfo } from "./AutoCheckInfo";
 import { CameraErrorPanel } from "./CameraErrorPanel";
 import { CameraOverlay } from "./CameraOverlay";
 import { CapturePreview } from "./CapturePreview";
 import { CaptureControls } from "./CaptureControls";
-import { CheckStatusDetails, CheckStatusLine, checkStatusContent, type CheckBannerState } from "./CheckBanner";
+import {
+  CheckStatusDetails,
+  CheckStatusLine,
+  checkStatusContent,
+  ROTATE_STATUS_ID,
+  type CheckBannerState,
+} from "./CheckBanner";
 import { InstructionPanel } from "./InstructionPanel";
-import { RotatePhonePrompt } from "./RotatePhonePrompt";
 import { ShootingTipsSheet } from "./ShootingTips";
 import { ShotProgress } from "./ShotProgress";
 
@@ -90,7 +100,25 @@ function leaveCamera(router: Router, href: string) {
 }
 
 /** How long a banner stays in the check status line (ms): a rejection longer than an OK. */
-const CHECK_BANNER_MS = { ok: 3_500, hint: 6_000, retake: 9_000, error: 6_000, retakes_left: 4_000 } as const;
+const CHECK_BANNER_MS = {
+  ok: 3_500,
+  hint: 6_000,
+  retake: 9_000,
+  error: 6_000,
+  retakes_left: 4_000,
+  storage_full: 9_000,
+} as const;
+
+/** The header status line's message when the device's storage refused a capture. */
+function storageFullBanner(summary: { unpersisted: number }): CheckBannerState {
+  return {
+    id: `storage:${Date.now()}`,
+    shotKey: "",
+    kind: "storage_full",
+    label: "Speicher voll – Foto nicht gespeichert",
+    detail: storageFullMessage(summary),
+  };
+}
 
 /**
  * The banner for a finished check of the camera's vehicle – null when the
@@ -291,6 +319,24 @@ export function CameraCapture({
     [vehicle.id],
   );
 
+  // "Bitte Smartphone quer halten" (exterior shot, portrait picture): in the header's status line
+  // for a few seconds or until its full text is closed – once while exterior shots follow each
+  // other in portrait (again after a landscape or interior shot); then the instruction box says it.
+  const portraitExteriorNow =
+    shot?.category === "exterior" && camera.state.status === "ready" && camera.state.width < camera.state.height;
+  const [rotateDone, setRotateDone] = useState(false);
+  const rotateOpen = expandedId === ROTATE_STATUS_ID;
+  useEffect(() => {
+    const timer = portraitExteriorNow
+      ? rotateDone || rotateOpen
+        ? null
+        : setTimeout(() => setRotateDone(true), ROTATE_PROMPT_MS)
+      : setTimeout(() => setRotateDone(false), 0);
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [portraitExteriorNow, rotateDone, rotateOpen]);
+
   // Shown by itself once per device – also when the camera is left without closing the tips.
   useEffect(() => {
     if (tips === "auto") writeShootingTipsPrefs({ autoShown: true });
@@ -305,13 +351,16 @@ export function CameraCapture({
   }, [banner, bannerOpen]);
 
   // The device's storage is full: told for every capture it refuses – retrying alone never
-  // helps, and a capture kept in memory only is lost when the app is closed.
+  // helps, and a capture kept in memory only is lost when the app is closed. In the header's
+  // status line (like every camera message about photos), never on the framing guide.
   const storageFullRef = useRef(failed.storageFull);
   useEffect(() => {
     const previous = storageFullRef.current;
     storageFullRef.current = failed.storageFull;
-    if (failed.storageFull > previous && shownRef.current) toast.error(storageFullMessage({ unpersisted: failed.unpersisted }));
-  }, [failed.storageFull, failed.unpersisted, toast]);
+    if (failed.storageFull <= previous || !shownRef.current) return;
+    const timer = setTimeout(() => setBanner(storageFullBanner({ unpersisted: failed.unpersisted })), 0);
+    return () => clearTimeout(timer);
+  }, [failed.storageFull, failed.unpersisted]);
 
   // Routes stay mounted (React Activity): the browser's Back shows this camera
   // again as it was left (a new visit gets a fresh camera, see CameraScreen).
@@ -439,13 +488,18 @@ export function CameraCapture({
   const streamReady = camera.state.status === "ready";
   const ratio = streamReady && camera.state.status === "ready" ? camera.state.width / camera.state.height : 4 / 3;
   const isPortraitStream = streamReady && ratio < 1;
-  /** Exterior shot, portrait picture: turn the phone (RotatePhonePrompt, then the instruction box). */
+  /** Exterior shot, portrait picture: turn the phone (header status line briefly, then the instruction box). */
   const portraitExterior = shot.category === "exterior" && isPortraitStream;
   const askToRotate = portraitExterior && !preview;
   const alreadyCaptured = isSlotCaptured(currentSlot);
   const currentCheck = checkStates.get(shot.key) ?? { kind: "none" as const };
-  /** The check status line in the header: a check that just finished, else the current shot's state. */
-  const statusContent = preview ? null : checkStatusContent(banner, shot, currentCheck, alreadyCaptured);
+  /**
+   * The check status line in the header: a check that just finished, else (briefly) the request
+   * to turn the phone, else the current shot's state.
+   */
+  const statusContent = preview
+    ? null
+    : checkStatusContent(banner, shot, currentCheck, alreadyCaptured, askToRotate && !rotateDone);
   const statusExpanded = statusContent !== null && expandedId === statusContent.id;
   const shotHint =
     selectedKey !== null || preview || busy
@@ -501,11 +555,11 @@ export function CameraCapture({
             {capturedCount} von {shots.length} aufgenommen · noch {remainingCount}
           </span>
           {failedCount > 0 && failed.storageFull > 0 ? (
-            // Full storage: retrying only helps after vehicles were deleted – the toast and the label say so.
+            // Full storage: retrying only helps after vehicles were deleted – the status line and the label say so.
             <button
               type="button"
               onClick={() => {
-                toast.error(storageFullMessage(failed));
+                setBanner(storageFullBanner(failed));
                 getAppServices().uploads.retryAll();
               }}
               aria-label={`${failedCount} nicht gespeichert · Speicher voll – bitte Fahrzeuge löschen, dann erneut versuchen`}
@@ -585,7 +639,15 @@ export function CameraCapture({
           />
         </div>
         {statusContent && statusExpanded && (
-          <CheckStatusDetails content={statusContent} onSelect={selectShot} onClose={() => setExpandedId(null)} />
+          <CheckStatusDetails
+            content={statusContent}
+            onSelect={selectShot}
+            onClose={() => {
+              setExpandedId(null);
+              // Read and closed: the instruction box keeps saying it.
+              if (statusContent.id === ROTATE_STATUS_ID) setRotateDone(true);
+            }}
+          />
         )}
       </header>
 
@@ -606,7 +668,6 @@ export function CameraCapture({
                 aria-label="Live-Kamerabild"
               />
               <CameraOverlay shot={shot} />
-              {portraitExterior && <RotatePhonePrompt paused={Boolean(preview)} />}
 
               {/* Only until a shot is chosen (nothing to frame yet while every photo is there). */}
               {!preview && shotHint && (

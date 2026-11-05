@@ -9,7 +9,8 @@
  *
  * Every entry belongs to the user who submitted it: only that user's jobs
  * are resumed (a shared device, a session that expired meanwhile), and
- * signing out forgets them all (photo-checks.ts `stopAll`).
+ * signing out forgets them all (photo-checks.ts `stopAll`); deleting a
+ * vehicle forgets its jobs (`forgetVehicleJobs`).
  */
 import { isProcessingPresetId, type ProcessingPresetId } from "@/lib/domain/types";
 import { isValidProcessingJobId } from "./types";
@@ -122,6 +123,13 @@ export function recordJob(entry: JournalEntry, storage = browserStorage(), now =
 export function forgetJob(photoId: string, preset?: ProcessingPresetId, storage = browserStorage(), now = Date.now()): void {
   const entries = readJobJournal(storage, now);
   const kept = entries.filter((entry) => !sameJob(entry, photoId, preset));
+  if (kept.length !== entries.length) write(storage, kept);
+}
+
+/** Forgets the jobs of a vehicle's photos ("Fahrzeug löschen"). */
+export function forgetVehicleJobs(vehicleId: string, storage = browserStorage(), now = Date.now()): void {
+  const entries = readJobJournal(storage, now);
+  const kept = entries.filter((entry) => entry.vehicleId !== vehicleId);
   if (kept.length !== entries.length) write(storage, kept);
 }
 

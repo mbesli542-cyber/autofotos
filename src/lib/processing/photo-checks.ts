@@ -84,7 +84,7 @@ import {
   type PhotoProcessingResult,
   type PhotoStep,
 } from "./photo-processing";
-import { clearJobJournal, findJob, forgetJob, readJobJournal, recordJob } from "./job-journal";
+import { clearJobJournal, findJob, forgetJob, forgetVehicleJobs, readJobJournal, recordJob } from "./job-journal";
 import {
   AccessCodeRequiredError,
   ProcessingNotConnectedError,
@@ -511,14 +511,21 @@ export class PhotoChecks {
   /**
    * A vehicle was deleted ("Fahrzeug löschen"): its checks are aborted (a
    * processing nobody else waits for stops) and everything about it is
-   * forgotten – also its rejections stored on this device.
+   * forgotten – its outcomes and its jobs kept on this device, so nothing of
+   * it is polled or resumed after a reload.
    */
   stopVehicle(vehicleId: string): void {
+    forgetVehicleJobs(vehicleId);
     this.forgetWhere((check) => check.vehicleId === vehicleId, `${vehicleId}/`);
   }
 
-  /** Every vehicle was deleted ("Alle Daten auf diesem Gerät löschen"): as stopVehicle, for all. */
+  /**
+   * Forgets everything about the checks on this device – every check, the
+   * outcomes and the jobs kept on it ("Alle Daten auf diesem Gerät löschen",
+   * signing out: what matters is saved with the photos, e.g. a rejection).
+   */
   clear(): void {
+    clearJobJournal();
     this.forgetWhere(() => true, "");
   }
 
@@ -706,6 +713,13 @@ export class PhotoChecks {
         return;
       }
       if (this.snapshot.checks.get(photoId)?.status !== "waiting") return;
+      if (photo.processedStoragePath || storedRejection(photo) !== null) {
+        // Processed or rejected meanwhile (another device, "Fotos bearbeiten" before a reload):
+        // what is saved with the photo tells – it is not sent again by itself.
+        forgetJob(photoId, check.preset);
+        this.drop(photoId);
+        return;
+      }
       try {
         await this.process(photo, check.preset, {
           accessCode: readStoredAccessCode(),

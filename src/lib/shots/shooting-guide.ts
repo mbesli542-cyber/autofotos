@@ -69,7 +69,8 @@ export interface ShootingTipsPrefs {
   /**
    * The sheet already opened by itself on this device. It does that ONCE –
    * afterwards only the light bulb in the camera and "Mehr" show it, so daily
-   * use costs no extra tap.
+   * use costs no extra tap. Signing out resets it (`resetShootingTipsPrefs`):
+   * the next person on a shared phone sees it once, too.
    */
   autoShown: boolean;
 }
@@ -100,6 +101,30 @@ export function readShootingTipsPrefs(): ShootingTipsPrefs {
     return parseShootingTipsPrefs(window.localStorage.getItem(STORAGE_KEY));
   } catch {
     return DEFAULT_SHOOTING_TIPS_PREFS;
+  }
+}
+
+/** How long the camera's header says "Bitte Smartphone quer halten" before only the instruction box does (ms). */
+export const ROTATE_PROMPT_MS = 3_500;
+
+/**
+ * Exterior shot while the camera delivers a portrait picture: in portrait the
+ * car is small and the processing may ask for a retake. Shown in the camera
+ * header's status line (never on the framing guide), once while exterior
+ * shots follow each other in portrait; the instruction box keeps saying it.
+ */
+export const ROTATE_PROMPT = {
+  label: "Bitte Smartphone quer halten",
+  detail:
+    "Außenfotos nur im Querformat – das ganze Auto mit Rand. Bild dreht sich nicht? iPhone: Ausrichtungssperre aus · Android: „Automatisch drehen“ an.",
+} as const;
+
+/** Signing out: the next person sees the tips once by themselves, too. */
+export function resetShootingTipsPrefs(): void {
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Storage blocked: nothing kept anyway.
   }
 }
 

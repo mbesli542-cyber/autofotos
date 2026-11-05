@@ -152,6 +152,38 @@ describe("getShotCheckState", () => {
     expect(getShotCheckState(slot(rejected), [], "on", newer)).toEqual({ kind: "none" });
   });
 
+  it("follows ONE rule for which knowledge wins: in progress > result > rejection kept with the photo > this device's outcome", () => {
+    const processed = photo("p1", undefined, { processedStoragePath: "x.jpg", processedPreset: "autoexperten_standard" });
+    const rejected = photo("p1", undefined, { processingWarnings: [{ code: "rejected:vehicle_too_small", message: TOO_SMALL }] });
+    const gateRejection = (patch: Partial<PhotoCheck> = {}) =>
+      check("p1", { status: "retake", message: "Angeschnitten.", errorCode: "vehicle_cropped", ...patch });
+    // A rejection kept on this device (from an earlier visit or this one) never hides a saved result.
+    expect(getShotCheckState(slot(processed), [gateRejection({ restored: true })], "on")).toEqual({ kind: "ok", hint: null });
+    expect(getShotCheckState(slot(processed), [gateRejection()], "on")).toEqual({ kind: "ok", hint: null });
+    // A result saved by this tab's check wins over a rejection the photo list still shows.
+    expect(getShotCheckState(slot(rejected), [check("p1", { status: "ok" })], "on")).toEqual({ kind: "ok", hint: null });
+    expect(getShotCheckState(slot(rejected), [check("p1", { status: "retake", message: MIRRORED.message, warnings: [MIRRORED] })], "on")).toEqual({
+      kind: "retake",
+      reason: MIRRORED.message,
+    });
+    // Two rejections of the photo: the check's (this device, maybe newer) is shown.
+    expect(getShotCheckState(slot(rejected), [gateRejection()], "on")).toEqual({ kind: "retake", reason: "Angeschnitten." });
+    // A check waiting while the checks are off, or one that could not run, leaves the saved rejection.
+    expect(getShotCheckState(slot(rejected), [check("p1", { status: "waiting" })], "unreachable")).toEqual({
+      kind: "retake",
+      reason: TOO_SMALL,
+    });
+    expect(getShotCheckState(slot(rejected), [check("p1", { status: "error", message: "Offline", restored: true })], "on")).toEqual({
+      kind: "retake",
+      reason: TOO_SMALL,
+    });
+    // Nothing saved with the photo: this device's outcome tells.
+    expect(getShotCheckState(slot(photo("p1")), [gateRejection({ restored: true })], "on")).toEqual({
+      kind: "retake",
+      reason: "Angeschnitten.",
+    });
+  });
+
   it("never shows the result of a replaced photo still on the list – also with the checks off", () => {
     const old = photo("p_old", "2026-11-03T10:00:00.000Z", {
       processedStoragePath: "x.jpg",

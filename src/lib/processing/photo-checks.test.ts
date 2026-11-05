@@ -197,9 +197,26 @@ describe("PhotoChecks", () => {
     );
     save(savedPhoto("p_del_front", "front"));
     await vi.waitFor(() => expect(signal).toBeDefined());
+    // Jobs kept on the device for both vehicles (submitted before a reload).
+    const kept = (vehicleId: string, photoId: string, jobId: string) => ({
+      userId: "u_anna",
+      vehicleId,
+      photoId,
+      jobId,
+      preset: CHECK_PRESET,
+      startedAt: new Date().toISOString(),
+      shotKey: "rear",
+      shotOrder: 7,
+      title: "Hinten",
+      takenAt: "2026-11-03T10:00:00.000Z",
+    });
+    recordJob(kept("veh_1", "p_del_rear", "0123456789abcdef0123456789abcde1"));
+    recordJob(kept("veh_2", "p_other_rear", "0123456789abcdef0123456789abcde2"));
 
     checks.stopVehicle("veh_1");
     expect(signal?.aborted).toBe(true);
+    // Nothing of the deleted vehicle is polled or resumed after a reload.
+    expect(readJobJournal().map((entry) => entry.vehicleId)).toEqual(["veh_2"]);
     expect([...checks.getSnapshot().checks.keys()]).toEqual(["p_other_rear"]);
     expect([...checks.getSnapshot().captures.keys()]).toEqual(["veh_2/rear"]);
     await flush();
@@ -210,6 +227,7 @@ describe("PhotoChecks", () => {
     checks.clear();
     expect(checks.getSnapshot().checks.size).toBe(0);
     expect(checks.getSnapshot().captures.size).toBe(0);
+    expect(readJobJournal()).toEqual([]);
     expect(started().getSnapshot().checks.size).toBe(0);
   });
 
@@ -416,6 +434,23 @@ describe("PhotoChecks", () => {
     await vi.waitFor(() => expect(statusOf(checks, "p_kept_front")).toBe("ok"));
     expect(checks.getSnapshot().checks.has("p_kept_rear")).toBe(false);
     expect(vi.mocked(processPhoto).mock.calls.map(([photo]) => photo.id)).toEqual(["p_kept_front"]);
+  });
+
+  it("does not send a waiting photo that was rejected or processed meanwhile (e.g. on another device)", async () => {
+    vi.mocked(processPhoto).mockRejectedValueOnce(new AppError("unknown", { userMessage: "Bearbeitung fehlgeschlagen." }));
+    const checks = started();
+    save(savedPhoto("p_meanwhile", "rear"));
+    await vi.waitFor(() => expect(statusOf(checks, "p_meanwhile")).toBe("error"));
+    // Another device's check rejected it; the checks come on again and repeat what failed here.
+    env.photos = [
+      { ...savedPhoto("p_meanwhile", "rear"), processingWarnings: [{ code: "rejected:vehicle_too_small", message: TOO_SMALL }] },
+    ];
+    status = { ...CONNECTED, connected: false, showroomSource: null };
+    await checks.refreshAvailability(true);
+    status = CONNECTED;
+    await checks.refreshAvailability(true);
+    await vi.waitFor(() => expect(checks.getSnapshot().checks.has("p_meanwhile")).toBe(false));
+    expect(processPhoto).toHaveBeenCalledTimes(1);
   });
 
   it("polls the kept job of a check that could not run when a page opens – the photo is not sent again", async () => {
@@ -703,7 +738,7 @@ describe("PhotoChecks – jobs survive a reload", () => {
     const reloaded = started();
     // The processor stops answering while the photos are read.
     status = { ...CONNECTED, connected: false, showroomSource: null };
-    await vi.waitFor(() => expect(reloaded.getSnapshot().availability).toBe("no_processor"));
+    await vi.waitFor(() => expect(reloaded.getSnapshot().availability).toBe("unreachable"));
     await flush();
     expect(statusOf(reloaded, "p_down")).toBe("waiting");
     expect(processPhoto).not.toHaveBeenCalled();
@@ -716,7 +751,7 @@ describe("PhotoChecks – jobs survive a reload", () => {
     status = { ...CONNECTED, connected: false, showroomSource: null };
     recordJob(journalEntry(photo));
     const reloaded = started();
-    await vi.waitFor(() => expect(reloaded.getSnapshot().availability).toBe("no_processor"));
+    await vi.waitFor(() => expect(reloaded.getSnapshot().availability).toBe("unreachable"));
     reloaded.stopAll();
     expect(readJobJournal()).toEqual([]);
     expect(reloaded.getSnapshot().checks.has("p_end")).toBe(false);
@@ -741,7 +776,7 @@ describe("PhotoChecks – jobs survive a reload", () => {
     });
     const checks = started();
     save(photo);
-    await vi.waitFor(() => expect(checks.getSnapshot().availability).toBe("no_processor"));
+    await vi.waitFor(() => expect(checks.getSnapshot().availability).toBe("unreachable"));
     await vi.waitFor(() => expect(statusOf(checks, "p_sleep")).toBe("waiting"));
     expect(readJobJournal().map((entry) => entry.jobId)).toEqual([JOB]);
 
@@ -806,13 +841,13 @@ describe("PhotoChecks – availability while the checks are off", () => {
     status = { ...CONNECTED, connected: false, showroomSource: null };
     const checks = started();
     save(savedPhoto("p_slept", "rear"));
-    await vi.waitFor(() => expect(checks.getSnapshot().availability).toBe("no_processor"));
+    await vi.waitFor(() => expect(checks.getSnapshot().availability).toBe("unreachable"));
     const unwatch = checks.watch();
     const before = statusRequests();
     vi.advanceTimersByTime(AVAILABILITY_POLL_MS);
     await vi.waitFor(() => expect(statusRequests()).toBe(before + 1));
     await flush();
-    expect(checks.getSnapshot().availability).toBe("no_processor");
+    expect(checks.getSnapshot().availability).toBe("unreachable");
 
     // The dealer's PC is back.
     status = CONNECTED;
@@ -870,6 +905,12 @@ describe("checkOnOpen", () => {
     expect(checkOnOpen(photo, AUTOEXPERTEN_STANDARD_TEMPLATE, { status: "retake" }, true)).toBeNull();
   });
 
+  it("does not send a photo by itself whose rejection is kept with it (another device rejected it)", () => {
+    const rejected = { ...photo, processingWarnings: [{ code: "rejected:vehicle_cropped", message: "angeschnitten" }] };
+    expect(checkOnOpen(rejected, AUTOEXPERTEN_STANDARD_TEMPLATE, undefined, false)).toBeNull();
+    expect(checkOnOpen(rejected, AUTOEXPERTEN_STANDARD_TEMPLATE, { status: "error" }, true)).toBeNull();
+  });
+
   it("skips processed photos, extra photos and the demo samples' drawings", () => {
     const template = AUTOEXPERTEN_STANDARD_TEMPLATE;
     expect(checkOnOpen({ ...photo, processedStoragePath: "veh_1/front/p.jpg" }, template, undefined, false)).toBeNull();
@@ -880,11 +921,12 @@ describe("checkOnOpen", () => {
 
 describe("shouldPollAvailability", () => {
   it("polls only while the processor is unreachable or the device offline, on a shown page in a visible tab", () => {
-    expect(shouldPollAvailability("no_processor", true, true)).toBe(true);
+    expect(shouldPollAvailability("unreachable", true, true)).toBe(true);
     expect(shouldPollAvailability("offline", true, true)).toBe(true);
-    expect(shouldPollAvailability("no_processor", false, true)).toBe(false);
-    expect(shouldPollAvailability("no_processor", true, false)).toBe(false);
-    for (const availability of ["on", "unknown", "access_code"] as const) {
+    expect(shouldPollAvailability("unreachable", false, true)).toBe(false);
+    expect(shouldPollAvailability("unreachable", true, false)).toBe(false);
+    // A deployment without a processor does not get one by waiting.
+    for (const availability of ["on", "unknown", "access_code", "no_processor"] as const) {
       expect(shouldPollAvailability(availability, true, true)).toBe(false);
     }
   });

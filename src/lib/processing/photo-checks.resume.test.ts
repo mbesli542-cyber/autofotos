@@ -14,6 +14,7 @@ import type { ProcessingJob, ProcessingStatus } from "./types";
 const env = vi.hoisted(() => ({
   photos: [] as unknown[],
   saved: [] as unknown[],
+  rejections: [] as unknown[],
 }));
 
 vi.mock("@/lib/app-services", () => ({
@@ -32,6 +33,9 @@ vi.mock("@/lib/app-services", () => ({
           env.saved.push(input);
         },
         recordProcessedPhoto: async () => undefined,
+        recordPhotoRejection: async (input: unknown) => {
+          env.rejections.push(input);
+        },
       },
     },
     template: AUTOEXPERTEN_STANDARD_TEMPLATE,
@@ -152,6 +156,7 @@ beforeEach(() => {
   window.localStorage.clear();
   env.photos = [PHOTO];
   env.saved = [];
+  env.rejections = [];
   vi.unstubAllGlobals();
 });
 
@@ -166,6 +171,8 @@ describe("PhotoChecks after a reload (whole chain)", () => {
     expect(checks.getSnapshot().checks.get(PHOTO.id)).toMatchObject({ errorCode: "vehicle_cropped", message: "Angeschnitten." });
     expect(requests.filter((request) => request.includes("/api/process-upload"))).toEqual([]);
     expect(readJobJournal()).toEqual([]);
+    // The rejection of the resumed job is kept with the photo, too (every device knows it).
+    expect(env.rejections).toEqual([{ photoId: PHOTO.id, errorCode: "vehicle_cropped", message: "Angeschnitten." }]);
   });
 
   it("submits the photo once more when the processor was restarted (404) and saves that result", async () => {

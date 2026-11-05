@@ -87,7 +87,11 @@ async function ensureCompleted(
   if (needsRetake(errorCode) && errorCode !== null) {
     // Kept with the photo for every device – never in the way of reporting the rejection.
     const message = job.error?.trim() || retakeFallbackMessage(errorCode) || REJECTION_FALLBACK;
-    await data.recordPhotoRejection({ photoId: photo.id, errorCode, message }).catch(() => undefined);
+    try {
+      await data.recordPhotoRejection({ photoId: photo.id, errorCode, message });
+    } catch {
+      // Best effort: the rejection is reported anyway (and kept on this device by the check).
+    }
   }
   throw new ProcessingJobFailedError(errorCode, job.error ?? "Bearbeitung fehlgeschlagen.");
 }

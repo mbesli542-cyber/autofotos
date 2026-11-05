@@ -6,7 +6,7 @@ import { AppError } from "@/lib/errors";
 import { readJobJournal, recordJob } from "@/lib/processing/job-journal";
 import { ProcessingJobFailedError, processPhoto, type PhotoProcessingResult } from "@/lib/processing/photo-processing";
 import { AccessCodeRequiredError } from "@/lib/processing/processing-client";
-import { endProcessingSession } from "@/lib/processing/processing-runs";
+import { endProcessingSession, processingRuns } from "@/lib/processing/processing-runs";
 import { readStoredRun, storeRun, type StoredRunItem } from "@/lib/processing/stored-runs";
 import { AUTOEXPERTEN_STANDARD_TEMPLATE } from "@/lib/shots/shot-template";
 import { markProcessedIfDone } from "@/lib/workflow/vehicle-workflow";
@@ -737,6 +737,26 @@ describe("useProcessingRun after a reload", () => {
     expect(readStoredRun("veh_ben")).toBeNull();
     expect(processPhoto).not.toHaveBeenCalled();
     expect(resumed).toEqual([]);
+  });
+
+  it("'Fahrzeug löschen' forgets a run kept from an earlier page load – it is never continued", async () => {
+    const target = photo("p_del1", "front", 2, "veh_del");
+    storeRun({
+      userId: "u_anna",
+      vehicleId: "veh_del",
+      preset: "autoexperten_standard",
+      reprocess: false,
+      startedAt: new Date().toISOString(),
+      items: [storedItem(target, "open")],
+    });
+    // deleteVehicleFromDevice resets the vehicle's run before deleting its data.
+    processingRuns.reset("veh_del");
+    expect(readStoredRun("veh_del")).toBeNull();
+    saved.listPhotos.mockImplementation(async () => [target]);
+    const { result } = renderHook(() => useProcessingRun("veh_del"));
+    await act(async () => {});
+    expect(result.current.phase).toBe("idle");
+    expect(processPhoto).not.toHaveBeenCalled();
   });
 
   it("forgets the stored runs and kept jobs on sign-out – also when nothing ran in this page load", async () => {

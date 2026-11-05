@@ -14,7 +14,7 @@ import type { UploadItem } from "@/lib/offline/upload-queue";
 import { UNSAVED_PHOTOS_LOST_HINT } from "@/lib/offline/upload-status";
 import { AUTOEXPERTEN_STANDARD_TEMPLATE as T } from "@/lib/shots/shot-template";
 import { CameraCapture } from "./CameraCapture";
-import { ROTATE_PROMPT_MS } from "./RotatePhonePrompt";
+import { ROTATE_PROMPT_MS } from "@/lib/shots/shooting-guide";
 
 const stream = vi.hoisted(() => ({ width: 4000, height: 3000 }));
 const queue = vi.hoisted(() => ({ items: [] as unknown[] }));
@@ -101,8 +101,10 @@ function camera(props: Partial<ComponentProps<typeof CameraCapture>> & { vehicle
 }
 
 const TIPS_TITLE = "Tipps für perfekte Fotos";
-const ROTATE = "Bitte Smartphone quer halten";
+const ROTATE = /^Bitte Smartphone quer halten/;
 const ROTATE_LINE = "Smartphone quer halten";
+/** The header's status line asking to turn the phone (null: not shown). */
+const rotatePrompt = () => screen.queryByRole("button", { name: ROTATE });
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -163,46 +165,48 @@ describe("'Tipps für perfekte Fotos'", () => {
 });
 
 describe("turn the phone for exterior shots", () => {
-  it("asks clearly to hold the phone in landscape – briefly large, then in the instruction box; the shutter works", () => {
+  it("asks clearly to hold the phone in landscape – briefly in the header, then in the instruction box; the shutter works", () => {
     vi.useFakeTimers();
     stream.width = 3000;
     stream.height = 4000;
     render(camera({ vehicle: vehicle("veh-portrait"), photos: [photo("veh-portrait", 0)] }));
-    expect(screen.getByText(ROTATE)).toBeInTheDocument();
+    // In the header's status line – never on the framing guide.
+    expect(rotatePrompt()?.closest("header")).not.toBeNull();
     expect(screen.getByText(ROTATE_LINE)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Foto aufnehmen" })).toBeEnabled();
-    // It does not cover the car for long: the instruction box keeps saying it.
     act(() => {
       vi.advanceTimersByTime(ROTATE_PROMPT_MS);
     });
-    expect(screen.queryByText(ROTATE)).not.toBeInTheDocument();
+    expect(rotatePrompt()).toBeNull();
     expect(screen.getByText(ROTATE_LINE)).toBeInTheDocument();
     // Not before every shot: the next exterior shot keeps the compact line only.
     fireEvent.click(screen.getByRole("button", { name: "Weiter" }));
-    expect(screen.queryByText(ROTATE)).not.toBeInTheDocument();
+    expect(rotatePrompt()).toBeNull();
     expect(screen.getByText(ROTATE_LINE)).toBeInTheDocument();
   });
 
-  it("can be tapped away at once and names the setting on iPhone and Android", () => {
+  it("opens its full text on a tap, names the setting on iPhone and Android, and goes once closed", () => {
     stream.width = 3000;
     stream.height = 4000;
     render(camera({ vehicle: vehicle("veh-tap"), photos: [photo("veh-tap", 0)] }));
-    expect(screen.getByText(/Ausrichtungssperre aus · Android: „Automatisch drehen“ an/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Bitte Smartphone quer halten/ }));
-    expect(screen.queryByText(ROTATE)).not.toBeInTheDocument();
+    fireEvent.click(rotatePrompt() as HTMLElement);
+    const details = document.getElementById("camera-check-details");
+    expect(details).toHaveTextContent(/Ausrichtungssperre aus · Android: „Automatisch drehen“ an/);
+    fireEvent.click(screen.getByRole("button", { name: "Hinweis schließen" }));
+    expect(rotatePrompt()).toBeNull();
     expect(screen.getByText(ROTATE_LINE)).toBeInTheDocument();
   });
 
   it("does not ask in landscape or for interior shots", () => {
     const view = render(camera({ vehicle: vehicle("veh-landscape"), photos: [photo("veh-landscape", 0)] }));
-    expect(screen.queryByText(ROTATE)).not.toBeInTheDocument();
+    expect(rotatePrompt()).toBeNull();
     expect(screen.queryByText(ROTATE_LINE)).not.toBeInTheDocument();
     view.unmount();
 
     stream.width = 3000;
     stream.height = 4000;
     render(camera({ vehicle: vehicle("veh-interior"), photos: [photo("veh-interior", 0)], initialShotKey: "cockpit" }));
-    expect(screen.queryByText(ROTATE)).not.toBeInTheDocument();
+    expect(rotatePrompt()).toBeNull();
     expect(screen.queryByText(ROTATE_LINE)).not.toBeInTheDocument();
   });
 });
@@ -226,7 +230,7 @@ describe("full device storage", () => {
     };
   }
 
-  it("says the storage is full (not just 'Erneut versuchen') and that unsaved photos are lost when the app closes", () => {
+  it("says the storage is full (not just 'Erneut versuchen') and that unsaved photos are lost when the app closes", async () => {
     const props = { vehicle: vehicle("veh-full"), photos: [photo("veh-full", 0)] };
     const view = render(camera(props));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -237,6 +241,11 @@ describe("full device storage", () => {
       screen.getByRole("button", { name: "1 nicht gespeichert · Speicher voll – bitte Fahrzeuge löschen, dann erneut versuchen" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Erneut versuchen$/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent(`${USER_ERROR_MESSAGES.storage_full} ${UNSAVED_PHOTOS_LOST_HINT}`);
+    // In the header's status line – never a message on the framing guide.
+    const line = await screen.findByRole("alert");
+    expect(line).toHaveTextContent(
+      `Speicher voll – Foto nicht gespeichert: ${USER_ERROR_MESSAGES.storage_full} ${UNSAVED_PHOTOS_LOST_HINT}`,
+    );
+    expect(line.closest("header")).not.toBeNull();
   });
 });

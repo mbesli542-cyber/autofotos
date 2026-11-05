@@ -20,7 +20,7 @@
  * The German wording of each state is the same on every screen
  * (`shotCheckLabel`).
  */
-import type { ProcessingWarning } from "@/lib/domain/types";
+import type { ProcessingWarning, VehiclePhoto } from "@/lib/domain/types";
 import { isOlderCapture, isOlderThanSavedPhoto } from "@/lib/photos/capture-order";
 import type { PhotoSlot } from "@/lib/photos/photo-slots";
 import type { ShotCategory } from "@/lib/shots/shot-template";
@@ -185,6 +185,32 @@ export function getShotCheckState(
   return passThroughState(state, slot.photo !== null && !slot.pending);
 }
 
+/** Whether the check saved a result for its photo (ok, or a result whose hint asks for a retake). */
+function savedResult(check: Pick<PhotoCheck, "status" | "errorCode">): boolean {
+  return check.status === "ok" || (check.status === "retake" && check.errorCode === null);
+}
+
+/**
+ * Whether the check of the shot's shown photo tells more than what is saved
+ * with the photo – ONE rule for which knowledge wins, on every screen, in
+ * the vehicle lists and in the export:
+ * 1. a check in progress (the photo is being processed right now);
+ * 2. a result: saved by the photo's check in this tab (the newest – the
+ *    photo list on screen may not show it yet), else saved with the photo;
+ * 3. the processor's rejection kept with the photo (`rejected:<code>`,
+ *    known on every device);
+ * 4. the outcome of the photo's check kept on this device (a rejection, or
+ *    "Prüfung nicht möglich") – only while nothing is saved with the photo.
+ * A rejection never hides a saved result: a photo with a showroom result is
+ * not red because of a rejection that saved nothing (its result is what the
+ * export uses), and a check that could not run never hides what was saved.
+ */
+function checkWinsOverSaved(check: PhotoCheck, state: ShotCheckState, photo: VehiclePhoto): boolean {
+  if (state.kind === "checking") return true;
+  if (savedResult(check)) return true;
+  return state.kind === "retake" && photo.processedStoragePath === null;
+}
+
 function checkedShotState(
   slot: Pick<PhotoSlot, "key" | "category" | "photo" | "pending">,
   vehicleChecks: readonly PhotoCheck[],
@@ -199,8 +225,8 @@ function checkedShotState(
   const stored = slot.photo !== null && (slot.photo.processedStoragePath !== null || storedRejection(slot.photo) !== null);
   if (check) {
     const state = getPhotoCheckState(check, checksOn);
-    // A check that could not run: what was saved earlier for the photo still tells.
-    if (state.kind !== "error" || !stored || check.photoId !== slot.photo?.id) return state;
+    // The check of a newer capture than the list shows, nothing saved yet, or the check tells more (see above).
+    if (check.photoId !== slot.photo?.id || !stored || checkWinsOverSaved(check, state, slot.photo)) return state;
   }
   const replaced =
     slot.photo !== null &&

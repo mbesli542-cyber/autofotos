@@ -134,6 +134,17 @@ export function unusedSampleVehicleIds(
   photos: readonly Pick<StoredPhoto, "vehicleId" | "originalStoragePath" | "processedStoragePath">[],
 ): string[] {
   if (!vehicles.some((vehicle) => !isSampleVehicleId(vehicle.id))) return [];
+  return untouchedSampleVehicleIds(vehicles, photos);
+}
+
+/**
+ * The samples nobody worked on (pure) – they go with the first real vehicle,
+ * so their internal numbers never block a real vehicle's number.
+ */
+export function untouchedSampleVehicleIds(
+  vehicles: readonly Pick<Vehicle, "id">[],
+  photos: readonly Pick<StoredPhoto, "vehicleId" | "originalStoragePath" | "processedStoragePath">[],
+): string[] {
   const used = new Set(
     photos
       .filter((photo) => !photo.originalStoragePath.startsWith(STATIC_PATH_PREFIX) || photo.processedStoragePath)

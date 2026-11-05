@@ -49,7 +49,13 @@ import {
   storedPhotoWarnings,
 } from "@/lib/processing/processing-warnings";
 import { CURRENT_DEMO_DATA_VERSION, DEMO_STORES, migrateDemoData, setDemoDataVersion } from "./migrations";
-import { buildSeedData, STATIC_PATH_PREFIX, unusedSampleVehicleIds, type StoredPhoto } from "./seed";
+import {
+  buildSeedData,
+  STATIC_PATH_PREFIX,
+  untouchedSampleVehicleIds,
+  unusedSampleVehicleIds,
+  type StoredPhoto,
+} from "./seed";
 
 const STORES = DEMO_STORES;
 
@@ -230,9 +236,16 @@ export class MockDataProvider implements DataProvider {
 
   async listVehicleReferences(): Promise<VehicleReference[]> {
     await this.ensureReady();
-    const vehicles = await this.db.getAll<Vehicle>(STORES.vehicles);
+    const [vehicles, photos] = await Promise.all([
+      this.db.getAll<Vehicle>(STORES.vehicles),
+      this.db.getAll<StoredPhoto>(STORES.photos),
+    ]);
+    // Untouched sample vehicles go with the first real vehicle: their numbers are free.
+    const leaving = new Set(untouchedSampleVehicleIds(vehicles, photos));
     return vehicles.flatMap((vehicle) =>
-      vehicle.internalReference ? [{ id: vehicle.id, internalReference: vehicle.internalReference }] : [],
+      vehicle.internalReference && !leaving.has(vehicle.id)
+        ? [{ id: vehicle.id, internalReference: vehicle.internalReference }]
+        : [],
     );
   }
 

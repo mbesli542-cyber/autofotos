@@ -42,7 +42,7 @@ describe("useVehicleChecks", () => {
 
   it("watches the processor's availability only while the page is shown", () => {
     const { watch, unwatch } = spies();
-    const { unmount } = renderHook(() => useVehicleChecks("veh_1", "no_processor"));
+    const { unmount } = renderHook(() => useVehicleChecks("veh_1", "unreachable"));
     expect(watch).toHaveBeenCalledTimes(1);
     expect(unwatch).not.toHaveBeenCalled();
     unmount();

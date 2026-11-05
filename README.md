@@ -51,6 +51,15 @@ processor nothing is processed, and "Bearbeitet" only ever shows real results.
 
 Vehicle statuses: **Neu** → **Aufnahmen offen** → **Vollständig** (explicit
 "Aufnahmen abschließen", only with all 15 required shots) → **Bearbeitet**.
+A set with a shot to retake is never shown as "Vollständig": "Fotos
+überprüfen" shows "15 / 15 Fotos · 1 neu aufnehmen" with a red progress bar,
+"Aufnahmen abschließen" asks "1 Foto muss neu aufgenommen werden. Trotzdem
+abschließen?" first, the vehicle page and the list cards show a "Neu
+aufnehmen" badge instead of the green "Vollständig" chip, and the "Kamera"
+tab keeps the vehicle and opens the camera at its first red shot
+(`src/lib/processing/retake-summary.ts`). Which shot is red follows one rule
+on every screen and in the export (see [Instant check in the
+camera](#instant-check-in-the-camera)).
 The "Bearbeiten" tab also lists vehicles with all required photos that are
 not completed yet ("Bereit zum Abschließen", button "Aufnahmen abschließen"
 → "Fotos überprüfen"). "Ergebnisse ansehen" opens the vehicle page in the
@@ -108,8 +117,10 @@ the 15 required shots and exported as `_16_extra_01`, `_17_extra_02`, …
 Fahrzeugnummer" is unique (`src/lib/vehicles/reference.ts`, compared as the
 file names would, ignoring case): "Diese Fahrzeugnummer ist schon vergeben."
 Only a new or changed number is checked – vehicles that already share a
-number (data from before the rule) stay editable. The check runs in the app
-(no database constraint yet: the seed and older data contain duplicates).
+number (data from before the rule) stay editable. The untouched demo sample
+vehicles never block a number (they go with the first real vehicle). The
+check runs in the app (no database constraint yet: the seed and older data
+contain duplicates).
 
 ### Export ("Alle Fotos speichern")
 
@@ -211,9 +222,22 @@ the app uses:
   diesem Gerät." and "Mehr" shows "Demo-Modus · Daten nur auf diesem Gerät"
   (online: "Angemeldet · Daten werden online gespeichert") – no backend names.
 
-Demo data only lives in that browser. "Mehr → Demo-Daten zurücksetzen"
-restores the sample vehicles and also deletes photos that were not saved yet
-(the local upload queue). Both providers implement the same
+Demo data only lives in that browser. The sample vehicles only illustrate
+an empty app: they are removed as soon as a real vehicle exists (a sample
+someone photographed or processed is kept as real data), and their internal
+numbers never block a real vehicle's number. "Mehr → Alle Daten auf diesem
+Gerät löschen" asks for "LÖSCHEN" to be typed and then deletes every vehicle,
+photo and result on the device together with photos not saved yet (the local
+upload queue), the runs, checks and jobs kept on the device; the samples do
+not come back. "Fahrzeug löschen" (vehicle page, after a question; demo mode
+only – the Supabase schema has no delete policy) stops the vehicle's run and
+checks, forgets its kept jobs and stored run, drops its waiting uploads and
+deletes the vehicle with all photo records and files in one IndexedDB
+transaction. The app asks the browser once per page load to keep its data
+(`navigator.storage.persist()`); "Mehr" shows the storage used and, if the
+browser may clear it, the tip to add the app to the home screen. A full
+storage shows "Der Speicher auf diesem Gerät ist voll. Bitte bereits
+gespeicherte Fahrzeuge löschen." Both providers implement the same
 `DataProvider` interface (`src/lib/data/types.ts`), so the UI is identical.
 The sample photos are placeholder drawings, not listing photos: a vehicle
 with one of them cannot be processed ("Beispielfahrzeug – bitte ein eigenes
@@ -455,13 +479,33 @@ never caches API calls or Supabase requests.
   required photos are there and no shot is requested, nothing is armed: the
   shutter and "Foto hochladen" stay disabled until the employee taps the photo
   to replace ("… Tippen Sie oben auf das Foto, das Sie wiederholen möchten.").
+- **Header:** step and title, the shot progress (tap a segment to jump to
+  that shot – red segments are shots to retake), "N von 15 aufgenommen ·
+  noch N", chips for failed uploads ("N nicht gespeichert · Erneut
+  versuchen", or "· Speicher voll" when the device's storage refused it),
+  refused files, shots to retake and "Prüfung aus", and ONE check status line:
+  a check that just finished, "Noch N Fotos neu aufnehmen" after a retake,
+  "Speicher voll – Foto nicht gespeichert", briefly "Bitte Smartphone quer
+  halten", else the current shot's state (tap = full text below the header,
+  with "Jetzt wiederholen" for another red shot). After a retake with no
+  shot missing the camera goes to the next red shot; it leaves for "Fotos
+  überprüfen" only when none is red.
 - **Landscape (short screens):** the title line shows `n / 15 · noch N`, the
-  failed-upload chip shows only the cloud icon and the count (tap =
-  "Erneut versuchen"), saving shows a spinner; portrait shows
-  "N nicht gespeichert · Erneut versuchen".
-- **Messages:** while the camera is open, short messages (toasts) appear in
-  the middle of the viewfinder, so they never cover the current shot, the
-  progress or the shutter; elsewhere they appear at the top.
+  chips show only their icon and count, the check status line sits next to
+  the progress, saving shows a spinner.
+- **Nothing on the framing guide:** every message about photos and checks is
+  in the header. "Bitte Smartphone quer halten" (an exterior shot while the
+  picture is portrait) shows in the status line for 3.5 s – once while
+  exterior shots follow each other in portrait; its full text names the
+  iPhone and Android rotation settings – and the instruction box then says
+  "Smartphone quer halten". The instruction box carries the shot's short
+  `tip` (fades out after a few seconds in landscape) and the light bulb that
+  opens "Tipps für perfekte Fotos" – a sheet that also opens by itself once
+  per device (again after a sign-out) when the camera opens for a vehicle
+  without photos.
+  Other short messages (toasts, e.g. a failed capture) appear in the middle
+  of the viewfinder while the camera is open; elsewhere they appear at the
+  top.
 - **Orientation:** captured frames are already upright; uploaded photos keep
   EXIF and are displayed with the browser's EXIF orientation handling;
   dimensions/thumbnails use `createImageBitmap(..., { imageOrientation: "from-image" })`.
@@ -503,7 +547,12 @@ Workshop Wi-Fi can be weak, so captures are **never lost on upload failure**:
 3. Failed uploads stay on the device, are shown with a warning badge
    ("nicht gespeichert"), retried automatically when the connection returns
    and on the next app start, or manually ("Erneut versuchen") – network,
-   session and server errors.
+   session and server errors. A full device storage (demo mode) is told
+   apart (`storage_full`, `src/lib/offline/upload-status.ts`): the camera
+   says "Speicher voll" and that captures the storage could not keep are
+   lost when the app is closed; the vehicle page says so instead of "Sie
+   bleiben auf diesem Gerät."; such a capture is saved as soon as the storage
+   takes it again.
 4. **Refused files** – a type the storage does not take (only JPG, PNG, WebP,
    HEIC/HEIF) or more than 50 MB – are final: "Dieses Bildformat wird nicht
    unterstützt (JPG, PNG, WebP oder HEIC)." / "Das Foto ist zu groß (max.
@@ -568,10 +617,16 @@ Two independent decisions (pure helpers in `src/lib`):
 | `PROCESSING_ACCESS_CODE` | any text | demo mode only (see below) |
 | `NEXT_PUBLIC_IMAGE_PROCESSOR` | `real` · `mock` | UI hint for the first render; the real state comes from `GET /api/processing-status` |
 
-**"Bearbeitet" only ever shows real processor results.** If no processor is
-connected or reachable, the processing page shows the amber chip
-"Showroom-Prozessor nicht verbunden" and "Echte Showroom-Bearbeitung ist noch
-nicht verbunden.", the start button is disabled and nothing is saved. If the
+**"Bearbeitet" only ever shows real processor results.** Without a
+processor (`IMAGE_PROCESSOR=mock`) the processing page says "Echte
+Showroom-Bearbeitung ist noch nicht verbunden.", the start button is disabled
+and nothing is saved. A configured processor that does not answer (dealer PC
+asleep, restarting, or no answer from the status request) shows "Der
+Showroom-Rechner ist gerade nicht erreichbar. Bitte später erneut
+versuchen." with "Erneut prüfen", and an offline phone "Keine
+Internetverbindung – die Bearbeitung ist wieder möglich, sobald Sie online
+sind." (`src/lib/processing/processor-connection.ts`); "Fotos verarbeiten"
+is enabled only while connected. If the
 processor reports that its showroom plates are missing or invalid
 (`showroomSource: "missing"`), the page shows "AutoExperten Showroom-Master
 fehlt." and stays disabled; a job that was not composited onto the plates is
@@ -691,6 +746,12 @@ at most 2400 px – typically ≈ 0.75–1.4 MB, streamed through
   has a row is dropped). A run ends when the user signs out or another user
   signs in (its uploads and polls are aborted; the next person starts with the
   style selection); "Anderen Stil wählen" also aborts work still on its way.
+  A running run is kept on the device (`stored-runs.ts`, per user) and
+  continues when its page opens again after a reload or a discarded tab:
+  finished rows stay, open rows use the shot's current photo, jobs already
+  submitted are polled instead of sent again. The page holds a screen wake
+  lock while it runs (`src/lib/device/screen-wake-lock.ts`). "Abmelden" and
+  "Fahrzeug löschen" forget stored runs and kept jobs.
 - **Per photo:** temporary failures (connection, busy processor) offer
   "Erneut versuchen". A rejected photo offers "Foto neu aufnehmen"; a photo
   retaken during or after the run offers "Neues Foto bearbeiten" (the row is
@@ -735,6 +796,45 @@ at most 2400 px – typically ≈ 0.75–1.4 MB, streamed through
   processing replaces them, a new photo starts without. Texts over 300
   characters are shortened with "…"; at most 20 hints / 12 KB are kept, hints
   to check or retake first.
+
+### Instant check in the camera
+
+Right after a capture of a template shot is saved, the photo is processed in
+the background with the standard style – the same processing as "Fotos
+bearbeiten", results saved the same way (`src/lib/processing/photo-checks.ts`).
+The camera's shot segments turn green ("Geprüft – passt"), amber ("Geprüft –
+bitte Ergebnis ansehen") or red ("Bitte neu aufnehmen: <Grund>"); interior
+and detail shots are only passed through and show a neutral "Gespeichert".
+One wording on every screen (`SHOT_CHECK_LABELS` in `shot-check.ts`).
+
+- **Off** without a processor ("noch nicht verbunden"), while the
+  Showroom-Rechner is unreachable ("gerade nicht erreichbar" – asked again
+  every 60 s while the camera, "Fotos überprüfen" or the vehicle page is shown
+  and the tab is visible), offline, or in demo mode without the stored access
+  code. Captures wait and are checked once the checks are on again.
+- **Opening** the camera, "Fotos überprüfen" or the vehicle page checks the
+  template photos without a check, a result or a stored rejection
+  (`checkOnOpen`); a check that failed is not sent again on every visit.
+- **Reloads:** every submitted job is kept on the device per user
+  (`job-journal.ts`, 24 h) and polled again after a reload instead of sending
+  the photo a second time; a job the processor no longer knows (404 after a
+  restart) is submitted once more.
+- **A rejection is kept with the photo** (`rejected:<errorCode>` in
+  `processing_warnings` while it has no result, `DataProvider.recordPhotoRejection`
+  – a conditional update allowed by the existing "Members update photos"
+  policy), so every device – the desktop that downloads the ZIP as well as
+  the phone that took the photo – knows the shot must be retaken. Rejections
+  and failed checks are also kept on the device (localStorage) for the
+  states of this device.
+- **Which state a shot shows** – one rule (`getShotCheckState`) for the
+  camera, "Fotos überprüfen", the vehicle page, the vehicle lists / Kamera tab
+  and the export: a check in progress, then a result (saved by this tab's
+  check, else saved with the photo), then the rejection kept with the photo,
+  then the outcome kept on this device. A rejection never hides a saved
+  result, and a check that could not run never hides what was saved.
+- **Forgotten:** "Fahrzeug löschen" stops the vehicle's checks and forgets
+  its outcomes and kept jobs; "Abmelden" and "Alle Daten auf diesem Gerät
+  löschen" forget all of them (a rejection stays saved with its photo).
 
 ### Real processor (Stage 2 prototype) – `processor/`
 

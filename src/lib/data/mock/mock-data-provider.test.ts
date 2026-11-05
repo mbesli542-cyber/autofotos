@@ -697,11 +697,26 @@ describe("MockDataProvider – files for 'Speichern' and the references", () => 
   it("lists the vehicles that have an internal reference", async () => {
     const { data, vehicle } = await vehicleWithPhoto();
     const references = await data.listVehicleReferences();
-    expect(references).toContainEqual({ id: vehicle.id, internalReference: "FZ-7001" });
-    // The demo seed's numbers.
-    expect(references.map((entry) => entry.internalReference)).toEqual(
-      expect.arrayContaining(["FZ-2041", "FZ-2042", "FZ-2043"]),
-    );
-    expect(references.every((entry) => entry.internalReference)).toBe(true);
+    expect(references).toEqual([{ id: vehicle.id, internalReference: "FZ-7001" }]);
+  });
+
+  it("never lists the numbers of untouched sample vehicles – they go with the first real vehicle", async () => {
+    const data = new MockDataProvider(createDemoDatabase(`test-${createId()}`));
+    expect(await data.listVehicleReferences()).toEqual([]);
+    // A sample someone photographed is real work: its number counts.
+    const S63 = "5d0c6f1e-63a1-4c84-9a5f-0d5b3f2c6301";
+    await data.savePhoto({
+      photoId: createId(),
+      vehicleId: S63,
+      shotKey: "rear",
+      shotOrder: 7,
+      title: "Hinten",
+      file: new Blob(["jpeg"], { type: "image/jpeg" }),
+      thumbnail: null,
+      width: 4000,
+      height: 3000,
+      takenAt: new Date().toISOString(),
+    });
+    expect(await data.listVehicleReferences()).toEqual([{ id: S63, internalReference: "FZ-2041" }]);
   });
 });

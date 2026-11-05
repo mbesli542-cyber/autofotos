@@ -43,9 +43,9 @@ const NO_URLS: VehiclePhotoWithUrls["urls"] = { original: "", thumbnail: "", pro
 
 /**
  * Keys of a vehicle's shots to retake (template order), from its active
- * photos as the vehicle list loads them (no captures waiting for their
- * upload: those belong to the vehicle page) and the automatic checks of this
- * device.
+ * photos as the vehicle list loads them (with the rejections kept with them;
+ * no captures waiting for their upload: those belong to the vehicle page)
+ * and the automatic checks of this device – the shot-check.ts rule.
  */
 export function vehicleRetakeShotKeys(
   template: ShotTemplate,

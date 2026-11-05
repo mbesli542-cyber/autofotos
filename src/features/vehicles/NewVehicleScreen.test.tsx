@@ -34,11 +34,23 @@ describe("<NewVehicleScreen />", () => {
 
   it("warns at 'Interne Fahrzeugnummer' when another vehicle has the number (export names would collide)", async () => {
     router.replace.mockClear();
-    const before = (await getAppServices().backend.data.listVehicles()).length;
+    const { data } = getAppServices().backend;
+    await data.createVehicle({
+      manufacturer: "Mercedes-Benz",
+      model: "S 63 AMG",
+      color: null,
+      licensePlate: null,
+      vin: null,
+      mileage: null,
+      firstRegistration: null,
+      internalReference: "FZ-2041",
+      notes: null,
+    });
+    const before = (await data.listVehicles()).length;
     render(<NewVehicleScreen />);
     fireEvent.change(screen.getByLabelText(/Hersteller/), { target: { value: "BMW" } });
     fireEvent.change(screen.getByLabelText(/Modell/), { target: { value: "320d" } });
-    // The demo seed's S 63 AMG has FZ-2041.
+    // Another vehicle has FZ-2041.
     fireEvent.change(screen.getByLabelText("Interne Fahrzeugnummer"), { target: { value: "fz 2041" } });
     fireEvent.click(screen.getByRole("button", { name: "Fahrzeug erstellen & Fotos aufnehmen" }));
 

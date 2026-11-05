@@ -19,6 +19,7 @@ import { getAppServices } from "@/lib/app-services";
 import { MockDataProvider } from "@/lib/data/mock/mock-data-provider";
 import { readJobJournal, recordJob } from "@/lib/processing/job-journal";
 import { readStoredRun, storeRun } from "@/lib/processing/stored-runs";
+import { readShootingTipsPrefs, writeShootingTipsPrefs } from "@/lib/shots/shooting-guide";
 import { MoreScreen } from "./MoreScreen";
 
 function renderMore() {
@@ -186,11 +187,33 @@ describe("<MoreScreen /> – 'Abmelden'", () => {
       title: "Vorne",
       takenAt: startedAt,
     });
+    // A failed check kept on the device and the "tips already shown" flag.
+    window.localStorage.setItem(
+      "ae-photo.photo-checks.v1",
+      JSON.stringify([
+        {
+          photoId: "p_front",
+          vehicleId: "veh_1",
+          shotKey: "front",
+          shotOrder: 2,
+          title: "Vorne",
+          takenAt: startedAt,
+          preset: "autoexperten_standard",
+          status: "error",
+          message: "Bearbeitung fehlgeschlagen.",
+          errorCode: "processing_failed",
+        },
+      ]),
+    );
+    writeShootingTipsPrefs({ autoShown: true });
     renderMore();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Abmelden" })));
     // A run or check of this user is neither continued after a reload nor by the next person.
     expect(readStoredRun("veh_1")).toBeNull();
     expect(readJobJournal()).toEqual([]);
+    expect(window.localStorage.getItem("ae-photo.photo-checks.v1")).toBeNull();
+    // The next person sees the photo tips once by themselves.
+    expect(readShootingTipsPrefs()).toEqual({ autoShown: false });
     expect(authStore.getSnapshot().status).toBe("unauthenticated");
   });
 });
