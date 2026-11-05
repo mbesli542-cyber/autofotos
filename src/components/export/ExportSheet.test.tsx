@@ -148,7 +148,8 @@ describe("<ExportSheet /> on a phone (share sheet)", () => {
     fireEvent.click(await ready("16 Fotos speichern"));
     await waitFor(() => expect(shared).toHaveLength(1));
 
-    fireEvent.click(await ready("Teil 2 von 2 sichern (6 Fotos)"));
+    expect(within(sheet()).getByText("Teil 1 von 2 übergeben – jetzt die nächsten 6 Fotos sichern.")).toBeInTheDocument();
+    fireEvent.click(await ready("Teil 2 von 2 sichern"));
     await waitFor(() => expect(shared).toHaveLength(2));
 
     const ref = vehicle.internalReference;
@@ -191,6 +192,9 @@ describe("<ExportSheet /> on a phone (share sheet)", () => {
     expect(await within(sheet()).findByRole("alert", { hidden: true })).toHaveTextContent(
       "Das Teilen hat nicht funktioniert. Bitte die Fotos stattdessen herunterladen.",
     );
+    // The main button now offers the ZIP (the only ZIP button left).
+    const zip = within(sheet()).getAllByRole("button", { name: "Als ZIP-Datei herunterladen", hidden: true });
+    expect(zip).toHaveLength(1);
     fireEvent.click(await ready("Als ZIP-Datei herunterladen"));
     await waitFor(() => expect(downloads).toHaveLength(1));
     expect(downloads[0]?.name).toBe(`AE_${vehicle.internalReference}_Fotos.zip`);

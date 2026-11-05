@@ -20,9 +20,8 @@ import { buildExportZip, ExportFileLoader, exportFileKey } from "@/lib/export/ex
 import {
   describeExportPlan,
   exportableItems,
-  exportItemLabel,
-  itemsToReview,
   photoCount,
+  reviewRows,
   selectExportItems,
   type ExportItem,
   type ExportPlan,
@@ -134,7 +133,7 @@ export function ExportSheet({
   const selection = selected.map(exportFileKey).join("|");
   const batches = splitIntoShareBatches(files);
   const progress = phase.kind === "shared" && phase.selection === selection ? phase : null;
-  const review = itemsToReview(plan);
+  const rows = reviewRows(plan);
   const archiveName = buildExportArchiveName({ internalReference: vehicle.internalReference, vehicleId: vehicle.id });
   const exampleName = selected[0]?.fileName ?? null;
   const busy = phase.kind === "busy";
@@ -188,9 +187,12 @@ export function ExportSheet({
     }
   }
 
+  /** Sharing failed on this phone: the ZIP is the way out. */
+  const zipInstead = phase.kind === "failed" && phase.offerZip;
+
   function handleSave() {
     if (!ready || busy) return;
-    if (touch) {
+    if (touch && !zipInstead) {
       const index = progress?.next ?? 0;
       const batch = batches[index];
       if (batch && canShareFiles(batch)) {
@@ -201,8 +203,10 @@ export function ExportSheet({
     void saveZip(files);
   }
 
-  const saveLabel = progress
-    ? `Teil ${progress.next + 1} von ${progress.total} sichern (${photoCount(batches[progress.next]?.length ?? 0)})`
+  const saveLabel = zipInstead
+    ? "Als ZIP-Datei herunterladen"
+    : progress
+    ? `Teil ${progress.next + 1} von ${progress.total} sichern`
     : !plan.complete
       ? "Trotzdem speichern"
       : touch
@@ -221,7 +225,7 @@ export function ExportSheet({
     >
       {open && (
         <div className="flex max-h-[inherit] flex-col">
-          <header className="flex items-start gap-3 px-5 pt-5 pb-3">
+          <header className="flex items-start gap-3 px-5 pt-5 pb-3 short:pt-3 short:pb-2">
             <div className="min-w-0 flex-1">
               <h2 id="export-title" className="text-sm font-semibold text-ae-muted">
                 Alle Fotos speichern
@@ -247,62 +251,6 @@ export function ExportSheet({
           </header>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-5">
-            {review.length > 0 && !finished && (
-              <ul className="mb-3 flex flex-col gap-1.5" aria-label="Bitte ansehen">
-                {review.map((item) => {
-                  const content = (
-                    <>
-                      <span className="mt-0.5 rounded-md bg-ae-surface-3 px-1.5 py-0.5 text-[11px] font-bold tabular-nums">
-                        {String(item.order).padStart(2, "0")}
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-semibold">{item.title}</span>
-                        <span className={cn("block text-xs font-medium", STATUS_TONE[item.status])}>
-                          {exportItemLabel(item)}
-                        </span>
-                        {item.note && <span className="mt-0.5 block text-xs text-ae-muted">{item.note}</span>}
-                      </span>
-                    </>
-                  );
-                  return (
-                    <li key={item.key}>
-                      {onShowShot && item.status !== "missing" ? (
-                        <button
-                          type="button"
-                          onClick={() => onShowShot(item.key)}
-                          className="flex w-full items-start gap-2.5 rounded-xl bg-ae-surface-2 px-3 py-2 text-left hover:bg-ae-surface-3"
-                        >
-                          {content}
-                        </button>
-                      ) : (
-                        <div className="flex items-start gap-2.5 rounded-xl bg-ae-surface-2 px-3 py-2">{content}</div>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-
-            {plan.counts.retake > 0 && !finished && (
-              <label className="mb-3 flex items-start gap-3 rounded-xl border border-ae-danger/30 bg-ae-danger/8 px-3 py-2.5 text-sm">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 size-5 shrink-0 accent-ae-blue"
-                  checked={includeRetakes}
-                  disabled={busy || progress !== null}
-                  onChange={(event) => setIncludeRetakes(event.target.checked)}
-                />
-                <span>
-                  {plan.counts.retake === 1
-                    ? "Das abgelehnte Foto trotzdem mitspeichern"
-                    : `Die ${plan.counts.retake} abgelehnten Fotos trotzdem mitspeichern`}
-                  <span className="block text-xs text-ae-muted">
-                    Ohne Haken werden sie weggelassen. Besser: neu aufnehmen.
-                  </span>
-                </span>
-              </label>
-            )}
-
             {phase.kind === "done" ? (
               <div className="mb-4 flex items-start gap-3 rounded-xl border border-ae-success/30 bg-ae-success/10 p-3" role="status">
                 <CircleCheck className="mt-0.5 size-5 shrink-0 text-ae-success" aria-hidden />
@@ -320,7 +268,7 @@ export function ExportSheet({
                     <span className="font-semibold text-ae-text">{photoCount(selected.length)}</span> in Aufnahme-Reihenfolge
                     {exampleName && (
                       <>
-                        , z. B. <span className="font-mono text-xs break-all text-ae-text">{exampleName}</span>
+                        , z. B. <span className="font-mono text-xs [overflow-wrap:anywhere] text-ae-text">{exampleName}</span>
                       </>
                     )}
                     .
@@ -333,6 +281,11 @@ export function ExportSheet({
                   </p>
                 )}
                 {!touch && selected.length > 0 && <p className="mt-1.5">Als ZIP-Datei „{archiveName}“.</p>}
+                {plan.counts.original > 0 && (
+                  <p className="mt-1.5">
+                    Tipp: Mit „Fotos bearbeiten“ entstehen zuerst die Showroom-Bilder – sonst werden die Originale gespeichert.
+                  </p>
+                )}
               </div>
             )}
 
@@ -371,38 +324,108 @@ export function ExportSheet({
                 {phase.message}
               </p>
             )}
+
+            {plan.counts.retake > 0 && !finished && (
+              <label className="mb-3 flex items-start gap-3 rounded-xl border border-ae-danger/30 bg-ae-danger/8 px-3 py-2.5 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 size-5 shrink-0 accent-ae-blue"
+                  checked={includeRetakes}
+                  disabled={busy || progress !== null}
+                  onChange={(event) => setIncludeRetakes(event.target.checked)}
+                />
+                <span>
+                  {plan.counts.retake === 1
+                    ? "Das abgelehnte Foto trotzdem mitspeichern"
+                    : `Die ${plan.counts.retake} abgelehnten Fotos trotzdem mitspeichern`}
+                  <span className="block text-xs text-ae-muted">
+                    Ohne Haken werden sie weggelassen. Besser: neu aufnehmen.
+                  </span>
+                </span>
+              </label>
+            )}
+
+            {rows.length > 0 && !finished && (
+              <ul className="mb-3 flex flex-col gap-1.5" aria-label="Bitte ansehen">
+                {rows.map((row) => {
+                  const content = (
+                    <>
+                      <span className="mt-0.5 shrink-0 rounded-md bg-ae-surface-3 px-1.5 py-0.5 text-[11px] font-bold tabular-nums">
+                        {row.numbers}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-semibold">{row.title}</span>
+                        <span className={cn("block text-xs font-medium", STATUS_TONE[row.status])}>{row.label}</span>
+                        {row.note && <span className="mt-0.5 block text-xs text-ae-muted">{row.note}</span>}
+                      </span>
+                    </>
+                  );
+                  const shotKey = row.shotKey;
+                  return (
+                    <li key={row.key}>
+                      {onShowShot && shotKey ? (
+                        <button
+                          type="button"
+                          onClick={() => onShowShot(shotKey)}
+                          className="flex w-full items-start gap-2.5 rounded-xl bg-ae-surface-2 px-3 py-2 text-left hover:bg-ae-surface-3"
+                        >
+                          {content}
+                        </button>
+                      ) : (
+                        <div className="flex items-start gap-2.5 rounded-xl bg-ae-surface-2 px-3 py-2">{content}</div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
 
-          <footer className="pb-safe border-t border-ae-border/70 px-5 pt-3">
-            <div className="mb-3 flex flex-col gap-2">
+          {/* Phones in landscape: the actions in one row, so the summary keeps its room. */}
+          <footer className="pb-safe border-t border-ae-border/70 px-5 pt-3 short:pt-2">
+            <div className="mb-3 flex flex-col gap-2 short:mb-2 short:flex-row short:flex-wrap short:items-center">
               {finished ? (
-                <Button size="lg" fullWidth onClick={close}>
+                <Button size="lg" fullWidth className="short:h-11" onClick={close}>
                   Fertig
                 </Button>
               ) : (
                 <>
+                  {progress && (
+                    <p className="flex items-start gap-1.5 text-sm text-ae-success short:basis-full" role="status">
+                      <CircleCheck className="mt-0.5 size-4 shrink-0" aria-hidden />
+                      {`Teil ${progress.next} von ${progress.total} übergeben – jetzt die nächsten ${photoCount(batches[progress.next]?.length ?? 0)} sichern.`}
+                    </p>
+                  )}
                   <LoadingButton
                     size="lg"
                     fullWidth
+                    className="short:h-11 short:w-auto short:flex-1"
                     onClick={handleSave}
                     disabled={!ready}
                     loading={busy}
                     loadingText={phase.kind === "busy" ? phase.text : undefined}
-                    icon={touch ? <Share className="size-5" aria-hidden /> : <Download className="size-5" aria-hidden />}
+                    icon={
+                      touch && !zipInstead ? <Share className="size-5" aria-hidden /> : <Download className="size-5" aria-hidden />
+                    }
                   >
                     {saveLabel}
                   </LoadingButton>
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div
+                    className={cn(
+                      "grid grid-cols-1 gap-2 short:flex short:shrink-0",
+                      touch && !zipInstead && "sm:grid-cols-2",
+                    )}
+                  >
                     <Button variant="secondary" onClick={close} disabled={busy}>
                       Zurück
                     </Button>
-                    {touch && (
+                    {touch && !zipInstead && (
                       <Button
                         variant="ghost"
                         onClick={() => void saveZip(files)}
                         disabled={!ready || busy}
                         icon={<Download className="size-4" aria-hidden />}
-                        className={cn(phase.kind === "failed" && phase.offerZip && "text-ae-text")}
+                        className="whitespace-nowrap"
                       >
                         Als ZIP-Datei herunterladen
                       </Button>

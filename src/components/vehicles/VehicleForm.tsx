@@ -34,6 +34,17 @@ const MANUFACTURER_SUGGESTIONS = [
 ];
 
 /**
+ * Focuses a field with an error – centred, so the sticky save button never
+ * covers it (phones).
+ */
+function focusField(name: string) {
+  const element = document.getElementById(name);
+  if (!element) return;
+  element.scrollIntoView?.({ block: "center" });
+  element.focus({ preventScroll: true });
+}
+
+/**
  * Vehicle data form (create + edit). Only Hersteller and Modell are required.
  */
 export function VehicleForm({
@@ -88,7 +99,7 @@ export function VehicleForm({
     if (!result.ok) {
       setErrors(result.errors);
       const firstInvalid = Object.keys(result.errors)[0];
-      if (firstInvalid) document.getElementById(firstInvalid)?.focus();
+      if (firstInvalid) focusField(firstInvalid);
       return;
     }
     setSubmitting(true);
@@ -98,7 +109,7 @@ export function VehicleForm({
       if (error instanceof DuplicateReferenceError) {
         // At the field: the export file names would collide with the other vehicle's.
         setErrors({ [error.field]: error.message });
-        document.getElementById(error.field)?.focus();
+        focusField(error.field);
         return;
       }
       setSubmitError(error instanceof Error ? error.message : "Bitte versuchen Sie es erneut.");

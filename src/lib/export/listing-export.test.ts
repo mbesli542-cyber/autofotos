@@ -10,7 +10,9 @@ import {
   exportableItems,
   exportFileNameFor,
   exportItemLabel,
+  formatShotNumbers,
   itemsToReview,
+  reviewRows,
   selectExportItems,
   type ExportVehicle,
 } from "./listing-export";
@@ -183,3 +185,40 @@ describe("exportFileNameFor", () => {
     );
   });
 });
+
+describe("reviewRows", () => {
+  it("groups shots that are only not processed yet, keeps rejected shots on their own rows", () => {
+    const checks = new Map<string, ShotCheckState>([["rear", { kind: "retake", reason: "Angeschnitten." }]]);
+    const unprocessed = Object.fromEntries(
+      ["front_left_45", "front", "front_right_45", "cockpit"].map((key) => [key, { processed: false }]),
+    );
+    const result = plan(photos(unprocessed), { checks });
+    expect(describeExportPlan(result)).toBe("10 bearbeitet · 4 noch nicht bearbeitet · 1 muss neu aufgenommen werden");
+    expect(reviewRows(result).map((row) => [row.numbers, row.title, row.label, row.shotKey])).toEqual([
+      ["01–03, 09", "4 Fotos", "Noch nicht bearbeitet – die Originale werden gespeichert", null],
+      ["07", "Hinten", "Muss neu aufgenommen werden", "rear"],
+    ]);
+  });
+
+  it("lists up to two shots of a status one by one", () => {
+    const result = plan(photos({ cockpit: { processed: false }, front: { processed: false } }));
+    expect(reviewRows(result).map((row) => row.numbers)).toEqual(["02", "09"]);
+  });
+
+  it("says '15 noch nicht bearbeitet' – without '0 bearbeitet' – when nothing is processed", () => {
+    const none = Object.fromEntries(SHOTS.map((shot) => [shot.key, { processed: false }]));
+    const result = plan(photos(none));
+    expect(describeExportPlan(result)).toBe("15 noch nicht bearbeitet");
+    expect(reviewRows(result)).toHaveLength(1);
+    expect(reviewRows(result)[0]?.numbers).toBe("01–15");
+  });
+});
+
+describe("formatShotNumbers", () => {
+  it("writes runs of three or more as ranges", () => {
+    expect(formatShotNumbers([1, 2, 3, 5, 7, 8, 12, 13, 14, 15])).toBe("01–03, 05, 07, 08, 12–15");
+    expect(formatShotNumbers([9])).toBe("09");
+    expect(formatShotNumbers([])).toBe("");
+  });
+});
+

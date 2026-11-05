@@ -194,7 +194,7 @@ export function describeExportPlan(plan: ExportPlan): string {
   const extras = counts.extra > 0 ? ` · ${counts.extra === 1 ? "1 Zusatzfoto" : `${counts.extra} Zusatzfotos`}` : "";
   if (plan.complete) return `${photoCount(counts.processed)} bereit${extras}`;
   const parts = [
-    `${counts.processed} bearbeitet`,
+    counts.processed > 0 ? `${counts.processed} bearbeitet` : null,
     counts.original > 0 ? `${counts.original} noch nicht bearbeitet` : null,
     counts.retake > 0
       ? counts.retake === 1
@@ -231,3 +231,88 @@ export function itemsToReview(plan: ExportPlan): ExportItem[] {
     (entry) => (entry.status !== "processed" || entry.needsCheck) && entry.status !== "extra",
   );
 }
+
+/** One row of the summary's list: one shot, or several shots with the same status. */
+export interface ExportReviewRow {
+  /** React key. */
+  key: string;
+  /** Shot numbers, e.g. "04" or "01–08, 10". */
+  numbers: string;
+  /** The shot's title, or "15 Fotos" for a group. */
+  title: string;
+  status: ExportItemStatus;
+  label: string;
+  note: string | null;
+  /** Shot key to open in the large view (single rows only). */
+  shotKey: string | null;
+}
+
+/** Shots of the same status from this many on are one row (rejected shots and hints always have their own row). */
+export const REVIEW_GROUP_FROM = 3;
+
+/** Shot numbers with ranges: [1,2,3,5] → "01–03, 05". */
+export function formatShotNumbers(orders: readonly number[]): string {
+  const sorted = [...new Set(orders)].sort((a, b) => a - b);
+  const pad = (order: number) => String(order).padStart(2, "0");
+  const ranges: string[] = [];
+  for (let i = 0; i < sorted.length; ) {
+    let end = i;
+    while (end + 1 < sorted.length && (sorted[end + 1] ?? 0) === (sorted[end] ?? 0) + 1) end += 1;
+    const first = sorted[i] ?? 0;
+    const last = sorted[end] ?? 0;
+    ranges.push(end - i >= 2 ? `${pad(first)}–${pad(last)}` : end > i ? `${pad(first)}, ${pad(last)}` : pad(first));
+    i = end + 1;
+  }
+  return ranges.join(", ");
+}
+
+const GROUP_LABELS: Partial<Record<ExportItemStatus, string>> = {
+  original: "Noch nicht bearbeitet – die Originale werden gespeichert",
+  missing: "Kein Foto vorhanden",
+  unsaved: "Noch nicht gespeichert",
+};
+
+/**
+ * The summary's list of shots to look at, in listing order: every rejected
+ * shot and every result to check on its own row (with its reason); shots
+ * that are only "not processed yet", missing or unsaved become one row per
+ * status once there are REVIEW_GROUP_FROM of them.
+ */
+export function reviewRows(plan: ExportPlan): ExportReviewRow[] {
+  const items = itemsToReview(plan);
+  const grouped = new Set<ExportItemStatus>(
+    (Object.keys(GROUP_LABELS) as ExportItemStatus[]).filter(
+      (status) => items.filter((entry) => entry.status === status).length >= REVIEW_GROUP_FROM,
+    ),
+  );
+  const rows: ExportReviewRow[] = [];
+  const emitted = new Set<ExportItemStatus>();
+  for (const entry of items) {
+    if (grouped.has(entry.status)) {
+      if (emitted.has(entry.status)) continue;
+      emitted.add(entry.status);
+      const members = items.filter((other) => other.status === entry.status);
+      rows.push({
+        key: `group-${entry.status}`,
+        numbers: formatShotNumbers(members.map((member) => member.order)),
+        title: photoCount(members.length),
+        status: entry.status,
+        label: GROUP_LABELS[entry.status] ?? exportItemLabel(entry),
+        note: null,
+        shotKey: null,
+      });
+      continue;
+    }
+    rows.push({
+      key: entry.key,
+      numbers: String(entry.order).padStart(2, "0"),
+      title: entry.title,
+      status: entry.status,
+      label: exportItemLabel(entry),
+      note: entry.note,
+      shotKey: entry.status === "missing" ? null : entry.key,
+    });
+  }
+  return rows;
+}
+
