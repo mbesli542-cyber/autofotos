@@ -9,20 +9,25 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { PageLoading } from "@/components/ui/Spinner";
 import { VehicleCard } from "@/components/vehicles/VehicleCard";
-import { useVehicleRetakeCounts } from "@/hooks/use-retake-counts";
+import { useVehicleRetakeShots } from "@/hooks/use-retake-shots";
 import { useVehicleSummaries } from "@/hooks/use-vehicle-data";
+import { cameraHref } from "@/lib/camera/camera-links";
 import type { VehicleSummary } from "@/lib/domain/types";
 import { vehicleDisplayName } from "@/lib/format";
+import { needsCamera } from "@/lib/processing/retake-summary";
 import { canProcessVehicle } from "@/lib/vehicles/status";
 
 const NO_SUMMARIES: readonly VehicleSummary[] = [];
+
+/** `retakeShotKeys`: the vehicle's shots to retake (template order). */
+type HubRule<T> = (summary: VehicleSummary, retakeShotKeys: readonly string[]) => T;
 
 /** Vehicles that need one more step before they belong to the hub. */
 interface HubPendingStep {
   title: string;
   description: string;
-  filter: (summary: VehicleSummary) => boolean;
-  href: (summary: VehicleSummary) => string;
+  filter: HubRule<boolean>;
+  href: HubRule<string>;
   actionLabel: string;
 }
 
@@ -30,8 +35,8 @@ interface HubConfig {
   title: string;
   heading: string;
   description: string;
-  filter: (summary: VehicleSummary) => boolean;
-  href: (summary: VehicleSummary) => string;
+  filter: HubRule<boolean>;
+  href: HubRule<string>;
   emptyIcon: ReactNode;
   emptyTitle: string;
   emptyDescription: string;
@@ -43,12 +48,14 @@ const HUBS = {
   camera: {
     title: "Kamera",
     heading: "Aufnahmen",
-    description: "Fahrzeuge mit offenen Aufnahmen. Tippen Sie auf ein Fahrzeug, um fortzufahren.",
-    filter: (s) => s.capturedRequiredCount < s.requiredCount,
-    href: (s) => `/fahrzeuge/${s.vehicle.id}/kamera`,
+    description: "Fahrzeuge mit offenen oder neu aufzunehmenden Fotos. Tippen Sie auf ein Fahrzeug, um fortzufahren.",
+    // A set with a red shot is not done: it stays here until the shot is retaken.
+    filter: needsCamera,
+    // The camera opens at the first shot to retake, else in the guided order.
+    href: (s, retakes) => cameraHref(s.vehicle.id, { shot: retakes[0] ?? null }),
     emptyIcon: <Camera className="size-7" aria-hidden />,
     emptyTitle: "Keine offenen Aufnahmen",
-    emptyDescription: "Alle Fahrzeuge sind vollständig fotografiert.",
+    emptyDescription: "Alle Pflichtfotos sind aufgenommen und kein Foto muss neu aufgenommen werden.",
     showCreate: true,
   },
   processing: {
@@ -76,10 +83,11 @@ const HUBS = {
 export function VehicleHubScreen({ hub }: { hub: keyof typeof HUBS }) {
   const config: HubConfig = HUBS[hub];
   const { state, reload } = useVehicleSummaries();
-  const items = state.status === "ready" ? state.summaries.filter(config.filter) : [];
+  const summaries = state.status === "ready" ? state.summaries : NO_SUMMARIES;
+  const retakes = useVehicleRetakeShots(summaries);
+  const items = summaries.filter((s) => config.filter(s, retakes.get(s.vehicle.id)));
   const step = config.pendingStep;
-  const stepItems = state.status === "ready" && step ? state.summaries.filter(step.filter) : [];
-  const retakeCounts = useVehicleRetakeCounts(state.status === "ready" ? state.summaries : NO_SUMMARIES);
+  const stepItems = step ? summaries.filter((s) => step.filter(s, retakes.get(s.vehicle.id))) : [];
 
   return (
     <>
@@ -114,11 +122,11 @@ export function VehicleHubScreen({ hub }: { hub: keyof typeof HUBS }) {
                 <li key={summary.vehicle.id} className="flex flex-col gap-2">
                   <VehicleCard
                     summary={summary}
-                    href={step.href(summary)}
-                    retakeCount={retakeCounts.get(summary.vehicle.id)}
+                    href={step.href(summary, retakes.get(summary.vehicle.id))}
+                    retakeCount={retakes.get(summary.vehicle.id).length}
                   />
                   <ButtonLink
-                    href={step.href(summary)}
+                    href={step.href(summary, retakes.get(summary.vehicle.id))}
                     variant="secondary"
                     fullWidth
                     icon={<CircleCheck className="size-5" aria-hidden />}
@@ -147,8 +155,8 @@ export function VehicleHubScreen({ hub }: { hub: keyof typeof HUBS }) {
                 <li key={summary.vehicle.id}>
                   <VehicleCard
                     summary={summary}
-                    href={config.href(summary)}
-                    retakeCount={retakeCounts.get(summary.vehicle.id)}
+                    href={config.href(summary, retakes.get(summary.vehicle.id))}
+                    retakeCount={retakes.get(summary.vehicle.id).length}
                   />
                 </li>
               ))}

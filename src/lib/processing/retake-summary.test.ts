@@ -5,9 +5,10 @@ import type { PhotoCheck, PhotoChecksSnapshot } from "./photo-checks";
 import {
   completeWithRetakesQuestion,
   countRetakeShots,
-  countVehicleRetakes,
+  needsCamera,
   retakeCountLabel,
   showsStatusBadge,
+  vehicleRetakeShotKeys,
 } from "./retake-summary";
 import type { ShotCheckState } from "./shot-check";
 
@@ -83,20 +84,22 @@ describe("texts", () => {
   });
 });
 
-describe("countVehicleRetakes (vehicle list badge)", () => {
+describe("vehicleRetakeShotKeys (vehicle lists, Kamera tab)", () => {
   const photos = [photo("front_left_45"), photo("front"), photo("cockpit")];
 
-  it("counts a stored rejection of the shot's current photo", () => {
-    expect(countVehicleRetakes(DEFAULT_SHOT_TEMPLATE, "veh-1", photos, snapshot([rejection("front")]))).toBe(1);
+  it("lists a stored rejection of the shot's current photo", () => {
+    expect(vehicleRetakeShotKeys(DEFAULT_SHOT_TEMPLATE, "veh-1", photos, snapshot([rejection("front")]))).toEqual(["front"]);
   });
 
-  it("counts a saved result whose hint asks for a retake", () => {
+  it("lists a saved result whose hint asks for a retake – in template order", () => {
     const withHint = photo("front_left_45", {
       processedStoragePath: "vehicle-processed/veh-1/autoexperten_standard/front_left_45/photo-front_left_45.jpg",
       processedPreset: "autoexperten_standard",
       processingWarnings: [{ code: "plate_mirrored", message: "Das Foto zeigt die andere Fahrzeugseite." }],
     });
-    expect(countVehicleRetakes(DEFAULT_SHOT_TEMPLATE, "veh-1", [withHint], snapshot([]))).toBe(1);
+    expect(
+      vehicleRetakeShotKeys(DEFAULT_SHOT_TEMPLATE, "veh-1", [photo("cockpit"), photo("front"), withHint], snapshot([rejection("front")])),
+    ).toEqual(["front_left_45", "front"]);
   });
 
   it("ignores rejections of another vehicle and of a photo a retake replaced", () => {
@@ -105,11 +108,19 @@ describe("countVehicleRetakes (vehicle list badge)", () => {
       photoId: "photo-old",
       takenAt: "2026-11-05T09:00:00.000Z",
     });
-    expect(countVehicleRetakes(DEFAULT_SHOT_TEMPLATE, "veh-1", photos, snapshot([other, replaced]))).toBe(0);
+    expect(vehicleRetakeShotKeys(DEFAULT_SHOT_TEMPLATE, "veh-1", photos, snapshot([other, replaced]))).toEqual([]);
   });
 
-  it("is 0 without photos", () => {
-    expect(countVehicleRetakes(DEFAULT_SHOT_TEMPLATE, "veh-1", [], snapshot([rejection("front")]))).toBe(0);
+  it("is empty without photos", () => {
+    expect(vehicleRetakeShotKeys(DEFAULT_SHOT_TEMPLATE, "veh-1", [], snapshot([rejection("front")]))).toEqual([]);
+  });
+});
+
+describe("needsCamera (Kamera tab)", () => {
+  it("keeps a vehicle while a shot is missing or red – a complete set without red shots is done", () => {
+    expect(needsCamera({ capturedRequiredCount: 14, requiredCount: 15 }, [])).toBe(true);
+    expect(needsCamera({ capturedRequiredCount: 15, requiredCount: 15 }, ["front"])).toBe(true);
+    expect(needsCamera({ capturedRequiredCount: 15, requiredCount: 15 }, [])).toBe(false);
   });
 });
 

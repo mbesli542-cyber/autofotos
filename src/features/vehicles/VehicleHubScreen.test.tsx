@@ -102,12 +102,42 @@ describe("<VehicleHubScreen hub='processing' />", () => {
     expect(screen.queryAllByRole("link").some((link) => link.getAttribute("href") === `/fahrzeuge/${open.id}/bearbeiten`)).toBe(false);
   });
 
-  it("keeps the camera tab for vehicles with open shots only", async () => {
+  it("keeps the camera tab for vehicles with open or rejected shots only", async () => {
     const open = await fullyCapturedVehicle("Kodiaq", { completed: false });
     render(<VehicleHubScreen hub="camera" />);
     await screen.findByRole("heading", { level: 2, name: "Aufnahmen" });
     await screen.findAllByRole("link");
     expect(screen.queryByRole("region", { name: "Bereit zum Abschließen" })).toBeNull();
     expect(screen.queryAllByRole("link").some((link) => link.getAttribute("href")?.startsWith(`/fahrzeuge/${open.id}`))).toBe(false);
+  });
+});
+
+describe("<VehicleHubScreen hub='camera' />", () => {
+  it("lists a fully captured vehicle with a rejected shot and opens the camera at that shot", async () => {
+    const rejected = await fullyCapturedVehicle("Enyaq", { completed: true });
+    const fine = await fullyCapturedVehicle("Karoq", { completed: true });
+    const { data } = getAppServices().backend;
+    const front = (await data.listPhotos(rejected.id)).find((photo) => photo.shotKey === "front");
+    if (!front) throw new Error("photo missing");
+    await data.saveProcessedPhoto({
+      photo: front,
+      preset: "autoexperten_standard",
+      file: new Blob(["result"], { type: "image/jpeg" }),
+      warnings: [{ code: "plate_mirrored", message: "Das Foto zeigt die andere Fahrzeugseite." }],
+    });
+    render(<VehicleHubScreen hub="camera" />);
+
+    const link = await waitFor(() => {
+      const found = screen
+        .getAllByRole("link")
+        .find((entry) => entry.getAttribute("href") === `/fahrzeuge/${rejected.id}/kamera?shot=front`);
+      if (!found) throw new Error("card missing");
+      return found;
+    });
+    expect(within(link).getByText("Neu aufnehmen")).toBeInTheDocument();
+    expect(within(link).queryByText("Vollständig")).toBeNull();
+    // A complete set without a red shot is done – and the tab never claims "all complete" while one is red.
+    expect(screen.queryAllByRole("link").some((entry) => entry.getAttribute("href")?.startsWith(`/fahrzeuge/${fine.id}`))).toBe(false);
+    expect(screen.queryByText("Keine offenen Aufnahmen")).toBeNull();
   });
 });

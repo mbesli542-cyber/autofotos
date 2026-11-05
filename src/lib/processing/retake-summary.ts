@@ -42,19 +42,33 @@ export function showsStatusBadge(status: VehicleStatus, retakeCount: number): bo
 const NO_URLS: VehiclePhotoWithUrls["urls"] = { original: "", thumbnail: "", processed: null };
 
 /**
- * Shots of a vehicle to retake, from its active photos as the vehicle list
- * loads them (no captures waiting for their upload: those belong to the
- * vehicle page) and the automatic checks of this device.
+ * Keys of a vehicle's shots to retake (template order), from its active
+ * photos as the vehicle list loads them (no captures waiting for their
+ * upload: those belong to the vehicle page) and the automatic checks of this
+ * device.
  */
-export function countVehicleRetakes(
+export function vehicleRetakeShotKeys(
   template: ShotTemplate,
   vehicleId: string,
   photos: readonly VehiclePhoto[],
   snapshot: PhotoChecksSnapshot,
-): number {
+): string[] {
   const { required } = buildPhotoSlots(
     template,
     photos.map((photo) => ({ ...photo, urls: NO_URLS })),
   );
-  return countRetakeShots(getShotCheckStates(required, vehicleId, snapshot).values());
+  const states = getShotCheckStates(required, vehicleId, snapshot);
+  return required.filter((slot) => states.get(slot.key)?.kind === "retake").map((slot) => slot.key);
+}
+
+/**
+ * Whether a vehicle belongs to the "Kamera" tab: a required shot is missing
+ * or has to be retaken – a set with a red shot is never "vollständig
+ * fotografiert".
+ */
+export function needsCamera(
+  summary: { capturedRequiredCount: number; requiredCount: number },
+  retakeShotKeys: readonly string[],
+): boolean {
+  return summary.capturedRequiredCount < summary.requiredCount || retakeShotKeys.length > 0;
 }
