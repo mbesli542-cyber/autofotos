@@ -105,8 +105,9 @@ def test_the_plates_json_entry_is_consistent(dl, layout, tmp_path):
         # the processor's own validation (homographies vs anchor/contacts, junction, ground line) accepts it
         plate = parse_plate(key, entry, tmp_path)
         assert plate.target_width_ratio == pytest.approx(dl.SHOTS[key]["target"], abs=1e-3)
-        # the lowest tyre contact is the ground line; only the near bumper corner may hang below it
-        assert shot["bbox"][3] - 0.12 <= plate.ground_v <= shot["bbox"][3] + 1e-6
+        # the lowest tyre contact is the ground line; only the near bumper may hang below it
+        # (front/rear: the nose ≈ 2 m from the camera, its lower edge ≈ 0.13 of the height lower)
+        assert shot["bbox"][3] - 0.14 <= plate.ground_v <= shot["bbox"][3] + 1e-6
         assert plate.floor_top(240, 180)[0] == pytest.approx(492 / 1086 * 180, abs=0.01)
 
 
@@ -139,3 +140,26 @@ def test_the_reflection_split_recovers_a_streak_and_keeps_the_wood(dl, layout):
     assert beside < 0.1 * expected  # … the wood is not
     assert refl[: int(dl.JUNCTION_V * h) - 2].max() == 0.0  # nothing on the wall
     assert info["wood"][2] / info["wood"][0] < 0.35  # the wood colour is the saturated floor colour
+
+
+def test_removing_the_floor_reflection_never_leaves_oversaturated_seams():
+    """A plank seam inside a light streak carries no gloss: removing the streak's share there would
+    turn it orange-red. limit_saturation keeps every pixel at least as neutral as the floor's wood."""
+    db = _module("dealer_backdrop")
+    wood = np.array([0.40, 0.20, 0.08], np.float32)
+    light = np.array([0.30, 0.29, 0.26], np.float32)
+    streak = wood + light  # glossy plank in the streak
+    seam = 0.4 * wood  # the seam between two planks: bare (darker) wood, no gloss
+    lin = np.stack([streak, seam, wood])[None].astype(np.float32)
+    # the smooth per-channel fraction of the streak, applied to every pixel (as the stored pass)
+    fraction = light / streak
+    refl = lin * fraction
+    limits = (float(wood[1] / wood[0]) * 0.95, float(wood[2] / wood[0]) * 0.95)
+    limited, s = db.limit_saturation(lin, refl, limits)
+    left = lin - limited
+    assert np.allclose(left[0, 0], wood, atol=1e-6) and s[0, 0] == pytest.approx(1.0)  # the streak goes
+    # without the guard the seam would end up at b/r ≈ 0.05 (deep orange-red), with it it stays wood
+    raw = (lin - refl)[0, 1]
+    assert raw[2] / raw[0] < 0.6 * wood[2] / wood[0]
+    assert left[0, 1, 2] / left[0, 1, 0] >= limits[1] - 1e-6 and left[0, 1, 1] / left[0, 1, 0] >= limits[0] - 1e-6
+    assert (limited >= 0).all() and (limited <= refl + 1e-7).all()  # only ever less removal, never more

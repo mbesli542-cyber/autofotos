@@ -34,17 +34,53 @@ shots therefore use **the same plate and the same camera** (`processor/showroom3
 | brand area | the white panel, x −4.04 … 3.14 m (7.18 m), z 0 … 4.0 m |
 | proxy car | 4.85 × 1.88 × 1.46 m, wheelbase 2.9 m |
 | 3/4 views | 45° to the camera's line of sight, 0.83 of the frame width, 1.47 m of floor between the far corner and the wall |
-| side views | 0.88 of the width, 2.2 m to the wall |
-| front / rear | 0.60 of the width, 1.10 m to the wall |
+| side views | 0.92 of the width (≈ 4 % margin each side), ground line v = 0.655, 2.4 m to the wall |
+| front / rear | 0.68 of the width, nose ≈ 2.0 m from the camera, tyre contacts v = 0.80, 1.38 m to the wall |
 
-With a fixed camera the car stands where a 4.85 m car of that width has to stand: in the side
-views (car ≈ 4.4 m away) the ground line is at v ≈ 0.65, so more floor shows below the car
-than in the 3/4 views (front wheel at v ≈ 0.81).
+**Side views stand higher than the 3/4 views – that is the fixed camera, not a placement
+error.** For a level camera at height h the ground line of a car seen side-on lies
+h · w · W / L below the horizon (w = width ratio, W = frame width, L = car length) –
+independent of the focal length. With h = 1.6 m and w = 0.92 (the largest width that keeps a
+margin) a 4.85 m car stands at v ≈ 0.655, so about a third of the frame below it is floor
+(where the processor adds the car's own reflection). Standing at v ≈ 0.75 would need a camera
+≈ 2.0 m high, which would push the 3/4 views' front wheel from v ≈ 0.81 (his references) to
+≈ 0.94; a per-shot crop of the plate would break "one camera, one backdrop" and cost
+resolution (the plate is already enlarged 1.66 ×). The 3/4 views have their near corner
+≈ 2 m closer to the camera, so they stand lower.
 
-His lettering sits low on the wall (bottom at v ≈ 0.20). The processor keeps every roof below
-the branding (`branding.clearance`), so taller cars are placed somewhat smaller than the target
-width ("headroom": in the regression set 0.90–0.96 of the target for saloons/estates, 0.82 for
-a hatchback – the shipped plates reduce the same hatchback to 0.84 for the floor rule).
+**His lettering sits low on the wall (bottom of the rules at v ≈ 0.20)** and the processor keeps
+every roof below the branding plus `branding.clearance` (0.025 of the height). His own
+reference photos keep the roof 0.03–0.08 of the height below his rules (ref2/ref4 close-ups ≈ 0.03,
+ref3 ≈ 0.08) – the clearance already allows the closest of them, so it is kept, and the logo
+stays where he put it. Cars whose photo is taller than the 4.85 × 1.46 m proxy at the target
+width are placed smaller ("headroom"): a 4.05 m hatchback at ≈ 0.82 of the target (≈ 0.68 of
+the frame – about what a car of that length occupies on that spot of a real studio:
+0.83 · 4.05 / 4.85 = 0.69), SUVs and estates likewise; below 0.9 of the target the result gets
+the `vehicle_reduced` hint, as with the shipped plates (which reduce the same hatchback to 0.84).
+
+Regression photos on this plate set (real pipeline; target fraction / share of the frame width):
+
+| photo | view | here | shipped plates |
+| --- | --- | --- | --- |
+| Mercedes S63 (chat copy, relaxed gate) | front_left_45 | 1.00 / 0.83 | 1.00 / 0.81 |
+| Peugeot 407 saloon | front_left_45 | 0.96 / 0.80 | 1.00 / 0.81 |
+| Renault Clio hatchback | front_left_45 | 0.82 / 0.68 ⚑ | 0.84 / 0.68 ⚑ |
+| VW Passat estate (white) | front_left_45 | 0.899 / 0.75 ⚑ | 0.89 / 0.72 ⚑ |
+| Citroën C-Crosser SUV | front_right_45 | 0.84 / 0.70 ⚑ | 0.92 / 0.74 |
+| Audi A5 coupé | front_right_45 | 1.00 / 0.83 | 1.00 / 0.81 |
+| Audi A4 allroad estate | rear_left_45 | 0.93 / 0.77 | 1.00 / 0.81 |
+| Honda CR-V SUV | rear_left_45 | 0.79 / 0.65 ⚑ | 0.86 / 0.69 ⚑ |
+| Audi RS4 Avant | rear_right_45 | 0.87 / 0.72 ⚑ | 0.95 / 0.77 |
+| Mitsubishi Lancer | left_side | 0.95 / 0.88 | 1.00 / 0.85 |
+| Mercedes W123 | right_side | 1.00 / 0.92 | 1.00 / 0.85 |
+| Toyota Yaris (rear) | rear | 0.88 / 0.60 ⚑ | 1.00 / 0.62 |
+
+⚑ = `vehicle_reduced` hint. The four photos not in the shipped regression set (C-Crosser, A5,
+CR-V, RS4 – candidates of the same Wikimedia set, CC0 / CC BY-SA) are listed in
+`processor/showroom3d/dealer/extra_regression_cases.json` (`visual_regression.py --manifest … --preset-file
+public/presets/variants/autoexperten-haendler.json`). No accepted straight FRONT photo exists in the regression set (its
+Yaris front is rejected for a lost mirror); the front plate uses the rear's camera pose turned by
+180°, its loading and shadow pass are covered by the tests.
 
 ## Files
 
@@ -55,13 +91,22 @@ a hatchback – the shipped plates reduce the same hatchback to 0.84 for the flo
   line, the right wall section through his junction points, the planter; one warm wall-washer
   spot per light pool, soft ceiling panels) with / without the invisible light-blocking proxy,
   ratio limited to the floor around the car (`postprocess_plates.shadow_multiplier`).
-- `reflection.png` – 16-bit RGB, the floor's OWN glossy reflection (light streaks, LED lines,
+- `reflection.png` – 16-bit RGB at the plate's full size (2400 × 1800, code step 64 ≈ 10-bit
+  precision, ≤ 0.0005 linear), the floor's OWN glossy reflection (light streaks, LED lines,
   wall glow), linear (`code / 65535 − reflectionOffset`, offset 0 – the measured reflection is never
   negative and reaches ≈ 0.97 in the streak cores), one file for all shots.
   MEASURED on his floor (`dealer_backdrop.py`): every low-passed floor pixel is split into his
   wood colour, the warm wall-washer light and the AutoExperten-blue LED colour; the light and
   LED parts are the reflection the processor removes where the car blocks it (the wood stays –
   no milky halo, no dark hole), `reflectance` per row calibrated like the rendered plates.
+  The smooth split is applied to the decoded `plate.jpg` pixels at full size, so it follows the
+  plank seams, and is limited per pixel: what is left after removing it is never more saturated
+  than the floor's own reflection-poor wood (1st percentile of g/r and b/r) – the seams inside a
+  streak carry no gloss and stay wood instead of turning into orange-red lines.
+  The car's own reflection uses that `reflectance` (≈ 0.10 where the cars' bumpers stand,
+  v ≈ 0.8–0.9 – what a lacquered floor reflects at that viewing angle: Fresnel for n = 1.5 at
+  ≈ 60° gives ≈ 0.09; ≈ 0.4 near the wall, capped by `reflection.maxReflectance`), so in front of
+  a bumper it is faint, as in his reference photos.
 - `plates.json` – camera, horizon, floor/wall homographies (identical for all shots), per shot
   the proxy pose, bbox, tyre contacts, wall clearance; `room` documents the measured features.
 - `branding.json` – where his lettering was, as fractions of the brand area (the values in the
@@ -83,6 +128,11 @@ processor/.venv/bin/python processor/showroom3d/dealer_clean.py --out /opt/ae-de
        --standard public/presets/autoexperten-standard.json \
        --variant public/presets/variants/autoexperten-haendler.json
 ```
+
+`base.png` renders pixel-identically (fixed seed), so after a pose change in `dealer_layout.py` only
+the changed shots need a new proxy render (`--shots left_side,right_side,front,rear`, the other
+`<shot>-proxy.png` copied next to it); `dealer_backdrop.py` refuses renders whose `layout.json`
+differs from `dealer_layout.layout()`.
 
 Geometry check of the Blender studio against his image: `render_dealer_passes.py -- --out DIR --check`
 (724 px render with the proxy car visible; compare its edges with `clean.png`).

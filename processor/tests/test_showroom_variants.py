@@ -474,6 +474,12 @@ def test_the_dealer_plate_set_loads_with_one_fixed_studio_camera(dealer_plates):
         assert 0.80 <= plate.target_width_ratio <= 0.86, key
         assert 0.78 <= plate.ground_v <= 0.9, key
         assert plate.expected_near_end() == ("left" if key in ("front_left_45", "rear_right_45") else "right"), key
+    # side views as large and low as the frame allows (one level camera: they stand higher than the
+    # 3/4 views); front/rear well in front of the wall, large enough for a tall front
+    for key in ("left_side", "right_side"):
+        assert 0.9 <= plates[key].target_width_ratio <= 0.94 and plates[key].ground_v >= 0.65, key
+    for key in ("front", "rear"):
+        assert 0.66 <= plates[key].target_width_ratio <= 0.72 and plates[key].ground_v >= 0.78, key
     for plate in plates.values():
         corners = []
         c = plate.proxy_contacts
@@ -526,14 +532,16 @@ def test_the_dealer_plates_brand_and_shadow_like_the_standard_set(dealer_plates)
     settings = Settings(assets_dir=REPO_ROOT / "public")
     preset = parse_preset(HAENDLER)
     provider = BackgroundProvider(settings)
-    for key in ("front_left_45", "left_side", "rear"):
+    for key in plates_module.PLATE_SHOTS:
         showroom = provider.get(preset, key, 1200, 900)
         assert float(showroom.shadow.min()) < 0.85, key  # the proxy shadow pass is there …
-        bx0, by0, bx1, by1 = showroom.plate.proxy_bbox
-        rows = (np.arange(900) + 0.5) / 900
-        assert showroom.shadow[rows < showroom.plate.horizon_v].min() == 1.0  # … on the floor only
+        # … on the floor only: every pixel that lies entirely above the wall/floor junction is unshadowed
+        top = np.asarray(showroom.floor_top, np.float64)
+        wall = (np.arange(900, dtype=np.float64)[:, None] + 1.0) <= top[None, :]
+        assert wall.sum() > 0.4 * 900 * 1200, key
+        assert float(showroom.shadow[wall].min()) >= 0.99, key
         assert showroom.reflection is not None and showroom.reflection.max() > 0.2
-        assert np.abs(showroom.reflection[: int(0.44 * 900)]).max() < 1e-4  # the wall has no floor reflection
+        assert np.abs(showroom.reflection[wall]).max() < 1e-4, key  # the wall has no floor reflection
 
 
 def test_the_pipeline_composites_a_car_onto_the_dealer_plate(fake_segmenter, three_quarter):

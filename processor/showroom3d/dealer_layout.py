@@ -100,10 +100,18 @@ SHOTS = {
     "front_right_45": {"view": "front_right", "target": 0.83},
     "rear_left_45": {"view": "rear_left", "target": 0.83},
     "rear_right_45": {"view": "rear_right", "target": 0.83},
-    "left_side": {"view": "left", "target": 0.88},
-    "right_side": {"view": "right", "target": 0.88},
-    "front": {"view": "front", "target": 0.6},
-    "rear": {"view": "rear", "target": 0.6},
+    # side views: with ONE level camera the ground line of a car seen side-on lies
+    # h·w·W/L below the horizon (camera height h, width ratio w, car length L – independent
+    # of the focal length), so they stand higher than the 3/4 views (whose near corner is
+    # closer to the camera). 0.92 (≈ 4 % margin each side) keeps them as low and large as
+    # the frame allows; lower would need a higher camera, which drops the 3/4 views' front
+    # wheel out of his references (≈ 0.81 of the height).
+    "left_side": {"view": "left", "target": 0.92},
+    "right_side": {"view": "right", "target": 0.92},
+    # front/rear: the car well in front of the wall (≈ 1.4 m), nose ≈ 2 m from the camera –
+    # large enough that a tall front (headroom below the branding) is not shrunk to a toy car
+    "front": {"view": "front", "target": 0.68},
+    "rear": {"view": "rear", "target": 0.68},
 }
 #: Brand area (the main white panel) height: up to the (not visible) panel top.
 BRAND_TOP_M = 4.0

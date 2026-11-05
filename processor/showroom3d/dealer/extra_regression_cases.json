@@ -1,0 +1,66 @@
+{
+ "version": 1,
+ "cacheDirDefault": "/opt/ae-regression/images",
+ "cases": [
+  {
+   "id": "suv_fr45b",
+   "caseId": "suv_fr45b",
+   "category": "body_style",
+   "shotKey": "front_right_45",
+   "expected": "accept",
+   "file": "suv_fr45__b.jpg",
+   "title": "2007 Citro\u00ebn C-Crosser 2.2 HDi Exclusive in Coventry, England 01",
+   "author": "MoCars",
+   "license": "CC0 1.0",
+   "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/deed.en/",
+   "landingUrl": "https://commons.wikimedia.org/wiki/File:2007_Citro%C3%ABn_C-Crosser_2.2_HDi_Exclusive_in_Coventry%2C_England_01.jpg",
+   "sha256": "4248d6496c21c137122f35e4e81bf0a8472d683ce8255b7cf45568d7040a9f11",
+   "bodyStyle": "suv"
+  },
+  {
+   "id": "suv_rl45b",
+   "caseId": "suv_rl45b",
+   "category": "paint",
+   "shotKey": "rear_left_45",
+   "expected": "accept",
+   "file": "dark_paint_rl45__b.jpg",
+   "title": "2024 Honda CR-V 2.0 eHEV RS Crystal Black Pearl in Indonesia 02",
+   "author": "MoCars",
+   "license": "CC0 1.0",
+   "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/deed.en/",
+   "landingUrl": "https://commons.wikimedia.org/wiki/File:2024_Honda_CR-V_2.0_eHEV_RS_Crystal_Black_Pearl_in_Indonesia_02.jpg",
+   "sha256": "a63e508ffffa8ad0053299d7d6d68bb36a519f00e3d31d8d431862c00ec7a4e7",
+   "bodyStyle": "suv"
+  },
+  {
+   "id": "coupe_fr45b",
+   "caseId": "coupe_fr45b",
+   "category": "body_style",
+   "shotKey": "front_right_45",
+   "expected": "accept",
+   "file": "coupe_fr45__b.jpg",
+   "title": "Audi A5 Coupe F5 Facelift 1X7A1780",
+   "author": "Alexander-93",
+   "license": "CC BY-SA 4.0",
+   "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+   "landingUrl": "https://commons.wikimedia.org/wiki/File:Audi_A5_Coupe_F5_Facelift_1X7A1780.jpg",
+   "sha256": "26f0607030dbd0ec5bb16c7b80b565b96a2035e58cfbf291f8fe99e9d4798069",
+   "bodyStyle": "coupe"
+  },
+  {
+   "id": "estate_rr45b",
+   "caseId": "estate_rr45b",
+   "category": "body_style",
+   "shotKey": "rear_right_45",
+   "expected": "accept",
+   "file": "estate_rr45__b.jpg",
+   "title": "2023 Audi RS4 Avant in Navarra Blue 02",
+   "author": "MoCars",
+   "license": "CC0 1.0",
+   "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/deed.en/",
+   "landingUrl": "https://commons.wikimedia.org/wiki/File:2023_Audi_RS4_Avant_in_Navarra_Blue_02.jpg",
+   "sha256": "3cf6851e6c7d68d72aeddb14099782db4e5f517f8ce129b3b0410c3c306d4f71",
+   "bodyStyle": "estate"
+  }
+ ]
+}

@@ -91,8 +91,8 @@ studio: camera and backdrop stay, the car is turned) – plate set
 | --- | --- |
 | `dealer_clean.py` | removes his AI-drawn lettering (wordmark, "Schwetzingen", rules) from the wall: ink + drop-shadow mask, harmonic (Laplace) fill, the wall's grain; writes `measure.json` (where the lettering was) and a seam check |
 | `dealer_upscale.py` | upscales once to 2400 × 1800: `lanczos` (shipped: Lanczos-3 in linear light + mild unsharp mask) or `esrgan` (Real-ESRGAN x2plus/x4plus, BSD-3, own virtualenv – compared and rejected: invented floor grain) |
-| `dealer_layout.py` | the fixed camera (level, lens shift, 66° HFOV, 1.6 m, 8.25 m to the wall – junction row measured in his image) and per shot the proxy-car pose; pure numpy, also imported by Blender |
+| `dealer_layout.py` | the fixed camera (level, lens shift, 66° HFOV, 1.6 m, 8.25 m to the wall – junction row measured in his image) and per shot the proxy-car pose (3/4 0.83, side 0.92, front/rear 0.68 of the width); pure numpy, also imported by Blender |
 | `render_dealer_passes.py` | Blender: his studio rebuilt as geometry and lights (no external assets), `base.png` + `<shot>-proxy.png` (invisible light-blocking proxy car); `--check` renders a geometry check |
-| `dealer_backdrop.py` | assembles the plate set: `plate.jpg`, `<shot>-shadow.png` (ratio of the renders), `reflection.png` (the floor's own reflection MEASURED on his floor: wood / wall-washer light / blue LED colour split), `plates.json`, `branding.json`; `--variant` writes the variant preset |
+| `dealer_backdrop.py` | assembles the plate set: `plate.jpg`, `<shot>-shadow.png` (ratio of the renders), `reflection.png` (the floor's own reflection MEASURED on his floor: wood / wall-washer light / blue LED colour split, stored at full size and saturation-limited so plank seams inside a streak stay wood), `plates.json`, `branding.json`; `--variant` writes the variant preset |
 
 The full recipe is in `public/presets/autoexperten-haendler/README.md`.

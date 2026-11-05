@@ -10,10 +10,10 @@ Output (``public/presets/autoexperten-haendler/``)
     <shot>-shadow.png      16-bit floor shadow/occlusion multiplier of the proxy car at the shot's
                            pose (LINEAR, 65535 = no shadow) – the ratio of the two Blender renders,
                            limited to the floor around the car (postprocess_plates.shadow_multiplier)
-    reflection.png         16-bit RGB, the floor's OWN glossy reflection (light streaks of the wall
-                           washers, LED lines, wall glow) in LINEAR light (code / 65535 −
-                           reflectionOffset, offset 0: never negative); one file – the camera
-                           never moves
+    reflection.png         16-bit RGB at the plate's full size, the floor's OWN glossy reflection
+                           (light streaks of the wall washers, LED lines, wall glow) in LINEAR light
+                           (code / 65535 − reflectionOffset, offset 0: never negative); one file –
+                           the camera never moves
     plates.json            camera, horizon, floor/wall homographies, per shot the proxy car pose,
                            bbox and tyre contacts, wall albedo, brand area, reflectance per row
     branding.json          the official branding layout in wall space that reproduces the position
@@ -27,10 +27,13 @@ pools on his wall) and the AutoExperten-blue LEDs (his corner LED) – so that
 ``floor = wood · D + light · R + blue · B``. ``light · R + blue · B`` is the floor's own
 reflection (stored as that smooth per-channel fraction of the plate's own pixels, so it follows
 the sharp streak cores); what stays (``wood · D``) is the matte wood the processor shows where a
-car blocks that reflection. ``reflectance`` per image row is calibrated exactly like the rendered
-plates
-(postprocess_plates.reflection_pass: reflection of the white wall / wall radiance at the mirrored
-row – the frontal level camera mirrors the wall about the junction row).
+car blocks that reflection. The pass is stored at the plate's full size and limited per pixel
+(``limit_saturation``): what is left after removing it is never more saturated than the floor's
+own wood – the plank seams inside a streak carry no gloss (they show the bare wood), so removing
+the streak's share there would turn them into orange-red lines. ``reflectance`` per image row is
+calibrated exactly like the rendered plates (postprocess_plates.reflection_pass: reflection of
+the white wall / wall radiance at the mirrored row – the frontal level camera mirrors the wall
+about the junction row).
 
 Usage (from the repository root, processor virtualenv)::
 
@@ -75,8 +78,19 @@ FRACTION_SIGMA = 2.0
 #: negative but reaches ≈ 0.97 in the hottest streak cores – the rendered plates' 0.5 (room for the
 #: negative channel mixing of AgX) would clip it there and leave yellow remains under a car.
 REFLECTION_OFFSET = 0.0
+#: reflection.png code step (of 65535): ≈ 10-bit precision (≤ 0.0005 linear, < 0.3 sRGB levels on the
+#: floor) – keeps the full-size 16-bit pass at ≈ 5 MB instead of ≈ 11 MB.
+REFLECTION_STEP = 64
 #: The reflection is kept this many px (PASS_SIZE) below the actual floor line (skirting, LEDs, planter).
 FLOOR_PAD = 3
+#: Saturation guard of the stored (full-size) pass: the wood left after removing the reflection keeps
+#: b/r and g/r at least at this percentile of the floor's own reflection-poor pixels.
+SATURATION_PERCENTILE = 1.0
+#: Floor pixels whose reflection is below this fraction of the plate define that natural wood.
+WOOD_ONLY_FRACTION = 0.08
+
+
+LUMA = np.array([0.2126, 0.7152, 0.0722], np.float32)
 
 
 def _to_linear(c):
@@ -120,8 +134,9 @@ def plate_linear(plate_rgb: np.ndarray) -> np.ndarray:
     return cv2.resize(lin, PASS_SIZE, interpolation=cv2.INTER_AREA)
 
 
-def split_reflection(plate_rgb: np.ndarray, room: dict) -> tuple[np.ndarray, dict]:
-    """The floor's own reflection (linear RGB at PASS_SIZE) and the colours used."""
+def split_reflection(plate_rgb: np.ndarray, room: dict, *, parts: bool = False):
+    """The floor's own reflection (linear RGB at PASS_SIZE) and the colours used
+    (``parts``: also the smooth per-channel fraction and the soft floor weight, both at PASS_SIZE)."""
     width, height = PASS_SIZE
     lin = plate_linear(plate_rgb)
     low = cv2.GaussianBlur(lin, (0, 0), GRAIN_SIGMA)
@@ -166,7 +181,54 @@ def split_reflection(plate_rgb: np.ndarray, room: dict) -> tuple[np.ndarray, dic
         "reflectionMeanFloor": round(float(refl[floor].mean()), 4),
         "floorMean": round(float(low[floor].mean()), 4),
     }
+    if parts:
+        return refl.astype(np.float32), info, fraction.astype(np.float32), weight.astype(np.float32)
     return refl.astype(np.float32), info
+
+
+def limit_saturation(lin: np.ndarray, refl: np.ndarray, limits: tuple[float, float]) -> tuple[np.ndarray, np.ndarray]:
+    """Scale the reflection per pixel (s in [0, 1]) so that ``lin − s·refl`` keeps g/r ≥ limits[0] and
+    b/r ≥ limits[1] – removing it never leaves wood more saturated than the floor's own (a seam
+    without gloss keeps its colour; a pixel that already is that saturated loses nothing)."""
+    s = np.ones(lin.shape[:2], np.float32)
+    for channel, rho in ((1, limits[0]), (2, limits[1])):
+        num = lin[..., channel] - rho * lin[..., 0]
+        den = refl[..., channel] - rho * refl[..., 0]
+        cap = np.where(den > 1e-7, np.clip(num / np.maximum(den, 1e-7), 0.0, 1.0), 1.0)
+        s = np.minimum(s, cap.astype(np.float32))
+    return (refl * s[..., None]).astype(np.float32), s
+
+
+def full_reflection(plate_rgb: np.ndarray, room: dict) -> tuple[np.ndarray, dict]:
+    """The stored pass: the split's smooth fraction applied to the plate's own FULL-SIZE pixels
+    (follows the plank seams, which a PASS_SIZE layer cannot), saturation-limited."""
+    _, info, fraction, weight = split_reflection(plate_rgb, room, parts=True)
+    height, width = plate_rgb.shape[:2]
+    lin = _to_linear(plate_rgb.astype(np.float32) / 255.0).astype(np.float32)
+    frac = cv2.resize(fraction, (width, height), interpolation=cv2.INTER_LINEAR)
+    soft = np.clip(cv2.resize(weight, (width, height), interpolation=cv2.INTER_LINEAR), 0.0, 1.0)
+    refl = lin * np.clip(frac, 0.0, 1.0) * soft[..., None]
+    # the natural wood: floor pixels with (almost) no reflection
+    share = (refl @ LUMA) / np.maximum(lin @ LUMA, 1e-6)
+    wood_only = (soft > 0.99) & (share < WOOD_ONLY_FRACTION)
+    red = np.maximum(lin[..., 0][wood_only], 1e-6)
+    limits = (
+        float(np.percentile(lin[..., 1][wood_only] / red, SATURATION_PERCENTILE)),
+        float(np.percentile(lin[..., 2][wood_only] / red, SATURATION_PERCENTILE)),
+    )
+    limited, s = limit_saturation(lin, refl, limits)
+    on = soft > 0.5
+    info = dict(info)
+    info.update(
+        {
+            "saturationLimit": {"gr": round(limits[0], 4), "br": round(limits[1], 4), "woodPixels": int(wood_only.sum())},
+            "limitedShare": round(float((s[on] < 0.999).mean()), 4),
+            "removedByLimit": round(float(((refl - limited) @ LUMA)[on].sum() / max(float((refl @ LUMA)[on].sum()), 1e-6)), 4),
+            "reflectionMax": round(float(limited.max()), 4),
+            "reflectionMeanFloor": round(float(limited[on].mean()), 4),
+        }
+    )
+    return limited, info
 
 
 def wall_albedo(plate_rgb: np.ndarray, measure: dict) -> list[float]:
@@ -321,20 +383,25 @@ def main() -> int:
         plates[key] = entry
         print(f"{key}: shadow min {mult.min():.3f}, wall clearance {shot['wallClearanceM']} m, width {entry['vehicle']['targetWidthRatio']}")
 
-    refl, split = split_reflection(rgb, room)
+    # the processor subtracts the pass from the DECODED plate.jpg – measure it on exactly those pixels
+    decoded = np.asarray(Image.open(args.out / PLATE_NAME).convert("RGB"))
+    refl, split = full_reflection(decoded, room)
     # calibration exactly like the rendered plates: plate vs. "gloss-free" = plate − reflection
-    glossfree = _to_srgb(np.clip(plate_linear(rgb) - refl, 0.0, 1.0)).astype(np.float32)
+    # (at PASS_SIZE; only the reflectance samples are used – the stored pass is the full-size one)
+    small = cv2.resize(refl, PASS_SIZE, interpolation=cv2.INTER_AREA)
+    glossfree = _to_srgb(np.clip(plate_linear(decoded) - small, 0.0, 1.0)).astype(np.float32)
     first = next(iter(plates.values()))
-    calibrated, samples = pp.reflection_pass(rgb.astype(np.float32) / 255.0, glossfree, first)
+    _, samples = pp.reflection_pass(decoded.astype(np.float32) / 255.0, glossfree, first)
     if len(samples) < 2:
         raise SystemExit("reflection calibration failed")
-    if calibrated.min() < -REFLECTION_OFFSET - 1e-6 or calibrated.max() > 1.0 - REFLECTION_OFFSET + 1e-6:
+    if refl.min() < -REFLECTION_OFFSET - 1e-6 or refl.max() > 1.0 - REFLECTION_OFFSET + 1e-6:
         raise SystemExit("reflection pass outside the encodable range")
-    out = cv2.cvtColor(np.clip(calibrated + REFLECTION_OFFSET, 0.0, 1.0), cv2.COLOR_RGB2BGR)
-    cv2.imwrite(str(args.out / REFLECTION_NAME), (out * 65535.0 + 0.5).astype(np.uint16))
+    out = cv2.cvtColor(np.clip(refl + REFLECTION_OFFSET, 0.0, 1.0), cv2.COLOR_RGB2BGR)
+    code = np.round(out * (65535.0 / REFLECTION_STEP)) * REFLECTION_STEP
+    cv2.imwrite(str(args.out / REFLECTION_NAME), np.clip(code, 0, 65535).astype(np.uint16), [cv2.IMWRITE_PNG_COMPRESSION, 9])
     for entry in plates.values():
         entry["reflection"] = REFLECTION_NAME
-        entry["reflectionSize"] = [int(calibrated.shape[1]), int(calibrated.shape[0])]
+        entry["reflectionSize"] = [int(refl.shape[1]), int(refl.shape[0])]
         entry["reflectionOffset"] = REFLECTION_OFFSET
         entry["reflectance"] = samples
     ks = [k for _, k in samples]
