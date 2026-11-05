@@ -135,7 +135,11 @@ export async function saveVehicleData(
   input: VehicleInput,
   base: Vehicle,
 ): Promise<Vehicle> {
-  await assertReferenceAvailable(data, input.internalReference, vehicleId);
+  // Only a changed number is checked: a vehicle that already shares its
+  // number with another one (data from before the rule) stays editable.
+  if (referenceKey(input.internalReference) !== referenceKey(base.internalReference)) {
+    await assertReferenceAvailable(data, input.internalReference, vehicleId);
+  }
   let expectedUpdatedAt = base.updatedAt;
   for (let attempt = 1; ; attempt += 1) {
     try {

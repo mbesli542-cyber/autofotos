@@ -197,4 +197,24 @@ describe("'Interne Fahrzeugnummer' stays unique (export file names)", () => {
     const saved = await saveVehicleData(data, base.id, { ...INPUT, internalReference: "FZ-3002", color: "Blau" }, base);
     expect([saved.internalReference, saved.color]).toEqual(["FZ-3002", "Blau"]);
   });
+
+  it("keeps a vehicle editable that already shares its number (data from before the rule)", async () => {
+    const { data } = await setup();
+    // A duplicate saved before the rule existed (bypassing it).
+    const base = await data.createVehicle({ ...INPUT, internalReference: "FZ-2041" });
+    const listReferences = vi.spyOn(data, "listVehicleReferences");
+    const saved = await saveVehicleData(data, base.id, { ...INPUT, internalReference: "FZ-2041", mileage: 42000 }, base);
+    expect([saved.internalReference, saved.mileage]).toEqual(["FZ-2041", 42000]);
+    // The same number spelt differently is no change either.
+    await saveVehicleData(data, base.id, { ...INPUT, internalReference: "fz 2041", mileage: 42001 }, saved);
+    expect(listReferences).not.toHaveBeenCalled();
+
+    // Changing it to another taken number is still refused.
+    await data.createVehicle({ ...INPUT, internalReference: "FZ-3003" });
+    const current = await data.getVehicle(base.id);
+    const error = await saveVehicleData(data, base.id, { ...INPUT, internalReference: "FZ-3003" }, current!).catch(
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(DuplicateReferenceError);
+  });
 });
