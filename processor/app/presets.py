@@ -2,10 +2,11 @@
 
 A preset is a JSON file in `<assets>/presets/` (default: the Next.js
 `public/presets/` folder), e.g. `autoexperten-standard.json`. Its background is
-ONE physical 3D showroom rendered from eight shot-specific cameras
-(`background.plates` → `plates.json`, rendered by processor/showroom3d/): every
-exterior shot is placed onto the plate of its own camera, so perspective,
-floor and light fit the photographed angle. The plates are EMPTY (no branding);
+ONE physical showroom seen from eight shot-specific cameras (`background.plates`
+→ `plates.json`; shipped: the dealer's own studio, `autoexperten-haendler/`,
+built by processor/showroom3d/dealer_*.py): every exterior shot is placed onto
+the plate of its own camera, so perspective, floor and light fit the
+photographed angle. The plates are EMPTY (no branding);
 the official logo and the texts are composited per plate in wall space
 (app/showroom/wall_branding.py, `branding` section of the JSON).
 

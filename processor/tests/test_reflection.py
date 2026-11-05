@@ -13,7 +13,7 @@ from app.pipeline.grounding import GroundContact, build_ground_model
 from app.pipeline.mask import BBox
 from app.pipeline.placement import compute_placement
 from app.pipeline.reflection import apply_reflection
-from app.presets import BackgroundProvider, ReflectionConfig, load_preset
+from app.presets import BackgroundProvider, ReflectionConfig, ShadowConfig, load_preset
 
 W, H = 1200, 900
 CLEARANCE = 30
@@ -40,7 +40,11 @@ def _car(placement, body):
 
 @pytest.fixture
 def scene(settings):
-    preset = load_preset(settings, "autoexperten_standard")
+    """The left_side plate with the code defaults of shadow and reflection (the earlier look:
+    strength 1.0, no footprint limit) – the shipped dealer values are tested with the variants."""
+    preset = dataclasses.replace(
+        load_preset(settings, "autoexperten_standard"), shadow=ShadowConfig(), reflection=ReflectionConfig()
+    )
     showroom = BackgroundProvider(settings).get(preset, "left_side", W, H)
     plate = showroom.plate
     placement = compute_placement(

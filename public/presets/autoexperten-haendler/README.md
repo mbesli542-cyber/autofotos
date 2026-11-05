@@ -56,11 +56,11 @@ stays where he put it. Cars whose photo is taller than the 4.85 × 1.46 m proxy 
 width are placed smaller ("headroom"): a 4.05 m hatchback at ≈ 0.82 of the target (≈ 0.68 of
 the frame – about what a car of that length occupies on that spot of a real studio:
 0.83 · 4.05 / 4.85 = 0.69), SUVs and estates likewise; below 0.9 of the target the result gets
-the `vehicle_reduced` hint, as with the shipped plates (which reduce the same hatchback to 0.84).
+the `vehicle_reduced` hint, as with the earlier 3D room (which reduced the same hatchback to 0.84).
 
 Regression photos on this plate set (real pipeline; target fraction / share of the frame width):
 
-| photo | view | here | shipped plates |
+| photo | view | here | earlier 3D room |
 | --- | --- | --- | --- |
 | Mercedes S63 (chat copy, relaxed gate) | front_left_45 | 1.00 / 0.83 | 1.00 / 0.81 |
 | Peugeot 407 saloon | front_left_45 | 0.96 / 0.80 | 1.00 / 0.81 |
@@ -75,7 +75,7 @@ Regression photos on this plate set (real pipeline; target fraction / share of t
 | Mercedes W123 | right_side | 1.00 / 0.92 | 1.00 / 0.85 |
 | Toyota Yaris (rear) | rear | 0.88 / 0.60 ⚑ | 1.00 / 0.62 |
 
-⚑ = `vehicle_reduced` hint. The four photos not in the shipped regression set (C-Crosser, A5,
+⚑ = `vehicle_reduced` hint. The four photos not in the regression set (C-Crosser, A5,
 CR-V, RS4 – candidates of the same Wikimedia set, CC0 / CC BY-SA) are listed in
 `processor/showroom3d/dealer/extra_regression_cases.json` (`visual_regression.py --manifest … --preset-file
 public/presets/variants/autoexperten-haendler.json`). No accepted straight FRONT photo exists in the regression set (its
@@ -205,6 +205,11 @@ processor/.venv/bin/python processor/showroom3d/dealer_clean.py --out /opt/ae-de
        --standard public/presets/autoexperten-standard.json \
        --variant public/presets/variants/autoexperten-haendler.json
 ```
+
+This plate set and "Schatten mittel" are the **shipped look**: after a rebuild copy
+`../variants/autoexperten-haendler.json` over `../autoexperten-standard.json` and keep the standard
+`name` and `description` (`../variants/README.md` → Switching the default; the writer reproduces
+the three variant files byte-identically from either standard file).
 
 `base.png` renders pixel-identically (fixed seed), so after a pose change in `dealer_layout.py` only
 the changed shots need a new proxy render (`--shots left_side,right_side,front,rear`, the other

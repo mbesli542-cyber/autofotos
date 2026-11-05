@@ -18,13 +18,13 @@ quality gate with a German retake hint.
 > glass, damage and wear stay exactly as photographed. A colour guard
 > measures hue and saturation of the vehicle before/after and drops any
 > correction that would shift them (navy stays navy). **Dealer decision
-> (2026-11-05):** a preset may switch on the guarded *studio light match*
+> (2026-11-05):** the shipped preset (his studio) switches on the guarded *studio light match*
 > (`vehicleAdjustments.studioLight`, see "Studio light match" below) – a
 > Lightroom-like global light correction towards the bright studio plate with
 > wider, documented limits and a paint guard; still one global mapping of the
 > original pixels, nothing drawn, removed or retouched.
 
-## Pipeline (V2 – 3D showroom plates)
+## Pipeline (V2 – showroom plates: the dealer's studio)
 
 | Step | Module |
 | --- | --- |
@@ -261,7 +261,8 @@ To add another backend implement `VehicleSegmenter` and register it in
 
 The processing preset is `public/presets/autoexperten-standard.json` (shared
 with the Next.js app; the processor reads it from `PROCESSOR_ASSETS_DIR`,
-default `../public`). Sections: `background.plates` (the plate set),
+default `../public`) – the dealer's studio with "Schatten mittel", identical to
+`public/presets/variants/autoexperten-haendler.json` except name and description. Sections: `background.plates` (the plate set),
 `branding`, `output`, `placement` (size limits only), `shadow` (grounding v3:
 `contactOpacity`, `creaseOpacity`, `underbodyOpacity` ≥ `edgeOpacity`, distances
 in floor metres, `minFloorLight` ≥ 0.02; optional `tint` – per-channel darkening R G B,
@@ -292,20 +293,20 @@ Inter font, each glyph's real advance – is at most 2.5 brand-wall heights
 (left: `centerX` is the left edge), `icon` `""`/`globe`/`phone` (Lucide line
 icons, ISC, `app/showroom/icons.py`), side lines `ruleLength` ≤ 0.4 and
 `ruleGap` ≤ 0.1 (fractions of the wall width), `ruleThickness` ≤ 0.01 (> 0
-when there are lines). Look variants (reference branding, glossier floor,
-car further back, the dealer's own backdrop as ONE fixed studio plate –
-`autoexperten-haendler.json`, plate set `public/presets/autoexperten-haendler/`,
-built by `showroom3d/dealer_*.py`): `public/presets/variants/` (README there);
+when there are lines). Look variants (the dealer's studio in three shadow
+strengths – `autoexperten-haendler.json` = "mittel" = shipped, `-leicht`,
+`-kraeftig`; plate set `public/presets/autoexperten-haendler/`, built by
+`showroom3d/dealer_*.py`): `public/presets/variants/` (README there);
 `scripts/visual_regression.py --preset-file <variant.json>` runs one. Both
 placement fields are maxima fitted per photo (`app/pipeline/room_depth.py`,
 metadata `placement.roomFit`): the depth offset, then the width scale, is
 reduced until the floor rule binds no harder than on the plate's spot and the
 car's fitted footprint keeps 0.5 m to the wall (or no less than on the
-plate's spot); at 0 / 1.0 nothing is searched (the shipped look). The
+plate's spot); at 0 / 1.0 nothing is searched (the shipped look uses 0 / 1.0). The
 code clamps every vehicle adjustment to `HARD_LIMITS` in
 `app/pipeline/light.py`, so the JSON cannot make the vehicle correction
 aggressive; the studio light match (`vehicleAdjustments.studioLight`, the
-dealer variant) is validated against `STUDIO_LIGHT_RANGES` (`app/presets.py`,
+shipped preset and the dealer variants) is validated against `STUDIO_LIGHT_RANGES` (`app/presets.py`,
 every field required) and clamped to the same maxima again in `light.py`.
 
 ### Studio light match (dealer decision, 2026-11-05)
@@ -315,8 +316,8 @@ from the room". He decided that the car may get a Lightroom-like **global** ligh
 correction towards the studio, beyond the conservative limits (±0.25 EV, white
 balance ±2 %, no contrast) – as normal photo editing, never misrepresenting
 colour or condition (mobile.de: the photos show the actual condition). With
-`vehicleAdjustments.studioLight.enabled` (only the dealer variant; the shipped
-preset is unchanged) `light.py` does, measured on the ORIGINAL vehicle pixels and
+`vehicleAdjustments.studioLight.enabled` (the shipped preset and the dealer
+variants; a preset without the block keeps the conservative correction) `light.py` does, measured on the ORIGINAL vehicle pixels and
 on the plate around the car's spot:
 
 1. **Studio light** (`measure_studio`): key = median luminance of the plate
@@ -404,26 +405,31 @@ pixels).
 plum-grey, champagne, dark navy and dark green paint, a magenta studio wall and
 navy paint as its own "white" reference).
 
-**Showroom plates** – ONE physical 3D showroom (Blender,
-`processor/showroom3d/render_plates.py`, CC0 assets) rendered from eight
-shot-specific cameras (phone-like 66° HFOV, 1.25–1.4 m height):
+**Showroom plates** – the dealer's own studio as ONE fixed plate for all eight
+exterior shots (his showroom image, made with an image AI, lettering removed by
+`showroom3d/dealer_clean.py`, upscaled once; one level studio camera with lens
+shift, 66° HFOV, 1.6 m high; the car turned per shot – `showroom3d/dealer_layout.py`):
 
 ```
-public/presets/autoexperten-standard/
-  <shot>.jpg          empty plate, NO branding (4:3; any resolution, 2400 × 1800 recommended)
-  <shot>-shadow.png   16-bit grey: floor shadow/occlusion of a typical car at the anchor,
+public/presets/autoexperten-haendler/
+  plate.jpg           empty plate, NO branding (4:3, 2400 × 1800) – the image of all eight shots
+  <shot>-shadow.png   16-bit grey: floor shadow/occlusion of a typical car at the shot's pose,
                       LINEAR multiplier (65535 = 1.0 = no shadow), lower resolution
-  <shot>-reflection.png  optional 16-bit RGB: the floor's own glossy reflection (LED streaks,
-                      wall glow, sheen), LINEAR, signed (code / 65535 − reflectionOffset),
-                      lower resolution; with `reflectance` [[v, k], …] per plate
-  plates.json         camera, horizon, floor/wall homographies, anchor, proxy car
-                      (bbox, tyre contacts, targetWidthRatio), wall albedo + brand area
+                      (Blender pass, showroom3d/render_dealer_passes.py)
+  reflection.png      16-bit RGB: the floor's own glossy reflection (light streaks, LED lines),
+                      LINEAR, signed (code / 65535 − reflectionOffset), measured on the plate;
+                      with `reflectance` [[v, k], …] per shot
+  plates.json         per shot: image, camera, horizon, floor/wall homographies, anchor,
+                      proxy car (bbox, tyre contacts, targetWidthRatio), wall albedo + brand area
+  branding.json       where his lettering was (fractions of the brand area)
 ```
 
+The loader also takes a set with one image per shot (`<shot>.jpg`, as the earlier
+Blender room `showroom3d/render_plates.py` rendered it – no longer shipped).
 `app/showroom/plates.py` validates the set on load (all 8 shots, finite 3×3
 homographies that agree with the anchor/contacts and with each other at the
 wall/floor junction, files present and readable, sizes as declared, one aspect
-ratio). How to render: `public/presets/README.md`. **There is no fallback**:
+ratio). How to build: `public/presets/autoexperten-haendler/README.md`. **There is no fallback**:
 while the plate set is missing or invalid every exterior job fails with
 **"AutoExperten Showroom-Master fehlt."** (`errorCode: "showroom"`), `/health`
 reports `showroomSource: "missing"` + `showroomMasterError` (the reason).
@@ -431,10 +437,10 @@ Interior/detail shots never need the plates.
 
 **Branding** (`app/showroom/wall_branding.py` + the layout engine in
 `app/showroom/branding.py`) – the official logo PNG from
-`public/brand/official/` (only scaled, never redrawn), `SCHWETZINGEN`,
-`www.autoexperten-rn.de` and `+49 6202 9262357` (bundled Inter font, SIL OFL,
-`app/showroom/fonts/`). The `branding` fractions refer to the plate's
-`wall.brandArea` (the white wall between the slat panels): x from `xMin` (0)
+`public/brand/official/` (only scaled, never redrawn) and "Schwetzingen" between
+two thin rules where the dealer's AI lettering was (no website/phone – mobile.de;
+bundled Inter font, SIL OFL, `app/showroom/fonts/`). The `branding` fractions
+refer to the plate's `wall.brandArea` (the dealer's white panel): x from `xMin` (0)
 to `xMax` (1), `top` 0 at the top (`zMax`) and 1 at the floor (`zMin`). The
 layout is rendered on a uniform wall-albedo canvas (≥ 2 canvas px per output
 px, so the logo is never upscaled in the result), the ratio branded/plain in

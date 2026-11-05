@@ -656,8 +656,8 @@ def test_showroom_preview_is_the_branded_plate_of_a_shot(make_client):
     assert image.size == (1200, 900)
 
 
-def test_missing_plates_fail_every_exterior_job_with_a_clear_message(make_client, settings, photo):
-    (settings.presets_dir / "autoexperten-standard" / "front_left_45.jpg").unlink()
+def test_missing_plates_fail_every_exterior_job_with_a_clear_message(make_client, plates_dir, photo):
+    (plates_dir / "front_left_45.jpg").unlink()
     body = {"vehicleId": VEHICLE_ID, "photoId": PHOTO_ID, "preset": "autoexperten_standard"}
     client, store = make_client()
     with client:
@@ -675,8 +675,8 @@ def test_missing_plates_fail_every_exterior_job_with_a_clear_message(make_client
     assert store.stored == []  # nothing was written to vehicle-processed
 
 
-def test_a_broken_plates_json_is_reported_as_missing_showroom(make_client, settings, photo):
-    (settings.presets_dir / "autoexperten-standard" / "plates.json").write_text('{"version": 1, "plates": {}}')
+def test_a_broken_plates_json_is_reported_as_missing_showroom(make_client, plates_dir, photo):
+    (plates_dir / "plates.json").write_text('{"version": 1, "plates": {}}')
     client, _ = make_client()
     with client:
         health = client.get("/health").json()
@@ -685,8 +685,8 @@ def test_a_broken_plates_json_is_reported_as_missing_showroom(make_client, setti
     assert done["error"] == "AutoExperten Showroom-Master fehlt."
 
 
-def test_interior_shots_do_not_need_the_plates(make_client, settings, photo):
-    (settings.presets_dir / "autoexperten-standard" / "plates.json").unlink()
+def test_interior_shots_do_not_need_the_plates(make_client, plates_dir, photo):
+    (plates_dir / "plates.json").unlink()
     client, _ = make_client()
     with client:
         job = client.post(
@@ -698,9 +698,9 @@ def test_interior_shots_do_not_need_the_plates(make_client, settings, photo):
 
 
 def test_quality_gate_rejection_fails_the_job_with_code_and_german_message(make_client, fake_segmenter):
-    from tests.conftest import make_vehicle_photo
+    from tests.conftest import make_far_vehicle_photo
 
-    rgb, mask = make_vehicle_photo(2400, 1800, body_ratio=0.3)  # far away: 30 % of the photo width
+    rgb, mask = make_far_vehicle_photo(2400, 1800, scale=0.4)  # far away: 28 % of the photo width
     fake_segmenter.register(mask)
     small = encode_jpeg(rgb, 95)
     client, store = make_client(store=FakeStore(small, shot_key="left_side"))

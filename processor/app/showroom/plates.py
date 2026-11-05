@@ -1,7 +1,11 @@
-"""The AutoExperten 3D showroom as eight angle-specific plates.
+"""The AutoExperten showroom as eight angle-specific plates.
 
-One physical 3D room (``processor/showroom3d/render_plates.py``, Blender) is
-rendered from one camera per exterior shot. Every plate comes with metadata
+One physical room is seen from one camera per exterior shot – the shipped set
+is the dealer's own studio (``public/presets/autoexperten-haendler/``: ONE
+``plate.jpg`` for all eight shots, one fixed level camera, the car turned per
+shot, ``processor/showroom3d/dealer_*.py``); the earlier Blender room
+(``processor/showroom3d/render_plates.py``) rendered a ``<shot>.jpg`` per shot.
+Every plate comes with metadata
 (``plates.json``) that describes the camera and the room geometry, so the
 processor can put the real vehicle into the room in the right perspective:
 
@@ -15,8 +19,8 @@ processor can put the real vehicle into the room in the right perspective:
 - ``wall.brandArea``: the white wall between the slat panels that carries
   the official branding (composited by app/showroom/wall_branding.py).
 
-Files of a plate set (e.g. ``public/presets/autoexperten-standard/``):
-``<shot>.jpg`` (empty plate, NO branding), ``<shot>-shadow.png`` (16-bit grey
+Files of a plate set (e.g. ``public/presets/autoexperten-haendler/``):
+the plate image per shot (``<shot>.jpg`` or one shared file, empty, NO branding), ``<shot>-shadow.png`` (16-bit grey
 floor shadow/occlusion multiplier of the proxy car in LINEAR light,
 65535 = 1.0 = no shadow), optionally ``<shot>-reflection.png`` (16-bit RGB: the
 floor's own glossy reflection of the LEDs and the wall in LINEAR light, signed:

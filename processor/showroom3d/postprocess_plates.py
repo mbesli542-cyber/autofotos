@@ -6,7 +6,7 @@ Input  (render dir, written by render_plates.py):
     <shot>-shadow-proxy.png    same view with the invisible light-blocking car proxy
     <shot>-glossfree.png       (optional, --pass reflection) shadow-pass view with a gloss-free floor
     plates.json                camera + geometry metadata
-Output (plate dir, e.g. public/presets/autoexperten-standard/):
+Output (plate dir, e.g. /opt/ae-plates/set – the earlier 3D room, no longer shipped in public/presets/):
     <shot>.jpg                 plate (sRGB JPEG, embedded sRGB profile)
     <shot>-shadow.png          16-bit grey: floor shadow/occlusion of a typical car standing at
                                the anchor, as a multiplier in LINEAR light (65535 = 1.0 = no shadow)

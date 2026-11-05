@@ -5,120 +5,79 @@ Assets of the AutoExperten showroom processing (used by the processor in
 
 | File | Purpose |
 | --- | --- |
-| `autoexperten-standard.json` | Preset "AutoExperten Standard": plate set, **branding layout** (wall space), output size (2400 × 1800), placement limits, shadow, reflection, adjustment limits, quality gate. Validated strictly by the processor (`processor/app/presets.py`, ranges in `processor/README.md` → Presets and assets): an invalid value is a configuration error (`presetError` in `/health`), never replaced by a default. |
-| `autoexperten-standard/` | The **showroom plates**: ONE 3D showroom rendered from eight shot-specific cameras (`<shot>.jpg`, `<shot>-shadow.png`, `<shot>-reflection.png`, `plates.json`). |
-| `variants/` | Look variants for the dealer to choose (reference branding with big logo, lines and icons; glossier floor; car further back in the room) – complete presets, not active. See `variants/README.md`. |
-| `autoexperten-haendler/` | The **dealer's own showroom image** (made with an image AI, lettering removed, upscaled) as ONE fixed studio plate for all eight shots (`plate.jpg`, per-shot `<shot>-shadow.png`, `reflection.png`, `plates.json`, `branding.json`) – used only by the variant `variants/autoexperten-haendler.json`. Provenance and recipe: its `README.md`. |
-| `autoexperten-standard-reference.jpg` | Approved showroom design supplied by AutoExperten (1448 × 1086) – the model for the 3D room. Its lettering is generated, **not** the official logo, so it is never used as a background. |
+| `autoexperten-standard.json` | Preset "AutoExperten Standard" – **the dealer's own studio** with "Schatten mittel" (identical to `variants/autoexperten-haendler.json` except name and description): plate set, **branding layout** (wall space), output size (2400 × 1800), placement limits, shadow, reflection, vehicle adjustments incl. the studio light match (`vehicleAdjustments.studioLight`, the dealer's decision), quality gate. Validated strictly by the processor (`processor/app/presets.py`, ranges in `processor/README.md` → Presets and assets): an invalid value is a configuration error (`presetError` in `/health`), never replaced by a default. |
+| `autoexperten-haendler/` | The **showroom plates**: the dealer's own showroom image (made with an image AI, his lettering removed, upscaled once) as ONE fixed studio plate for all eight shots (`plate.jpg`, per-shot `<shot>-shadow.png`, one `reflection.png`, `plates.json`, `branding.json`). Provenance, studio camera, shadow strengths and recipe: its `README.md`. |
+| `variants/` | The same look in the three shadow strengths (`autoexperten-haendler.json` = "mittel" = shipped, `-leicht`, `-kraeftig`) – complete presets. See `variants/README.md`. |
+| `autoexperten-standard-reference.jpg` | Showroom design supplied by AutoExperten earlier (1448 × 1086) – the model of the earlier Blender room (`processor/showroom3d/render_plates.py`; the app's preset spec names it as look reference). Its lettering is generated, **not** the official logo, so it is never used as a background. |
+
+The eight plates of the earlier Blender room (`autoexperten-standard/<shot>.jpg`,
+`-shadow.png`, `-reflection.png`, `plates.json`, ≈ 23 MB) are no longer shipped – no preset
+uses them; `render_plates.py` re-renders them, or take them from the git history (990d9f7).
 
 ## How a listing photo is built
 
 ```
-3D showroom (processor/showroom3d/render_plates.py, Blender, CC0 assets)
-   └─ rendered from the camera of each exterior shot → <shot>.jpg (empty wall, NO text/logo)
-                                                       <shot>-shadow.png (floor shadow of a typical car)
-                                                       <shot>-reflection.png (the floor's own reflection)
-                                                       plates.json (camera, floor/wall homographies, proxy car)
- + official branding in wall space (logo PNG + SCHWETZINGEN – no contact data,
-   processor/app/showroom/wall_branding.py, layout in the JSON `branding`)
- + original vehicle pixels on the plate of its angle, contact + floor shadow
+the dealer's showroom image (processor/showroom3d/dealer/haendler_hintergrund.png)
+   └─ AI lettering removed (dealer_clean.py), upscaled once (dealer_upscale.py, Lanczos)
+                                                  → plate.jpg (empty wall, NO text/logo)
+   └─ one fixed studio camera, the car turned per shot (dealer_layout.py)
+                                                  → plates.json (camera, floor/wall homographies,
+                                                    proxy car per shot)
+   └─ Blender shadow pass of the proxy car per pose (render_dealer_passes.py)
+                                                  → <shot>-shadow.png (floor shadow of a typical car)
+   └─ the floor's own reflection measured on the plate (dealer_backdrop.py)
+                                                  → reflection.png
+ + official branding in wall space where his lettering was (logo PNG + "Schwetzingen" between
+   two thin rules – no contact data, processor/app/showroom/wall_branding.py, layout in the
+   JSON `branding`)
+ + original vehicle pixels on the plate entry of its angle (studio light match within the paint
+   guard), contact + floor shadow, the car's reflection
  = listing photo (identical room for every Mercedes, BMW, Audi, Porsche, VW …)
 ```
 
-Nothing is generated by AI; the branding is never drawn over the vehicle and
-the vehicle roof stays below it. Without a complete, valid plate set every
-exterior job fails with "AutoExperten Showroom-Master fehlt." – there is no
-fallback background.
+Nothing is generated per photo and nothing in the car is generated; the
+branding is never drawn over the vehicle and the vehicle roof stays below it.
+Without a complete, valid plate set every exterior job fails with
+"AutoExperten Showroom-Master fehlt." – there is no fallback background.
 
 ## Plate set
 
 ```
-autoexperten-standard/
-  front_left_45.jpg  front.jpg  front_right_45.jpg  left_side.jpg
-  right_side.jpg  rear_left_45.jpg  rear.jpg  rear_right_45.jpg     (4:3, sRGB, no branding)
-  <shot>-shadow.png                                                (16-bit grey, linear multiplier,
-                                                                     65535 = no shadow, lower resolution)
-  <shot>-reflection.png                                            (16-bit RGB, the floor's own glossy reflection,
-                                                                     linear, signed: code/65535 − reflectionOffset)
-  plates.json                                                      (metadata, see processor/app/showroom/plates.py)
+autoexperten-haendler/
+  plate.jpg                 (4:3, 2400 × 1800, sRGB, no branding – the image of all eight shots)
+  <shot>-shadow.png         (per shot; 16-bit grey, linear multiplier, 65535 = no shadow,
+                             lower resolution)
+  reflection.png            (16-bit RGB, the floor's own glossy reflection, linear, signed:
+                             code/65535 − reflectionOffset; shared by all shots)
+  plates.json               (metadata per shot, see processor/app/showroom/plates.py)
+  branding.json             (where his lettering was, fractions of the brand area)
+  README.md
 ```
 
-The reflection pass (optional per plate, strictly validated when present) is
-the shipped plate minus a gloss-free render of the same view; `reflectance`
-([[v, k], …]) is the floor's measured specular reflectance per image row
-(reflection of the white wall / wall radiance at the mirrored row). The
-processor removes the plate's own reflection where a car blocks it and adds
-the car's mirrored pixels with that reflectance (processor/app/pipeline/reflection.py).
+`plates.json` per shot: `image` (here always `plate.jpg`), `camera` (position,
+height, distance, 66° HFOV, focal length), `horizonV`, `floorHomography` (floor
+x, y in metres → normalised u, v), `wallHomography` (wall x, z → u, v), `anchor`
+(where the car stands), `vehicle` (view, heading, `targetWidthRatio` – car width
+/ frame width: 0.83 for 3/4 views, 0.92 side, 0.68 front/rear –, proxy car size,
+projected `proxyBBox` and `proxyContacts`), `wall` (`albedo`, `brandArea` = the
+white panel in metres), `shadow`, `reflection` + `reflectance` ([[v, k], …], the
+floor's measured specular reflectance per image row). The processor validates
+all of it on load (also per-shot plate images – the loader takes both forms);
+the resolution is free (plates are scaled to the output size). The processor
+removes the plate's own reflection where a car blocks it and adds the car's
+mirrored pixels with that reflectance (processor/app/pipeline/reflection.py).
 
-`plates.json` per shot: `camera` (position, height, distance, orbit, pitch,
-66° HFOV, focal length), `horizonV`, `floorHomography` (floor x, y in metres
-→ normalised u, v), `wallHomography` (wall x, z → u, v), `anchor` (where the
-car stands), `vehicle` (view, heading, `targetWidthRatio` – car width / frame
-width: 0.81 for 3/4 views, 0.85 side, 0.62 front/rear –, proxy car size,
-projected `proxyBBox` and `proxyContacts`) and `wall` (`albedo`, `brandArea`
-= the white wall between the slat panels in metres). The processor validates
-all of it on load; the resolution is free (2400 × 1800 recommended – plates
-are scaled to the output size).
-
-### Rendering the plates
-
-Blender 4.2 LTS (CPU, Cycles). Run **every command from the repository root**
-(the post-processing uses the processor's virtualenv, see
-`processor/README.md` → Run locally):
-
-```bash
-# CC0 textures/models from Poly Haven (laminate_floor_02, oak_veneer_01, painted_plaster_wall,
-# island_tree_02) → /opt/showroom-assets (once)
-python3 processor/showroom3d/fetch_assets.py /opt/showroom-assets
-B=blender   # Blender 4.2 LTS
-# 1. plates + shadow passes (default --pass plate,shadow; with/without the invisible
-#    light-blocking proxy car; --samples 160 is the default)
-# 2. floor reflection pass (gloss-free floor at the shadow resolution, ≈ 3.5 min per shot on 4 cores)
-# 3. post-processing → the plate set the processor loads
-# Chained with &&: a failed step stops the steps after it.
-$B -b --factory-startup --python-exit-code 1 -P processor/showroom3d/render_plates.py -- \
-    --assets /opt/showroom-assets --out /opt/ae-plates/v1 --width 2400 \
-  && $B -b --factory-startup --python-exit-code 1 -P processor/showroom3d/render_plates.py -- \
-    --assets /opt/showroom-assets --out /opt/ae-plates/v1 --width 2400 --pass reflection \
-  && processor/.venv/bin/python processor/showroom3d/postprocess_plates.py \
-    /opt/ae-plates/v1 public/presets/autoexperten-standard
-```
-
-`--python-exit-code 1` has to come **before** `-P`: then a missing script or a
-Python error ends Blender with exit code 1 – without it Blender exits with 0.
-Keep the steps chained (or run them one by one and check each exit code):
-both post-processing modes write the reflection pass only for shots whose
-`<shot>-glossfree.png` is in the render folder and **drop it from
-`plates.json` otherwise**, with exit code 0. The full post-processing (step 3)
-drops it silently – it prints a "reflection pass" line only for the shots
-that got one; only `--reflection-only` (below) names each shot without one
-("<shot>: no reflection pass in <render dir>"). So render step 2 before
-step 3. Quick preview: `--preview`; single shots:
-`--shots front_left_45,left_side`.
-
-To add or refresh only the reflection pass of an existing plate set (plates,
-shadows and the rest of `plates.json` stay untouched):
-
-```bash
-B=blender   # Blender 4.2 LTS
-$B -b --factory-startup --python-exit-code 1 -P processor/showroom3d/render_plates.py -- \
-    --assets /opt/showroom-assets --out /opt/ae-plates/v1 --width 2400 --pass reflection \
-  && processor/.venv/bin/python processor/showroom3d/postprocess_plates.py \
-    /opt/ae-plates/v1 public/presets/autoexperten-standard --reflection-only
-```
-
-`postprocess_plates.py` converts the 16-bit renders to sRGB JPEGs (embedded
-sRGB profile), turns the two shadow passes into the floor shadow multiplier
-(limited to the floor around the car) and writes the final `plates.json`.
-Licences: all textures and models are CC0 (Poly Haven); no stock or
-third-party dealership photos, no generative AI.
+Building and reproducing the set (clean, upscale, Blender passes, `dealer_backdrop.py
+--variant` writes the plate set and the three variant files): `autoexperten-haendler/README.md`
+→ Reproducing. After a rebuild copy the "mittel" variant over the standard file and keep its
+`name`/`description` (see `variants/README.md`).
 
 ### Checking the plates
 
 ```bash
-processor/.venv/bin/python processor/scripts/render_showroom_preview.py -o /tmp/plates.jpg --guides     # all 8 plates
+processor/.venv/bin/python processor/scripts/render_showroom_preview.py -o /tmp/plates.jpg --guides     # all 8 shots
 processor/.venv/bin/python processor/scripts/render_showroom_preview.py -o /tmp/p.jpg --shot front --width 3200 --guides
-(cd processor && .venv/bin/python -m pytest -q tests/test_plates.py)   # also loads the shipped plate set
+(cd processor && .venv/bin/python -m pytest -q tests/test_plates.py tests/test_showroom_variants.py)   # loads the shipped set
 ```
 
 Cyan = wall/floor junction, orange = ground line (lowest tyre contact of the
@@ -127,13 +86,23 @@ branding boxes and the highest point a vehicle roof may reach. The same
 branded plate is served by the processor at
 `GET /showroom/autoexperten_standard/<shot>.jpg?width=2400`.
 
+### The earlier Blender room
+
+`processor/showroom3d/render_plates.py` (Blender 4.2 LTS, CC0 Poly Haven assets via
+`fetch_assets.py`) + `postprocess_plates.py` render the earlier 3D room – eight cameras, a
+`<shot>.jpg` per shot – into a plate set of the same format (see `processor/showroom3d/README.md`).
+It is no longer shipped; a preset that should use it again needs the set back in a folder of
+`public/presets/` and its `background.plates` pointing there.
+
 ## Branding layout
 
-All `branding` values are fractions of the **brand wall** (`wall.brandArea`,
-6.7 m × 4.2 m): `centerX`/`maxWidth` of its width, `top`/`maxHeight`/
+All `branding` values are fractions of the **brand wall** (`wall.brandArea`;
+the dealer's white panel, 7.18 m × 4.0 m): `centerX`/`maxWidth` of its width, `top`/`maxHeight`/
 `capHeight` of its height (0 = top, 1 = floor). The same layout therefore
 appears at the same place on the wall in every plate, in the correct
-perspective. Tune `logo.top`, `logo.maxWidth`, `city.top`, `website.top`,
+perspective. The shipped values put the official logo and "Schwetzingen" with its rules
+exactly where his AI lettering was (measured by `dealer_clean.py`, `branding.json`). Tune
+`logo.top`, `logo.maxWidth`, `city.top`, `website.top`,
 `phone.top`, `capHeight`, `color`, `opacity`; `clearance` is the free space
 (fraction of the output height) the vehicle roof keeps below the lowest
 element. The logo is lit by the plate's own wall light (matte print), so

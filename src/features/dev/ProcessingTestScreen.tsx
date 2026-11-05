@@ -951,7 +951,7 @@ function ShowroomStatus({
         </strong>{" "}
         – der Prozessor hat nicht mit den 8 Showroom-Plates gearbeitet. Bitte den Plate-Satz{" "}
         <code className="rounded bg-ae-bg/60 px-1 py-px text-[13px] [overflow-wrap:anywhere]">
-          public/<wbr />presets/<wbr />autoexperten-standard/
+          public/<wbr />presets/<wbr />autoexperten-haendler/
         </code>{" "}
         (plates.json + Plates) bereitstellen und den Prozessor aktualisieren.
       </p>

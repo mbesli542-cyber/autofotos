@@ -44,8 +44,8 @@ export type ProcessorJobResult =
 export const SHOWROOM_SOURCE_HEADER = "X-Showroom-Source";
 
 /**
- * Shots with an angle-specific showroom plate (the eight exterior shots,
- * public/presets/autoexperten-standard/<shot>.jpg on the processor).
+ * Shots with an angle-specific showroom plate (the eight exterior shots –
+ * entries of public/presets/autoexperten-haendler/plates.json on the processor).
  */
 export const SHOWROOM_PLATE_SHOTS = [
   "front_left_45",

@@ -73,6 +73,22 @@ def make_vehicle_photo(width: int = 2000, height: int = 1500, *, seed: int = 3, 
     return rgb, (mask.astype(np.float32) / 255.0)
 
 
+def make_far_vehicle_photo(width: int = 2400, height: int = 1800, *, scale: float = 0.4, seed: int = 3):
+    """The synthetic side view photographed from far away: the whole car (``make_vehicle_photo``)
+    scaled by ``scale`` about its ground centre on an outdoor background of the same photo size.
+    Unlike a small ``body_ratio`` (a narrow but full-height car) its aspect stays a car's."""
+    rgb, mask = make_vehicle_photo(width, height, seed=seed)
+    small = cv2.resize(rgb, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    small_mask = cv2.resize(mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    out, out_mask = _outdoor(width, height, seed + 1), np.zeros((height, width), np.float32)
+    x0 = (width - small.shape[1]) // 2
+    y0 = int(height * 0.78) - int(round(height * 0.78 * scale))  # the ground line stays where it was
+    sel = small_mask > 0.5
+    out[y0 : y0 + small.shape[0], x0 : x0 + small.shape[1]][sel] = small[sel]
+    out_mask[y0 : y0 + small.shape[0], x0 : x0 + small.shape[1]] = small_mask
+    return out, out_mask
+
+
 def three_quarter_mask(width: int = 2200, height: int = 1650, *, near_end: str = "left", ratio: float = 0.7):
     """Silhouette of a FRONT 3/4 view: near front tyre lowest, near rear tyre higher
     (wheelbase side), far front tyre a little higher on the near-end side.
@@ -186,6 +202,13 @@ def assets_dir(tmp_path: Path, synthetic_plates: Path) -> Path:
     target = assets / "presets" / preset["background"]["plates"]
     shutil.copytree(synthetic_plates, target.parent)
     return assets
+
+
+@pytest.fixture
+def plates_dir(assets_dir: Path) -> Path:
+    """Folder of the (synthetic) plate set the shipped preset points to (`background.plates`)."""
+    preset = json.loads((assets_dir / "presets/autoexperten-standard.json").read_text())
+    return (assets_dir / "presets" / preset["background"]["plates"]).parent
 
 
 @pytest.fixture

@@ -46,7 +46,7 @@ RUN --mount=type=cache,target=/root/.cache/ae-models \
     && cp "/root/.cache/ae-models/${SEGMENTATION_MODEL}.onnx" "/root/.cache/ae-models/${DETECTOR_MODEL}.onnx" /app/models/ \
     && chmod 0644 /app/models/*.onnx
 
-# Showroom preset + 3D showroom plates (presets/autoexperten-standard/) and the
+# Showroom preset + the dealer studio plate set (presets/autoexperten-haendler/) and the
 # official branding (replace the files in public/ and rebuild to update them,
 # or mount a folder at /app/assets).
 COPY public/presets ./assets/presets

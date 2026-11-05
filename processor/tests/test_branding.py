@@ -128,14 +128,16 @@ def test_plate_provider_brands_every_plate_in_wall_space(settings):
         u0, v0, u1, _ = showroom.plate.proxy_bbox
         assert abs((logo[0] + logo[2]) / 2 - 800) < 0.12 * 1600
         assert showroom.branding.bottom + preset.branding.clearance * 1200 < v0 * 1200
-        # the main logo is clearly visible, the city line is secondary
+        # the main logo is clearly visible (as large as the dealer's own lettering: 0.72 of the
+        # brand wall), the city line is secondary
         city = showroom.branding.box("city")
-        assert 0.22 * 1600 < (logo[2] - logo[0]) < 0.40 * 1600
-        assert (city[2] - city[0]) < (logo[2] - logo[0])
+        assert 0.30 * 1600 < (logo[2] - logo[0]) < 0.55 * 1600
+        assert (city[3] - city[1]) < 0.5 * (logo[3] - logo[1])  # a small line below the logo …
+        assert (city[2] - city[0]) < 1.1 * (logo[2] - logo[0])  # … its rules span about the logo width
         assert showroom.branding.box("website") is None and showroom.branding.box("phone") is None
 
 
-def test_plate_provider_caches_and_follows_file_changes(settings):
+def test_plate_provider_caches_and_follows_file_changes(settings, plates_dir):
     import os
     import time
 
@@ -143,7 +145,7 @@ def test_plate_provider_caches_and_follows_file_changes(settings):
     provider = BackgroundProvider(settings)
     first = provider.get(preset, "front", 800, 600)
     assert provider.get(preset, "front", 800, 600) is first
-    image = settings.presets_dir / "autoexperten-standard" / "front.jpg"
+    image = plates_dir / "front.jpg"
     Image.fromarray(np.full((480, 640, 3), 90, np.uint8)).save(image)
     later = time.time() + 5
     os.utime(image, (later, later))
@@ -152,11 +154,11 @@ def test_plate_provider_caches_and_follows_file_changes(settings):
     assert np.asarray(second.rgb)[590, 10].max() < 110  # the new (dark) plate is used
 
 
-def test_an_unreadable_plate_makes_the_showroom_unavailable(settings):
+def test_an_unreadable_plate_makes_the_showroom_unavailable(settings, plates_dir):
     from app.presets import ShowroomUnavailableError
 
     preset = load_preset(settings, "autoexperten_standard")
-    (settings.presets_dir / "autoexperten-standard" / "rear.jpg").write_bytes(b"half-copied")
+    (plates_dir / "rear.jpg").write_bytes(b"half-copied")
     provider = BackgroundProvider(settings)
     assert provider.source(preset) == "missing"
     assert "rear" in provider.master_error(preset)

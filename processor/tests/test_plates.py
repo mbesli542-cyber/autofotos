@@ -18,7 +18,10 @@ from app.showroom.plates import (
     load_plate_set,
 )
 
-REAL_PLATES = REPO_ROOT / "public/presets/autoexperten-standard/plates.json"
+#: The shipped plate set (the dealer's studio) – whatever background.plates of the shipped preset names.
+REAL_PLATES = REPO_ROOT / "public/presets" / json.loads(
+    (REPO_ROOT / "public/presets/autoexperten-standard.json").read_text(encoding="utf-8")
+)["background"]["plates"]
 
 
 @pytest.fixture
@@ -137,14 +140,14 @@ def test_plate_images_with_another_aspect_ratio_are_rejected(plate_dir):
         load_plate_set(_rewrite(plate_dir, change))
 
 
-@pytest.mark.skipif(not REAL_PLATES.is_file(), reason="real plate set not rendered yet")
 def test_real_plate_set_smoke():
-    """The rendered plate set in public/presets/autoexperten-standard/ is complete and brandable."""
+    """The shipped plate set (public/presets/autoexperten-haendler/) is complete and brandable."""
     from app.presets import BackgroundProvider, load_preset
 
     plates = load_plate_set(REAL_PLATES)
     for plate in plates.plates.values():
-        assert 0.75 <= plate.ground_v <= 0.95
+        # one fixed studio camera: a side view stands higher in the frame (ground 0.655), 3/4 lower
+        assert 0.6 <= plate.ground_v <= 0.95
         assert 0.4 <= plate.target_width_ratio <= 0.95
     settings = Settings(assets_dir=REPO_ROOT / "public")
     preset = load_preset(settings, "autoexperten_standard")

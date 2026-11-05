@@ -58,12 +58,13 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
   original or add bars/overlays to stand in for a result.
 - **No generative image AI in processing** (no DALL·E, Stable Diffusion, Flux,
   Midjourney, Generative Fill, image-to-image). The processor composites the
-  ORIGINAL vehicle pixels. Vehicle light corrections: the shipped preset keeps
-  the conservative correction (`HARD_LIMITS` + colour guard in
-  `processor/app/pipeline/light.py`: ±0.25 EV, white balance ±2 %, no contrast).
-  **Dealer decision (2026-11-05):** a preset may enable
-  `vehicleAdjustments.studioLight` (the dealer variant does, every field written
-  out) – a Lightroom-like GLOBAL light match towards the studio plate: exposure
+  ORIGINAL vehicle pixels. Vehicle light corrections: without
+  `vehicleAdjustments.studioLight` a preset gets the conservative correction
+  (`HARD_LIMITS` + colour guard in `processor/app/pipeline/light.py`: ±0.25 EV,
+  white balance ±2 %, no contrast). **Dealer decision (2026-11-05):** the
+  shipped preset (his studio) and the dealer variants enable
+  `vehicleAdjustments.studioLight` (every field written out) – a Lightroom-like
+  GLOBAL light match towards the studio plate: exposure
   towards the studio's key light (0 … +1 EV; the deepest blacks keep their
   level), contrast only ABOVE the car's median (≤ 0.3, back to 0 at white),
   highlight shoulder (knee ≤ 0.95, highlights keep ≥ 40 % of their detail,
@@ -97,20 +98,29 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
   object or a lost vehicle part – it never draws the cut line and never
   generates or changes a pixel. A lost part may only be taken from the
   whole-frame BiRefNet pass, never drawn in.
-- **One fixed 3D showroom, eight angle-specific plates (processor/showroom3d).**
-  One physical Blender room (`processor/showroom3d/render_plates.py`, CC0
-  assets, modelled after `public/presets/autoexperten-standard-reference.jpg`)
-  is rendered from one camera per exterior shot into
-  `public/presets/autoexperten-standard/` (`<shot>.jpg` empty plate without
-  branding, `<shot>-shadow.png` proxy-car floor shadow, `<shot>-reflection.png`
-  the floor's own reflection, `plates.json` camera + floor/wall homographies +
-  proxy car). Each photo goes onto the plate of its
-  angle (a mirrored 3/4 photo onto the partner plate); plates are never
-  generated per photo. Without a complete, valid plate set exterior jobs fail
-  with "AutoExperten Showroom-Master fehlt." – there is no fallback background.
-  The official logo/texts are composited in wall space through the plate's
-  wall homography (`processor/app/showroom/wall_branding.py`, layout in the
-  JSON `branding`, fractions of the brand wall).
+- **One fixed showroom, eight angle-specific plates: the dealer's own studio
+  (processor/showroom3d/dealer_*.py).** The shipped plate set
+  `public/presets/autoexperten-haendler/` is the dealer's own showroom image
+  (`processor/showroom3d/dealer/haendler_hintergrund.png`, supplied by him, made
+  with an image AI; his AI lettering removed by `dealer_clean.py`, upscaled ONCE
+  with Lanczos – a fixed asset, never regenerated): ONE `plate.jpg` for all
+  eight exterior shots, one fixed level studio camera, the car turned per shot
+  (`dealer_layout.py`); per shot a `<shot>-shadow.png` (Blender shadow pass of a
+  proxy car at that pose, `render_dealer_passes.py`), one `reflection.png` (the
+  floor's own reflection measured on the plate), `plates.json` (camera +
+  floor/wall homographies + proxy car per shot), `branding.json`. Each photo goes
+  onto the entry of its angle (a mirrored 3/4 photo onto the partner entry);
+  plates are never generated per photo. Without a complete, valid plate set
+  exterior jobs fail with "AutoExperten Showroom-Master fehlt." – there is no
+  fallback background. The official logo + "Schwetzingen" between two thin
+  rules are composited in wall space where his lettering was
+  (`processor/app/showroom/wall_branding.py`, layout in the JSON `branding`,
+  fractions of the brand wall). The shipped preset `autoexperten-standard.json`
+  is `variants/autoexperten-haendler.json` ("Schatten mittel"; `-leicht` /
+  `-kraeftig` are the alternatives) with the standard name. The earlier Blender
+  room (`processor/showroom3d/render_plates.py`, modelled after
+  `public/presets/autoexperten-standard-reference.jpg`) is tooling only – its
+  eight plates are no longer shipped (they are in the git history, 990d9f7).
 - **Quality gate instead of bad results.** Photos that would give a bad
   listing image (too small, cropped, wrong perspective, unclear mask/tyres,
   a foreign object glued to the outline, a lost vehicle part such as a
@@ -118,15 +128,21 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
   (`processor/app/pipeline/quality.py`, thresholds in the JSON `quality`; app:
   `src/lib/processing/quality-gate.ts`). A smaller, partly lost piece (e.g. a
   mirror base) is never drawn in either: the result gets the "check" hint
-  `vehicle_part_uncertain`. Keep the thresholds generous for normal phone
-  photos. Portrait/square exterior photos are segmented in a window around
+  `vehicle_part_uncertain`; implausible tyre contacts on an accepted photo
+  (e.g. an exhaust taken as a tyre) get the "check" hint
+  `ground_contact_uncertain` (the same code as a failed job's `errorCode` is the
+  retake). Keep the thresholds generous for normal phone photos. The
+  perspective factors are relative to the plate's proxy car: a new plate
+  camera needs them re-scaled to the same absolute thresholds (dealer studio:
+  `highViewRiseFactor` 1.42, `highViewAspectFactor` 0.88 – with 1.7/0.8 a photo
+  from a window above passed). Portrait/square exterior photos are segmented in a window around
   the detected vehicle; if their car would need too much upscaling they get
   "Für Außenaufnahmen das Smartphone bitte quer halten."
 - **Official logo only** (`public/brand/official/`); never redraw or
   approximate it.
 - **No dealer contact data in processed photos** (phone, e-mail, web address):
   mobile.de's dealer terms (AGB-HB, listings no. 9/14) forbid it. The brand
-  wall shows the logo + "SCHWETZINGEN" only (`website`/`phone` texts empty;
+  wall shows the logo + "Schwetzingen" only (`website`/`phone` texts empty;
   guarded by `test_listing_photos_carry_no_dealer_contact_data`).
 
 ## Architecture map
@@ -164,7 +180,7 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Client service container | `src/lib/app-services.ts` |
 | DB schema, RLS, storage policies (apply the files in file-name order) | `supabase/migrations/`, static guard `src/lib/data/supabase/migrations.test.ts` |
 | Brand config / official logo | `src/config/brand.ts`, `src/components/brand/BrandLogo.tsx`, `public/brand/` |
-| Showroom preset, 3D plates, branding layer | `public/presets/` (README = plates + rendering; `variants/` = look previews, not shipped defaults), `processor/showroom3d/`, `processor/app/showroom/` (`plates.py`, `wall_branding.py`, `branding.py`, `icons.py` Lucide ISC) |
+| Showroom preset, dealer studio plates, branding layer | `public/presets/` (README; `autoexperten-haendler/` = the shipped plate set + its README; `variants/` = the three shadow strengths), `processor/showroom3d/` (`dealer_*.py` + `render_dealer_passes.py` build the shipped set; `render_plates.py` = the earlier 3D room), `processor/app/showroom/` (`plates.py`, `wall_branding.py`, `branding.py`, `icons.py` Lucide ISC) |
 | Image processor (Python/FastAPI) | `processor/` (see `processor/README.md`) |
 | Processor pipeline steps | `processor/app/pipeline/` (decode, detection, segmentation, matting, mask, vehicle_geometry, placement, quality, light, grounding/shadow, reflection, composite, export; `room_depth.py` variant placement fit; `detail_backdrop.py` EXPERIMENTAL detail-shot showroom backdrop, off by default; debug allow-list `debug.py`) |
 | Processor scripts | `processor/scripts/` (`download_models.py` – both models, SHA-256; `make_portrait_cases.py` – derived portrait test frames; `visual_regression.py`; `render_showroom_preview.py`) |

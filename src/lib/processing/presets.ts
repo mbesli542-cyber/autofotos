@@ -34,11 +34,12 @@ export interface ShowroomSpec {
     lines: readonly string[];
   };
   /**
-   * Plate set of the ONE AutoExperten 3D showroom (processor/showroom3d):
-   * `plates.json` + eight angle-specific plates (one per exterior shot,
-   * empty wall, no vehicle, no branding) the processor composites onto; the
-   * official logo and texts are added by the processor's branding layer in
-   * wall space. While the set is incomplete the processor reports
+   * Plate set of the ONE AutoExperten showroom – the dealer's own studio
+   * (processor/showroom3d/dealer_*.py): `plates.json` with an entry per
+   * exterior shot (one fixed studio camera, the car turned; one empty plate
+   * image without vehicle and branding) the processor composites onto; the
+   * official logo and "Schwetzingen" are added by the processor's branding
+   * layer in wall space. While the set is incomplete the processor reports
    * `showroomSource: "missing"` – the app then refuses processing
    * ("AutoExperten Showroom-Master fehlt.") and never stores a result.
    */
@@ -96,31 +97,31 @@ export const PROCESSING_PRESETS: Record<ProcessingPresetId, ProcessingPreset> = 
     name: "AutoExperten Standard",
     available: true,
     description:
-      "Heller Premium-Showroom, Holzfußboden, AutoExperten Wandlogo und blaue Lichtakzente.",
+      "Heller Showroom des Händlers: Paneelwand mit blauen LED-Linien, glänzendes Parkett, AutoExperten Wandlogo.",
     background: "showroom",
     showroom: {
       ambience: "bright",
-      wall: { description: "Saubere weiße / hellgraue Wand", color: "#EEF0F3" },
+      wall: { description: "Helle Paneelwand mit Fugen und blauen LED-Linien", color: "#EEF0F3" },
       floor: {
-        description: "Hochwertiger warmer Holz-/Parkettboden",
+        description: "Glänzendes warmes Parkett mit weichen Lichtreflexen",
         material: "wood_parquet",
         tone: "#A8784C",
       },
       ceilingLighting: {
-        description: "Warme Deckenspots",
+        description: "Warmes Wandlicht von oben",
         colorTemperatureK: 3000,
       },
       accentLighting: {
-        description: "Blaue vertikale LED-Lichtleisten",
+        description: "Blaue LED-Linien in Wandfugen und Sockel",
         type: "vertical_led",
         color: BRAND.colors.blue,
       },
       decor: [
-        "Vertikale Holzlamellen-Wandpaneele",
-        "Grünpflanzen (Palmen) in schlichten Pflanzkübeln",
+        "Walnuss-Holzlamellen an der linken Wand",
+        "Olivenbaum in schwarzem Pflanzkübel",
       ],
       brandWall: BRAND_WALL,
-      plateSet: "/presets/autoexperten-standard/plates.json",
+      plateSet: "/presets/autoexperten-haendler/plates.json",
       // Placement, shadow and output numbers: see this JSON (used by processor/).
       processingConfig: "/presets/autoexperten-standard.json",
       referenceImage: "/presets/autoexperten-standard-reference.jpg",

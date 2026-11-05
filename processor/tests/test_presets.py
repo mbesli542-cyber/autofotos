@@ -1,5 +1,6 @@
 """The preset JSON is validated strictly – a typo must never silently fall back to defaults."""
 
+import dataclasses
 import copy
 import json
 from pathlib import Path
@@ -34,7 +35,7 @@ def _with(path: list, value):
 
 def test_the_shipped_preset_is_valid_and_uses_the_plate_set():
     preset = parse_preset(PRESET)
-    assert preset.plates == "autoexperten-standard/plates.json"
+    assert preset.plates == "autoexperten-haendler/plates.json"  # the dealer's studio (shipped look)
     assert preset.branding.enabled and preset.branding.logo.file == "official/AutoExperten_Logo.png"
     assert preset.quality.max_upscale == pytest.approx(1.5)
     assert preset.quality.min_source_long_edge == 1600
@@ -43,35 +44,53 @@ def test_the_shipped_preset_is_valid_and_uses_the_plate_set():
 
 
 def test_quality_defaults_match_the_shipped_preset():
-    assert parse_preset(PRESET).quality == QualityConfig()
+    """The gate as before – only the "photo from above" factors are scaled to the dealer studio's
+    camera (the same absolute thresholds; test_showroom_variants.py checks the relation)."""
+    assert parse_preset(PRESET).quality == dataclasses.replace(
+        QualityConfig(), high_view_rise_factor=1.42, high_view_aspect_factor=0.88
+    )
 
 
-def test_grounding_and_reflection_defaults_match_the_shipped_preset():
+def test_the_shipped_grounding_and_reflection_are_the_dealer_studio_medium_values():
+    """The shipped preset is "Schatten mittel" of the dealer's studio (variants/autoexperten-haendler.json):
+    lighter, warm (neutral-tint) shadows than the code defaults, the car's reflection near the car."""
     preset = parse_preset(PRESET)
-    assert preset.shadow == ShadowConfig()
-    assert preset.reflection == ReflectionConfig()
+    defaults = ShadowConfig()
+    assert preset.shadow == dataclasses.replace(
+        defaults, contact_opacity=0.9, crease_opacity=0.8, underbody_opacity=0.8, edge_opacity=0.4,
+        underbody_falloff=0.1, ambient_opacity=0.3, ambient_reach=0.4, tint=(1.0, 1.0, 1.0), footprint_reach=0.3,
+    )  # fmt: skip
+    assert preset.reflection == dataclasses.replace(
+        ReflectionConfig(), strength=1.5, max_reflectance=0.3, fade=0.5, footprint_reach=0.3
+    )
     # the car's reflection uses the plate's measured floor reflectance, capped (lacquer, not a mirror)
-    assert preset.reflection.enabled and preset.reflection.strength == pytest.approx(1.0)
-    assert 0.1 <= preset.reflection.max_reflectance <= 0.25
+    assert preset.reflection.enabled and preset.reflection.max_reflectance <= 0.3
     # darkest deep under the car, lighter at the floor line; never pure black
     assert preset.shadow.edge_opacity < preset.shadow.underbody_opacity < 1.0
     assert preset.shadow.min_floor_light >= 0.02
+    # lighter and shorter than the code defaults (the earlier 3D-room look) – the dealer found even
+    # stronger values on his plate "far too black" (edge 0.7, falloff 0.25 m, ambient 0.6)
+    for name in ("contact_opacity", "crease_opacity", "underbody_opacity", "underbody_falloff", "ambient_opacity", "ambient_reach"):
+        assert getattr(preset.shadow, name) < getattr(defaults, name), name
+    assert preset.shadow.edge_opacity <= defaults.edge_opacity
 
 
-def test_the_dealer_look_fields_default_to_the_shipped_behaviour():
-    """shadow.tint / shadow.footprintReach / reflection.footprintReach (the dealer's backdrop) are not
-    in the shipped preset: their defaults are exactly the shipped behaviour (cooler deep shadows, no
-    footprint limit) – the shipped look stays byte-identical."""
+def test_the_dealer_look_fields_default_to_the_earlier_behaviour():
+    """shadow.tint / shadow.footprintReach / reflection.footprintReach: the shipped preset writes them
+    out (tint 1 1 1, footprint limit 0.3 m); a preset without them gets the earlier behaviour
+    (cooler deep shadows, no footprint limit)."""
+    assert PRESET["shadow"]["tint"] == [1.0, 1.0, 1.0] and PRESET["shadow"]["footprintReach"] == 0.3
+    assert PRESET["reflection"]["footprintReach"] == 0.3
     data = copy.deepcopy(PRESET)
-    assert "tint" not in data["shadow"] and "footprintReach" not in data["shadow"]
-    assert "footprintReach" not in data["reflection"]
+    for section, key in (("shadow", "tint"), ("shadow", "footprintReach"), ("reflection", "footprintReach")):
+        del data[section][key]
     preset = parse_preset(data)
     assert preset.shadow.tint == (1.0, 1.0, 0.95) and preset.shadow.footprint_reach == 0.0
     assert preset.reflection.footprint_reach == 0.0
     shadow = parse_preset(_with(["shadow", "tint"], [1, 1, 1])).shadow
     assert shadow.tint == (1.0, 1.0, 1.0) and all(isinstance(v, float) for v in shadow.tint)
-    assert parse_preset(_with(["shadow", "footprintReach"], 0.3)).shadow.footprint_reach == 0.3
-    assert parse_preset(_with(["reflection", "footprintReach"], 0.3)).reflection.footprint_reach == 0.3
+    assert parse_preset(_with(["shadow", "footprintReach"], 0.0)).shadow.footprint_reach == 0.0
+    assert parse_preset(_with(["reflection", "footprintReach"], 0.0)).reflection.footprint_reach == 0.0
 
 
 def test_missing_reflection_section_uses_the_defaults():

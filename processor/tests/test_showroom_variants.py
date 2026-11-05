@@ -1,6 +1,7 @@
-"""Showroom look variants (public/presets/variants/): reference branding, glossier floor, car
-further back in the room, the dealer's own backdrop. The shipped preset keeps the defaults
-(current look unchanged)."""
+"""Showroom look variants (public/presets/variants/) and the shipped look: the dealer's own
+studio backdrop in three shadow strengths – "Schatten mittel" is the shipped preset
+(public/presets/autoexperten-standard.json) – plus the renderer features the variants use
+(side lines, icons, car further back in the room, per-photo room fit)."""
 
 from __future__ import annotations
 
@@ -31,11 +32,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PRESETS = REPO_ROOT / "public/presets"
 BRAND_DIR = REPO_ROOT / "public/brand"
 STANDARD = json.loads((PRESETS / "autoexperten-standard.json").read_text(encoding="utf-8"))
-VARIANTS = {
-    name: json.loads((PRESETS / "variants" / f"autoexperten-standard-{name}.json").read_text(encoding="utf-8"))
-    for name in ("v1", "v2")
-}
-REAL_PLATES = PRESETS / "autoexperten-standard/plates.json"
+#: The shipped plate set: the dealer's studio (one plate, eight per-shot proxy poses).
+REAL_PLATES = PRESETS / STANDARD["background"]["plates"]
 NEW_TEXT_FIELDS = ("align", "icon", "rule_length", "rule_gap", "rule_thickness")
 
 
@@ -51,18 +49,40 @@ def _with(data: dict, path: list, value) -> dict:
 # --------------------------------------------------------------------------- configuration
 
 
-def test_the_shipped_preset_keeps_the_current_look():
+def test_the_shipped_preset_is_the_dealer_studio_with_medium_shadows():
+    """The dealer's decision: his own studio is the shipped look – the "Schatten mittel" variant
+    copied over the standard file (same id, so the app needs no change), only name and
+    description are the standard preset's."""
+    haendler = json.loads((PRESETS / "variants" / "autoexperten-haendler.json").read_text(encoding="utf-8"))
+    assert STANDARD["id"] == "autoexperten_standard" and STANDARD["name"] == "AutoExperten Standard"
+    assert {k: v for k, v in STANDARD.items() if k not in ("name", "description")} == {
+        k: v for k, v in haendler.items() if k not in ("name", "description")
+    }
+    assert STANDARD["background"]["plates"] == "autoexperten-haendler/plates.json"
     preset = parse_preset(STANDARD)
+    assert preset.adjustments.studio_light.enabled
+    assert preset.shadow.tint == (1.0, 1.0, 1.0) and preset.shadow.footprint_reach == 0.3
+    assert preset.reflection.footprint_reach == 0.3
+    # the car stays on the plate's spot at the plate's size (no room fit runs)
     assert preset.placement.width_scale == 1.0 and preset.placement.depth_offset_m == 0.0
     assert not preset.shot_placement
-    for name in ("city", "website", "phone"):
-        text = getattr(preset.branding, name)
-        default = TextConfig()
-        assert all(getattr(text, f) == getattr(default, f) for f in NEW_TEXT_FIELDS), name
-    # the new fields are written out explicitly (nothing hidden behind a default)
+    # every field is written out explicitly (nothing hidden behind a default)
     assert {"widthScale", "depthOffsetM"} <= set(STANDARD["placement"])
     for name in ("city", "website", "phone"):
         assert {"align", "icon", "ruleLength", "ruleGap", "ruleThickness"} <= set(STANDARD["branding"][name])
+    for name in ("website", "phone"):
+        text = getattr(preset.branding, name)
+        default = TextConfig()
+        assert all(getattr(text, f) == getattr(default, f) for f in ("align", "icon")), name
+
+
+def test_the_old_3d_room_plates_are_not_shipped():
+    """The eight Blender plates of the earlier 3D room (processor/showroom3d/render_plates.py) are
+    no longer in the shipped preset folder (Docker image); no preset references them."""
+    assert not (PRESETS / "autoexperten-standard").exists()
+    for path in [PRESETS / "autoexperten-standard.json", *sorted((PRESETS / "variants").glob("*.json"))]:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert (PRESETS / data["background"]["plates"]).is_file(), path.name
 
 
 def test_new_placement_defaults_change_nothing():
@@ -71,37 +91,12 @@ def test_new_placement_defaults_change_nothing():
     assert Placement().width_scale == 1.0 and Placement().depth_offset_m == 0.0
 
 
-@pytest.mark.parametrize("name", ["v1", "v2"])
-def test_variants_are_complete_valid_presets_of_the_same_showroom(name):
-    data = VARIANTS[name]
-    preset = parse_preset(data)
-    assert data["id"] == STANDARD["id"] and data["background"] == STANDARD["background"]
-    # only the look changes – output, shadow, adjustments and the quality gate stay the same
-    for section in ("output", "shadow", "vehicleAdjustments", "quality"):
-        assert data[section] == STANDARD[section], section
-    branding = preset.branding
-    assert branding.logo.file == "official/AutoExperten_Logo.png"  # the official file, only scaled
-    assert branding.logo.max_width > parse_preset(STANDARD).branding.logo.max_width
-    assert branding.city.text == "Schwetzingen" and branding.city.rule_length > 0
-    # no dealer contact data in listing photos (mobile.de AGB-HB: photos must not contain
-    # the dealer's phone number or e-mail address; no web addresses in a listing)
-    assert branding.website.text == "" and branding.phone.text == ""
-    # glossier floor, still within the reflection limits
-    assert 1.0 < preset.reflection.strength <= 1.5 and preset.reflection.max_reflectance <= 0.3
-    assert (preset.placement.depth_offset_m > 0) == (name == "v2")
-    # the new placement fields are written out (copying a variant over the standard file must
-    # not bring back silently defaulted fields)
-    assert {"widthScale", "depthOffsetM"} <= set(data["placement"])
-
-
 #: Branding keeps this share of the brand wall (between the slat panels) free on each side.
 BRAND_EDGE_MARGIN = 0.04
 
 
-@pytest.mark.parametrize("name", ["standard", "v1", "v2"])
-def test_branding_keeps_clear_of_the_brand_wall_edges(name):
-    data = STANDARD if name == "standard" else VARIANTS[name]
-    preset = parse_preset(data)
+def test_branding_keeps_clear_of_the_brand_wall_edges():
+    preset = parse_preset(STANDARD)
     width, height = 2680, 1680  # brand area 6.7 m × 4.2 m
     _, layout = apply_branding(_wall(width, height), _flat(preset.branding), BRAND_DIR)
     assert {b[0] for b in layout.boxes} == {"logo", "city"}
@@ -331,6 +326,12 @@ def _variant(preset, depth=0.0, scale=1.0):
     return replace(preset, placement=replace(preset.placement, depth_offset_m=depth, width_scale=scale))
 
 
+def _without_branding(preset):
+    """The room fit on its own: the shipped dealer lettering sits low on the (synthetic) wall, so a
+    car moved back and up in the frame would also be limited by the headroom below it."""
+    return replace(preset, branding=replace(preset.branding, enabled=False))
+
+
 def test_the_default_placement_runs_no_room_fit(settings, fake_segmenter, three_quarter, monkeypatch):
     calls = []
     original = room_depth.footprint_wall_y
@@ -346,7 +347,7 @@ def test_moving_back_never_binds_the_floor_harder(settings, fake_segmenter, thre
     # line – there the car would only be shrunk on its spot (toy car); the fit stops before
     monkeypatch.setattr(plates_module, "WALL_CLEARANCE_M", -2.0)
     monkeypatch.setattr(room_depth, "WALL_CLEARANCE_M", -2.0)
-    base = load_preset(settings, "autoexperten_standard")
+    base = _without_branding(load_preset(settings, "autoexperten_standard"))
     near = _run(settings, fake_segmenter, three_quarter, "front_left_45", base).metadata["placement"]
     far = _run(settings, fake_segmenter, three_quarter, "front_left_45", _variant(base, 2.0)).metadata["placement"]
     fit = far["roomFit"]
@@ -365,7 +366,7 @@ def test_the_fitted_footprint_keeps_the_wall_clearance(settings, fake_segmenter,
     near = _run(settings, fake_segmenter, three_quarter, "front_left_45", base)
     assert _wall_clearance(near.metadata) > 1.4
     _, proxy_limit = move_proxy_back(
-        load_plate_set(settings.assets_dir / "presets/autoexperten-standard/plates.json").plate("front_left_45"), 2.0
+        load_plate_set(settings.assets_dir / "presets" / STANDARD["background"]["plates"]).plate("front_left_45"), 2.0
     )
     far = _run(settings, fake_segmenter, three_quarter, "front_left_45", _variant(base, 2.0))
     fit = far.metadata["placement"]["roomFit"]
@@ -381,7 +382,7 @@ def test_a_variant_never_brings_the_car_closer_to_the_wall_than_the_plate_spot(
     # the plate's own spot leaves less than the clearance: depth offset and enlargement may not
     # bring the car any closer (it stays on the spot, at the plate's size)
     monkeypatch.setattr(room_depth, "WALL_CLEARANCE_M", 3.0)
-    base = load_preset(settings, "autoexperten_standard")
+    base = _without_branding(load_preset(settings, "autoexperten_standard"))
     near = _run(settings, fake_segmenter, three_quarter, "front_left_45", base)
     far = _run(settings, fake_segmenter, three_quarter, "front_left_45", _variant(base, 0.45, 1.06))
     fit = far.metadata["placement"]["roomFit"]
@@ -390,12 +391,11 @@ def test_a_variant_never_brings_the_car_closer_to_the_wall_than_the_plate_spot(
     assert _wall_clearance(far.metadata) >= _wall_clearance(near.metadata) - 0.03
 
 
-@pytest.mark.parametrize("name", ["standard", "v1", "v2"])
-def test_listing_photos_carry_no_dealer_contact_data(name):
+def test_listing_photos_carry_no_dealer_contact_data():
     """mobile.de (AGB-HB, Inserate no. 9) forbids the dealer's contact data (phone, e-mail) in
-    listing photos and web addresses in a listing; the brand wall shows logo + city only."""
-    data = STANDARD if name == "standard" else VARIANTS[name]
-    branding = parse_preset(data).branding
+    listing photos and web addresses in a listing; the brand wall shows logo + city only
+    (every variant: test_no_variant_carries_dealer_contact_data)."""
+    branding = parse_preset(STANDARD).branding
     assert branding.website.text == "" and branding.phone.text == ""
     texts = " ".join(t.text for t in (branding.city, branding.website, branding.phone))
     assert not re.search(r"\d{4,}|www\.|https?:|@|\.de\b", texts), texts
@@ -430,10 +430,9 @@ def test_the_dealer_variant_is_a_complete_valid_preset():
     assert HAENDLER["shadow"] == {**STANDARD["shadow"], **dict(DEALER_STRENGTHS["mittel"][0])}
     assert HAENDLER["reflection"] == {**STANDARD["reflection"], **dict(DEALER_STRENGTHS["mittel"][1])}
     assert preset.shadow.tint == (1.0, 1.0, 1.0) and preset.shadow.footprint_reach == 0.3
-    # the conservative limits as shipped + the studio light match (the dealer's decision: the car
-    # gets a guarded global light correction towards his bright studio; tests/test_light.py)
-    adjustments = {k: v for k, v in HAENDLER["vehicleAdjustments"].items() if k != "studioLight"}
-    assert adjustments == STANDARD["vehicleAdjustments"]
+    # the conservative limits + the studio light match (the dealer's decision: the car gets a
+    # guarded global light correction towards his bright studio; tests/test_light.py) – shipped
+    assert HAENDLER["vehicleAdjustments"] == STANDARD["vehicleAdjustments"]
     assert preset.adjustments.studio_light.enabled
     branding = preset.branding
     assert branding.enabled and branding.logo.file == "official/AutoExperten_Logo.png"

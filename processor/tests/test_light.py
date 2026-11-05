@@ -145,9 +145,16 @@ def _car(paint_srgb, *, size=(240, 360), seed=1, reflections=True):
     return rgb, alpha
 
 
-def test_the_shipped_preset_keeps_the_conservative_correction():
-    assert "studioLight" not in STANDARD["vehicleAdjustments"]
-    assert parse_preset(STANDARD).adjustments.studio_light.enabled is False
+def test_the_shipped_preset_carries_the_studio_light_match():
+    """The dealer's decision: the shipped look (his studio, "Schatten mittel") lights the car with the
+    guarded studio light match – the same block as the dealer variants; without the block a preset
+    keeps the conservative correction."""
+    assert STANDARD["vehicleAdjustments"] == HAENDLER["vehicleAdjustments"]
+    assert parse_preset(STANDARD).adjustments.studio_light.enabled is True
+    conservative = {**STANDARD, "vehicleAdjustments": {
+        k: v for k, v in STANDARD["vehicleAdjustments"].items() if k != "studioLight"
+    }}  # fmt: skip
+    assert parse_preset(conservative).adjustments.studio_light.enabled is False
 
 
 def test_the_dealer_variant_writes_out_every_studio_light_field():

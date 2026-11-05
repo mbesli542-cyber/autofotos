@@ -29,7 +29,7 @@ from app.pipeline.grounding import (
 from app.pipeline.mask import BBox
 from app.pipeline.placement import compute_placement
 from app.pipeline.shadow import FloorFrame, Window, floor_weight, tyre_gap, tyre_patch_shadow
-from app.presets import BackgroundProvider, load_preset
+from app.presets import BackgroundProvider, ReflectionConfig, ShadowConfig, load_preset
 
 W, H = 1200, 900
 
@@ -58,8 +58,12 @@ def _box_car(placement, *, wheels=(0.2, 0.8), radius=40, clearance=40, overhang=
 
 @pytest.fixture
 def scene(settings):
-    """A box car with two wheels placed on the left_side plate like the pipeline does."""
-    preset = load_preset(settings, "autoexperten_standard")
+    """A box car with two wheels placed on the left_side plate like the pipeline does – with the
+    code defaults of shadow and reflection (the earlier, stronger look: the mechanics show
+    clearly; the shipped dealer values are tested with the dealer variants)."""
+    preset = dataclasses.replace(
+        load_preset(settings, "autoexperten_standard"), shadow=ShadowConfig(), reflection=ReflectionConfig()
+    )
     showroom = BackgroundProvider(settings).get(preset, "left_side", W, H)
     plate = showroom.plate
     placement = compute_placement(

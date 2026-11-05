@@ -120,7 +120,7 @@ def test_grounding_v3_and_reflection_are_reported(run):
     assert grounding["farFloorDarkening"] < 0.03  # no broad darkening of the foreground
     reflection = meta["reflection"]
     assert reflection["enabled"] is True and reflection["platePass"] is True
-    assert 0.0 < reflection["maxStrength"] <= 0.2 + 1e-6
+    assert 0.0 < reflection["maxStrength"] <= 0.3 + 1e-6  # maxReflectance of the shipped preset (Schatten mittel)
 
 
 def test_implausible_tyre_contacts_get_a_check_hint(run, monkeypatch):
@@ -146,9 +146,9 @@ def test_debug_output_shows_the_ground_model(run, tmp_path):
 
 
 def test_a_rejected_photo_raises_the_quality_gate_error(run, fake_segmenter):
-    from tests.conftest import make_vehicle_photo
+    from tests.conftest import make_far_vehicle_photo
 
-    rgb, mask = make_vehicle_photo(2400, 1800, body_ratio=0.3)  # car covers 30 % of a good photo
+    rgb, mask = make_far_vehicle_photo(2400, 1800, scale=0.4)  # far away: 28 % of the photo width
     fake_segmenter.register(mask)
     with pytest.raises(QualityGateError) as info:
         run(photo=rgb)
@@ -158,8 +158,8 @@ def test_a_rejected_photo_raises_the_quality_gate_error(run, fake_segmenter):
     assert info.value.details["plateUsed"] == "left_side"
 
 
-def test_missing_plates_fail_before_segmentation(run, settings, fake_segmenter):
-    (settings.presets_dir / "autoexperten-standard/plates.json").unlink()
+def test_missing_plates_fail_before_segmentation(run, plates_dir, fake_segmenter):
+    (plates_dir / "plates.json").unlink()
     with pytest.raises(ShowroomUnavailableError):
         run()
     assert fake_segmenter.calls == 0
@@ -182,9 +182,10 @@ def test_navy_paint_stays_navy(run, vehicle):
     assert np.hypot(after[1], after[2]) > 0.9 * np.hypot(before[1], before[2])  # not desaturated
     assert after[0] > 0.85 * before[0]  # not turned black
     assert after[2] < -15  # clearly blue
+    # the shipped preset's studio light match (the dealer's decision), within its paint guard
     adj = result.metadata["adjustments"]
-    assert abs(adj["exposure_ev"]) <= 0.25 + 1e-6
-    assert adj["guard_passed"] is True
+    assert adj["mode"] == "studioLight" and adj["guard"]["passed"] is True
+    assert 0.0 <= adj["applied"]["exposureEv"] <= 0.8 + 1e-6
 
 
 def test_shadow_darkens_floor_under_the_vehicle_only(run, settings):

@@ -887,12 +887,14 @@ original photo
    BiRefNet pass if that has it); a partly lost piece (e.g. a mirror base) only gets the hint
    vehicle_part_uncertain – nothing is drawn in
  → vehicle geometry (tyre contacts, near end of 3/4 views, contact rise)
- → plate of the shot's angle (3D showroom, 8 cameras; mirrored 3/4 plate if the photo shows the other side)
- → placement on the plate (target width 81 % for 3/4, 85 % side, 62 % front/rear, centred,
+ → plate entry of the shot's angle (the dealer's studio: one plate, one fixed studio camera, the
+   car turned per shot; mirrored 3/4 entry if the photo shows the other side)
+ → placement on the plate (target width 83 % for 3/4, 92 % side, 68 % front/rear, centred,
    lowest tyre contact on the plate's ground line, roof below the branding)
  → quality gate (too small / cropped / mask / perspective / tyre contacts / foreign object /
    missing part → German retake hint, nothing stored)
- → cut-out of the ORIGINAL vehicle pixels, conservative light matching (colour guard)
+ → cut-out of the ORIGINAL vehicle pixels, studio light match (one global, guarded light mapping
+   towards the studio – the dealer's decision; paint guard: hue, saturation, tone class)
  → branded plate (official logo + texts in wall space, lit by the plate's light)
  → grounding: tyre contact shadows, underbody, the plate's rendered car shadow – on the floor only;
    floor reflection of the original vehicle pixels
@@ -999,20 +1001,22 @@ public instance.
 reflection, adjustment limits, quality gate) – used by the processor and
 referenced from `src/lib/processing/presets.ts`.
 
-**One 3D showroom, eight plates.** The AutoExperten showroom is one physical
-3D room (`processor/showroom3d/render_plates.py`, Blender, CC0 assets,
-modelled after the approved design
-`public/presets/autoexperten-standard-reference.jpg`) rendered from one
-camera per exterior shot into `public/presets/autoexperten-standard/`
-(`<shot>.jpg` empty plate, `<shot>-shadow.png` floor shadow of a typical car,
-`<shot>-reflection.png` the floor's own reflection, `plates.json` camera +
-floor/wall homographies). Every vehicle goes onto the
-plate of its photographed angle, so perspective, floor and light fit.
-Rendering and checking: [`public/presets/README.md`](public/presets/README.md).
+**The dealer's studio, eight plate entries.** The AutoExperten showroom is the
+dealer's own showroom image (`processor/showroom3d/dealer/haendler_hintergrund.png`,
+made with an image AI; his lettering removed, upscaled once) as ONE fixed studio
+plate in `public/presets/autoexperten-haendler/` (`plate.jpg` empty plate,
+`<shot>-shadow.png` floor shadow of a typical car at each shot's pose,
+`reflection.png` the floor's own reflection, `plates.json` camera + floor/wall
+homographies + proxy car per shot): one fixed camera, the car turned per shot,
+so perspective, floor and light fit every photographed angle. The shipped preset
+is the "Schatten mittel" variant (`public/presets/variants/`). Building and
+checking: [`public/presets/README.md`](public/presets/README.md). The earlier
+Blender room (`processor/showroom3d/render_plates.py`) is no longer shipped.
 
-**Branding:** the official logo PNG, "SCHWETZINGEN", www.autoexperten-rn.de and
-+49 6202 9262357 are composited deterministically onto the brand wall of each
-plate through its wall homography (`processor/app/showroom/wall_branding.py`,
+**Branding:** the official logo PNG and "Schwetzingen" between two thin rules
+(no contact data – mobile.de forbids it in listing photos) are composited
+deterministically onto the brand wall – where the dealer's own image had its AI
+lettering – through the plate's wall homography (`processor/app/showroom/wall_branding.py`,
 layout in the JSON `branding` section as fractions of the brand wall) – never
 AI-generated, never over the vehicle; the vehicle roof stays below them.
 
@@ -1020,14 +1024,14 @@ AI-generated, never over the vehicle; the vehicle roof stays below them.
 fails with "AutoExperten Showroom-Master fehlt." and nothing is saved; there
 is no procedural stand-in background.
 
-The look of `autoexperten_standard` (default):
+The look of `autoexperten_standard` (default) – the dealer's own studio:
 
-- bright premium showroom, clean white / light-gray wall
-- warm ceiling spotlights (~3000 K)
-- blue vertical LED accent lighting (AutoExperten blue)
-- premium warm wood / parquet floor
-- vertical wood-slat wall panels, plants (as in the reference mockup)
-- brand wall: official logo, Schwetzingen, www.autoexperten-rn.de, +49 6202 9262357
+- bright panel wall with blue LED lines (AutoExperten blue)
+- glossy warm parquet floor with soft light streaks
+- walnut slats and an olive tree in a black planter on the left
+- soft, warm floor shadows ("Schatten mittel"), the car's own reflection near the car
+- the car lit towards the studio (studio light match, within the paint guard)
+- brand wall: official logo and Schwetzingen (no contact data)
 
 `autoexperten_dark` (dark premium showroom) and `original_plus` (original
 background, only light/colour/contrast optimised) are defined in the app but
@@ -1083,7 +1087,7 @@ src/
 public/
   overlays/  camera framing guides (SVG)    demo/shots/  demo placeholder photos
   icons/     PWA icons (official monogram)  brand/       official logo (+ official/ originals)
-  presets/   showroom preset JSON + 3D showroom plates (autoexperten-standard/)  sw.js  service worker
+  presets/   showroom preset JSON + the dealer studio plates (autoexperten-haendler/)  sw.js  service worker
 supabase/migrations/   schema, RLS, storage (applied in file order, see Configure Supabase)
 scripts/generate-demo-assets.mjs
 processor/             Python image processor (FastAPI) – see processor/README.md
@@ -1093,7 +1097,7 @@ processor/             Python image processor (FastAPI) – see processor/README
   app/jobs/ storage/   job manager, Supabase photo store
   app/showroom/        plate set (plates.py), wall-space branding (official logo + texts)
   scripts/             download_models.py, render_showroom_preview.py, visual regression tools
-  showroom3d/          Blender scene + cameras of the 3D showroom, plate post-processing
+  showroom3d/          dealer studio tooling (clean, upscale, camera, Blender passes, plate set) + the earlier 3D room
   deploy/              Docker Compose + Caddy (HTTPS) for a server
   tests/               pytest (synthetic plate sets: tests/plate_fixtures.py; visual/ = real-photo set)
 ```
