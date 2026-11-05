@@ -13,16 +13,24 @@ import type {
   SavePhotoInput,
   SaveProcessedPhotoInput,
   UpdateVehicleOptions,
+  VehicleReference,
   VehicleWithPhotos,
 } from "@/lib/data/types";
 import type {
+  PhotoVersion,
   Vehicle,
   VehicleInput,
   VehiclePhoto,
   VehiclePhotoWithUrls,
   VehicleStatus,
 } from "@/lib/domain/types";
-import { AppError, isNetworkError, VehicleChangedError } from "@/lib/errors";
+import {
+  AppError,
+  isNetworkError,
+  PHOTO_FILE_LOAD_FAILED_MESSAGE,
+  PHOTO_FILE_MISSING_MESSAGE,
+  VehicleChangedError,
+} from "@/lib/errors";
 import {
   buildOriginalStoragePath,
   buildProcessedStoragePath,
@@ -56,6 +64,9 @@ const SIGNED_URL_MIN_REMAINING_MS = 90 * 60 * 1000;
  * is read in pages until no vehicle is left.
  */
 const VEHICLE_PAGE_SIZE = 500;
+
+/** References per request (keyset paging, so a lower max-rows setting only means more requests). */
+const REFERENCE_PAGE_SIZE = 1000;
 
 type VehicleListRow = VehicleRow & { vehicle_photos: VehiclePhotoRow[] | null };
 
@@ -113,6 +124,21 @@ function toStorageAppError(error: unknown): AppError {
     return new AppError("file_too_large", { cause: error });
   }
   return new AppError("storage", { cause: error });
+}
+
+/**
+ * Storage download error → AppError. Storage answers a missing object – and
+ * one the session may not read – with 400/404 "Object not found".
+ */
+function toDownloadAppError(error: unknown): AppError {
+  if (isNetworkError(error)) return new AppError("network", { cause: error });
+  const { status, statusCode, message } = (error ?? {}) as Record<string, unknown>;
+  const statuses = [String(status), String(statusCode)];
+  if (statuses.includes("404") || /not.?found/i.test(String(message ?? ""))) {
+    return new AppError("not_found", { userMessage: PHOTO_FILE_MISSING_MESSAGE, cause: error });
+  }
+  if (statuses.includes("401") || statuses.includes("403")) return new AppError("unauthorized", { cause: error });
+  return new AppError("unknown", { userMessage: PHOTO_FILE_LOAD_FAILED_MESSAGE, cause: error });
 }
 
 export class SupabaseDataProvider implements DataProvider {
@@ -235,6 +261,33 @@ export class SupabaseDataProvider implements DataProvider {
     if (error) throw toAppError(error);
   }
 
+  async listVehicleReferences(): Promise<VehicleReference[]> {
+    const references: VehicleReference[] = [];
+    // Keyset paging by id: every page continues after the last id read, so
+    // the Data API's max-rows cap can never cut the list short.
+    let after: string | null = null;
+    for (;;) {
+      let query = this.client
+        .from("vehicles")
+        .select("id, internal_reference")
+        .not("internal_reference", "is", null)
+        .order("id", { ascending: true })
+        .limit(REFERENCE_PAGE_SIZE);
+      if (after !== null) query = query.gt("id", after);
+      const { data, error } = await query;
+      if (error) throw toAppError(error);
+      const rows = (data ?? []) as Pick<VehicleRow, "id" | "internal_reference">[];
+      for (const row of rows) {
+        if (row.internal_reference) references.push({ id: row.id, internalReference: row.internal_reference });
+      }
+      const last = rows.at(-1);
+      // A server that repeats a page must not keep the loop going.
+      if (!last || last.id === after) break;
+      after = last.id;
+    }
+    return references;
+  }
+
   async listPhotos(vehicleId: string): Promise<VehiclePhoto[]> {
     const { data, error } = await this.readPhotoColumns((photoColumns) =>
       this.client.from("vehicle_photos").select(photoColumns).eq("vehicle_id", vehicleId).is("archived_at", null),
@@ -291,6 +344,23 @@ export class SupabaseDataProvider implements DataProvider {
         : null;
       return { ...photo, urls: { original, thumbnail, processed: processedUrl } };
     });
+  }
+
+  async getPhotoFile(photo: VehiclePhoto, version: PhotoVersion): Promise<Blob> {
+    const [bucket, path] =
+      version === "processed"
+        ? [STORAGE_BUCKETS.processed, photo.processedStoragePath]
+        : [STORAGE_BUCKETS.originals, photo.originalStoragePath];
+    if (!path) throw new AppError("not_found", { userMessage: PHOTO_FILE_MISSING_MESSAGE });
+    // The session's own access (storage policies "to authenticated") – no signed URL, no service key.
+    let result: { data: Blob | null; error: unknown };
+    try {
+      result = await this.client.storage.from(bucket).download(path);
+    } catch (error) {
+      throw toDownloadAppError(error);
+    }
+    if (result.error || !result.data) throw toDownloadAppError(result.error);
+    return result.data;
   }
 
   private async upload(

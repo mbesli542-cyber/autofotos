@@ -13,16 +13,24 @@ import type {
   SavePhotoInput,
   SaveProcessedPhotoInput,
   UpdateVehicleOptions,
+  VehicleReference,
   VehicleWithPhotos,
 } from "@/lib/data/types";
 import type {
+  PhotoVersion,
   Vehicle,
   VehicleInput,
   VehiclePhoto,
   VehiclePhotoWithUrls,
   VehicleStatus,
 } from "@/lib/domain/types";
-import { AppError, VehicleChangedError } from "@/lib/errors";
+import {
+  AppError,
+  isNetworkError,
+  PHOTO_FILE_LOAD_FAILED_MESSAGE,
+  PHOTO_FILE_MISSING_MESSAGE,
+  VehicleChangedError,
+} from "@/lib/errors";
 import { createId } from "@/lib/ids";
 import {
   buildOriginalStoragePath,
@@ -168,6 +176,14 @@ export class MockDataProvider implements DataProvider {
     await this.db.put(STORES.vehicles, { ...existing, status, updatedAt: laterTimestamp(existing.updatedAt) });
   }
 
+  async listVehicleReferences(): Promise<VehicleReference[]> {
+    await this.ensureReady();
+    const vehicles = await this.db.getAll<Vehicle>(STORES.vehicles);
+    return vehicles.flatMap((vehicle) =>
+      vehicle.internalReference ? [{ id: vehicle.id, internalReference: vehicle.internalReference }] : [],
+    );
+  }
+
   async listPhotos(vehicleId: string): Promise<VehiclePhoto[]> {
     await this.ensureReady();
     return (await this.activePhotos(vehicleId)).map(stripArchived);
@@ -198,6 +214,28 @@ export class MockDataProvider implements DataProvider {
         return { ...photo, urls: { original, thumbnail: thumbnail ?? original, processed } };
       }),
     );
+  }
+
+  async getPhotoFile(photo: VehiclePhoto, version: PhotoVersion): Promise<Blob> {
+    await this.ensureReady();
+    const path = version === "processed" ? photo.processedStoragePath : photo.originalStoragePath;
+    if (!path) throw new AppError("not_found", { userMessage: PHOTO_FILE_MISSING_MESSAGE });
+    if (path.startsWith(STATIC_PATH_PREFIX)) {
+      // Demo seed photos are files of the app itself (public/demo).
+      let response: Response;
+      try {
+        response = await fetch(path.slice(STATIC_PATH_PREFIX.length));
+      } catch (error) {
+        throw isNetworkError(error)
+          ? new AppError("network", { cause: error })
+          : new AppError("unknown", { userMessage: PHOTO_FILE_LOAD_FAILED_MESSAGE, cause: error });
+      }
+      if (!response.ok) throw new AppError("not_found", { userMessage: PHOTO_FILE_MISSING_MESSAGE });
+      return response.blob();
+    }
+    const file = await this.db.get<StoredFile>(STORES.files, path);
+    if (!file) throw new AppError("not_found", { userMessage: PHOTO_FILE_MISSING_MESSAGE });
+    return file.blob;
   }
 
   async savePhoto(input: SavePhotoInput): Promise<VehiclePhoto> {

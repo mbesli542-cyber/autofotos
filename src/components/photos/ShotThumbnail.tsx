@@ -1,11 +1,12 @@
 import { Camera, Check, CloudOff, ImageOff, RotateCcw, TriangleAlert } from "lucide-react";
 import { Spinner } from "@/components/ui/Spinner";
+import type { PhotoVersion } from "@/lib/domain/types";
 import { cn } from "@/lib/cn";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { needsResultCheck } from "@/lib/processing/processing-warnings";
 import type { ShotCheckState } from "@/lib/processing/shot-check";
 
-export type PhotoVariant = "original" | "processed";
+export type PhotoVariant = PhotoVersion;
 
 /**
  * Image for a slot. "processed" returns ONLY a real processed version –

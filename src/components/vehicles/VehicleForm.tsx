@@ -5,6 +5,7 @@ import { TextAreaField, TextField } from "@/components/ui/FormField";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { StickyActions } from "@/components/layout/PageContainer";
 import type { VehicleInput } from "@/lib/domain/types";
+import { DuplicateReferenceError } from "@/lib/errors";
 import {
   emptyVehicleFormValues,
   validateVehicleForm,
@@ -48,7 +49,10 @@ export function VehicleForm({
   submitLabel: string;
   loadingText: string;
   submitIcon?: ReactNode;
-  /** Should throw (with a German message) on failure. */
+  /**
+   * Should throw (with a German message) on failure; a
+   * DuplicateReferenceError is shown at "Interne Fahrzeugnummer".
+   */
   onSubmit: (input: VehicleInput) => Promise<void>;
   /** Called when the employee changes a field (the form now holds unsaved input). */
   onEdit?: () => void;
@@ -91,6 +95,12 @@ export function VehicleForm({
     try {
       await onSubmit(result.value);
     } catch (error) {
+      if (error instanceof DuplicateReferenceError) {
+        // At the field: the export file names would collide with the other vehicle's.
+        setErrors({ [error.field]: error.message });
+        document.getElementById(error.field)?.focus();
+        return;
+      }
       setSubmitError(error instanceof Error ? error.message : "Bitte versuchen Sie es erneut.");
     } finally {
       setSubmitting(false);

@@ -60,6 +60,30 @@ export class VehicleChangedError extends AppError {
   }
 }
 
+/** A photo file for "Speichern" could not be read (download failed). */
+export const PHOTO_FILE_LOAD_FAILED_MESSAGE = "Das Foto konnte nicht geladen werden. Bitte versuchen Sie es erneut.";
+/** The photo has no such version, or its file is gone. */
+export const PHOTO_FILE_MISSING_MESSAGE = "Diese Version des Fotos ist nicht mehr vorhanden.";
+
+export const DUPLICATE_REFERENCE_MESSAGE = "Diese Fahrzeugnummer ist schon vergeben.";
+
+/**
+ * Saving was refused: another vehicle already has this "Interne
+ * Fahrzeugnummer" (the export file names would collide). `field`: the form
+ * field to show it at.
+ */
+export class DuplicateReferenceError extends AppError {
+  readonly field = "internalReference" as const;
+  /** The vehicle that has the reference. */
+  readonly vehicleId: string;
+
+  constructor(vehicleId: string) {
+    super("invalid", { userMessage: DUPLICATE_REFERENCE_MESSAGE });
+    this.name = "DuplicateReferenceError";
+    this.vehicleId = vehicleId;
+  }
+}
+
 /**
  * The server refused the file itself (unsupported type, too large): another
  * upload attempt of the same file can never succeed.

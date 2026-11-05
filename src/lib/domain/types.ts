@@ -109,6 +109,9 @@ export interface VehiclePhoto {
   updatedAt: string;
 }
 
+/** Which file of a photo: the original capture or the processed result. */
+export type PhotoVersion = "original" | "processed";
+
 export interface PhotoUrls {
   original: string;
   /** Falls back to the original if no thumbnail exists. */

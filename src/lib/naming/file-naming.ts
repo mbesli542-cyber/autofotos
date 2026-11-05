@@ -82,6 +82,20 @@ export interface ExportFileNameInput {
 }
 
 /**
+ * The vehicle part of export names: the internal reference as a safe file
+ * name segment, or – without one – the first 8 characters of the vehicle id.
+ */
+export function buildExportReference({
+  internalReference,
+  vehicleId,
+}: Pick<ExportFileNameInput, "internalReference" | "vehicleId">): string {
+  return (
+    sanitizeFileNameSegment(internalReference ?? "") ||
+    sanitizeFileNameSegment(vehicleId.replace(/-/g, "").slice(0, 8).toUpperCase())
+  );
+}
+
+/**
  * Listing export name, e.g. `AE_FZ-2041_01_front_left_45.jpg`.
  * Falls back to the first 8 characters of the vehicle id when no internal
  * reference was entered.
@@ -93,12 +107,24 @@ export function buildExportFileName({
   shotKey,
   extension = "jpg",
 }: ExportFileNameInput): string {
-  const reference =
-    sanitizeFileNameSegment(internalReference ?? "") ||
-    sanitizeFileNameSegment(vehicleId.replace(/-/g, "").slice(0, 8).toUpperCase());
+  const reference = buildExportReference({ internalReference, vehicleId });
   const order = String(shotOrder).padStart(2, "0");
   const key = shotKey.replace(/[^a-z0-9_]/gi, "_");
   return `AE_${reference}_${order}_${key}.${extension.replace(/^\./, "")}`;
+}
+
+/** Name of the ZIP download of a vehicle's photos, e.g. `AE_FZ-2041_Fotos.zip`. */
+export function buildExportArchiveName(input: Pick<ExportFileNameInput, "internalReference" | "vehicleId">): string {
+  return `AE_${buildExportReference(input)}_Fotos.zip`;
+}
+
+/** Extension of a storage path ("…/abc.heic" → "heic"); null when it has none. */
+export function getStoragePathExtension(path: string): string | null {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return null;
+  const extension = name.slice(dot + 1).toLowerCase();
+  return /^[a-z0-9]{1,5}$/.test(extension) ? extension : null;
 }
 
 interface PhotoPathInput {

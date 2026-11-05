@@ -396,3 +396,83 @@ describe("MockDataProvider over plain HTTP (no crypto.randomUUID)", () => {
     expect((await provider.getVehicle(vehicle.id))?.model).toBe("Golf");
   });
 });
+
+describe("MockDataProvider – files for 'Speichern' and the references", () => {
+  async function vehicleWithPhoto() {
+    const data = new MockDataProvider(createDemoDatabase(`test-${createId()}`));
+    const vehicle = await data.createVehicle({
+      manufacturer: "Audi",
+      model: "A6",
+      color: null,
+      licensePlate: null,
+      vin: null,
+      mileage: null,
+      firstRegistration: null,
+      internalReference: "FZ-7001",
+      notes: null,
+    });
+    const saved = await data.savePhoto({
+      photoId: createId(),
+      vehicleId: vehicle.id,
+      shotKey: "front",
+      shotOrder: 2,
+      title: "Vorne",
+      file: new Blob(["original-heic"], { type: "image/heic" }),
+      thumbnail: null,
+      width: 4000,
+      height: 3000,
+      takenAt: "2026-11-05T09:00:00.000Z",
+    });
+    return { data, vehicle, saved };
+  }
+
+  it("reads the original and the processed result from IndexedDB", async () => {
+    const { data, saved } = await vehicleWithPhoto();
+    const original = await data.getPhotoFile(saved, "original");
+    expect([await original.text(), original.type]).toEqual(["original-heic", "image/heic"]);
+
+    const processed = await data.saveProcessedPhoto({
+      photo: saved,
+      preset: "autoexperten_standard",
+      file: new Blob(["processed-jpeg"], { type: "image/jpeg" }),
+      warnings: [],
+    });
+    const result = await data.getPhotoFile(processed, "processed");
+    expect([await result.text(), result.type]).toEqual(["processed-jpeg", "image/jpeg"]);
+    // The original is untouched.
+    expect(await (await data.getPhotoFile(processed, "original")).text()).toBe("original-heic");
+  });
+
+  it("refuses a version the photo does not have, in German", async () => {
+    const { data, saved } = await vehicleWithPhoto();
+    const error = await data.getPhotoFile(saved, "processed").catch((reason: unknown) => reason);
+    expect(error).toMatchObject({ code: "not_found", message: "Diese Version des Fotos ist nicht mehr vorhanden." });
+  });
+
+  it("fetches the demo seed photos from the app's own files", async () => {
+    const data = new MockDataProvider(createDemoDatabase(`test-${createId()}`));
+    const seeded = (await data.listVehicles()).find((item) => item.photos.length === 15);
+    const seedPhoto = seeded?.photos.find((photo) => photo.shotKey === "front_left_45");
+    if (!seedPhoto) throw new Error("seed without photos");
+    const fetchMock = vi.fn(async () => new Response("<svg/>", { headers: { "content-type": "image/svg+xml" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const blob = await data.getPhotoFile(seedPhoto, "original");
+      expect(fetchMock).toHaveBeenCalledWith("/demo/shots/front_left_45.svg");
+      expect(await blob.text()).toBe("<svg/>");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("lists the vehicles that have an internal reference", async () => {
+    const { data, vehicle } = await vehicleWithPhoto();
+    const references = await data.listVehicleReferences();
+    expect(references).toContainEqual({ id: vehicle.id, internalReference: "FZ-7001" });
+    // The demo seed's numbers.
+    expect(references.map((entry) => entry.internalReference)).toEqual(
+      expect.arrayContaining(["FZ-2041", "FZ-2042", "FZ-2043"]),
+    );
+    expect(references.every((entry) => entry.internalReference)).toBe(true);
+  });
+});

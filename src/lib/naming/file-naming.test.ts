@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { getOrderedShots, AUTOEXPERTEN_STANDARD_TEMPLATE } from "@/lib/shots/shot-template";
 import {
+  buildExportArchiveName,
   buildExportFileName,
   buildOriginalStoragePath,
   buildProcessedStoragePath,
   buildThumbnailStoragePath,
   getFileExtensionForMimeType,
+  getStoragePathExtension,
   normalizeImageMimeType,
   sanitizeFileNameSegment,
 } from "./file-naming";
@@ -61,6 +63,19 @@ describe("export file names", () => {
     expect(
       buildExportFileName({ internalReference: "X1", vehicleId: VEHICLE_ID, shotOrder: 14, shotKey: "wheel_detail", extension: ".png" }),
     ).toBe("AE_X1_14_wheel_detail.png");
+  });
+
+  it("names the ZIP download after the same reference", () => {
+    expect(buildExportArchiveName({ internalReference: "FZ-2041", vehicleId: VEHICLE_ID })).toBe("AE_FZ-2041_Fotos.zip");
+    expect(buildExportArchiveName({ internalReference: " Lager 7/B ", vehicleId: VEHICLE_ID })).toBe("AE_Lager-7-B_Fotos.zip");
+    expect(buildExportArchiveName({ internalReference: null, vehicleId: VEHICLE_ID })).toBe("AE_5D0C6F1E_Fotos.zip");
+  });
+
+  it("reads the extension of a storage path", () => {
+    expect(getStoragePathExtension(`vehicle-originals/${VEHICLE_ID}/front/p1.HEIC`)).toBe("heic");
+    expect(getStoragePathExtension("static:/demo/shots/front.svg")).toBe("svg");
+    expect(getStoragePathExtension(`${VEHICLE_ID}/front/p1`)).toBeNull();
+    expect(getStoragePathExtension("folder.d/p1")).toBeNull();
   });
 });
 

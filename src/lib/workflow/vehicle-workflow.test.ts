@@ -2,10 +2,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDemoDatabase, MockDataProvider } from "@/lib/data/mock/mock-data-provider";
 import type { VehicleInput } from "@/lib/domain/types";
-import { VehicleChangedError } from "@/lib/errors";
+import { DuplicateReferenceError, toUserMessage, VehicleChangedError } from "@/lib/errors";
 import { createId } from "@/lib/ids";
 import { DEFAULT_SHOT_TEMPLATE, getRequiredShots } from "@/lib/shots/shot-template";
-import { saveVehicleData, savePhotoAndSyncStatus } from "./vehicle-workflow";
+import { createVehicleWithUniqueReference, saveVehicleData, savePhotoAndSyncStatus } from "./vehicle-workflow";
 
 const T0 = "2026-10-28T09:00:00.000Z";
 const T1 = "2026-10-28T10:00:00.000Z";
@@ -138,5 +138,63 @@ describe("saveVehicleData ('Fahrzeugdaten')", () => {
     await data.updateVehicle(base.id, { ...INPUT, color: "Rot" });
     const saved = await saveVehicleData(data, base.id, { ...INPUT, color: "Rot" }, base);
     expect(saved.color).toBe("Rot");
+  });
+});
+
+describe("'Interne Fahrzeugnummer' stays unique (export file names)", () => {
+  const INPUT: VehicleInput = {
+    manufacturer: "Mercedes-Benz",
+    model: "C 200",
+    color: null,
+    licensePlate: null,
+    vin: null,
+    mileage: null,
+    firstRegistration: null,
+    internalReference: null,
+    notes: null,
+  };
+
+  async function setup() {
+    const data = new MockDataProvider(createDemoDatabase(`workflow-${createId()}`));
+    // The demo seed has FZ-2041 (S 63 AMG).
+    const taken = (await data.listVehicleReferences()).find((entry) => entry.internalReference === "FZ-2041");
+    if (!taken) throw new Error("seed without FZ-2041");
+    return { data, taken };
+  }
+
+  it("refuses a new vehicle with a number another vehicle has – also spelt differently", async () => {
+    const { data, taken } = await setup();
+    const before = (await data.listVehicles()).length;
+    for (const reference of ["FZ-2041", "fz 2041"]) {
+      const error = await createVehicleWithUniqueReference(data, { ...INPUT, internalReference: reference }).catch(
+        (reason: unknown) => reason,
+      );
+      expect(error).toBeInstanceOf(DuplicateReferenceError);
+      expect(toUserMessage(error)).toBe("Diese Fahrzeugnummer ist schon vergeben.");
+      expect((error as DuplicateReferenceError).vehicleId).toBe(taken.id);
+    }
+    expect((await data.listVehicles()).length).toBe(before);
+  });
+
+  it("creates vehicles with a new number or without one", async () => {
+    const { data } = await setup();
+    await createVehicleWithUniqueReference(data, { ...INPUT, internalReference: "FZ-3001" });
+    await createVehicleWithUniqueReference(data, INPUT);
+    await createVehicleWithUniqueReference(data, INPUT);
+    const references = (await data.listVehicleReferences()).map((entry) => entry.internalReference);
+    expect(references).toContain("FZ-3001");
+  });
+
+  it("refuses to change a vehicle to a taken number, but saves it with its own", async () => {
+    const { data } = await setup();
+    const base = await data.createVehicle({ ...INPUT, internalReference: "FZ-3002" });
+    const error = await saveVehicleData(data, base.id, { ...INPUT, internalReference: "FZ-2041" }, base).catch(
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(DuplicateReferenceError);
+    expect((await data.getVehicle(base.id))?.internalReference).toBe("FZ-3002");
+
+    const saved = await saveVehicleData(data, base.id, { ...INPUT, internalReference: "FZ-3002", color: "Blau" }, base);
+    expect([saved.internalReference, saved.color]).toEqual(["FZ-3002", "Blau"]);
   });
 });

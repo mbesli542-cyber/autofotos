@@ -31,4 +31,26 @@ describe("<NewVehicleScreen />", () => {
     // The (preserved) form is fresh for the next vehicle.
     await waitFor(() => expect(screen.getByLabelText(/Modell/)).toHaveValue(""));
   });
+
+  it("warns at 'Interne Fahrzeugnummer' when another vehicle has the number (export names would collide)", async () => {
+    router.replace.mockClear();
+    const before = (await getAppServices().backend.data.listVehicles()).length;
+    render(<NewVehicleScreen />);
+    fireEvent.change(screen.getByLabelText(/Hersteller/), { target: { value: "BMW" } });
+    fireEvent.change(screen.getByLabelText(/Modell/), { target: { value: "320d" } });
+    // The demo seed's S 63 AMG has FZ-2041.
+    fireEvent.change(screen.getByLabelText("Interne Fahrzeugnummer"), { target: { value: "fz 2041" } });
+    fireEvent.click(screen.getByRole("button", { name: "Fahrzeug erstellen & Fotos aufnehmen" }));
+
+    expect(await screen.findByText("Diese Fahrzeugnummer ist schon vergeben.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Interne Fahrzeugnummer")).toHaveFocus();
+    expect(screen.getByLabelText("Interne Fahrzeugnummer")).toHaveValue("fz 2041");
+    expect(router.replace).not.toHaveBeenCalled();
+    expect((await getAppServices().backend.data.listVehicles()).length).toBe(before);
+
+    fireEvent.change(screen.getByLabelText("Interne Fahrzeugnummer"), { target: { value: "FZ-3100" } });
+    expect(screen.queryByText("Diese Fahrzeugnummer ist schon vergeben.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Fahrzeug erstellen & Fotos aufnehmen" }));
+    await waitFor(() => expect(router.replace).toHaveBeenCalledTimes(1));
+  });
 });

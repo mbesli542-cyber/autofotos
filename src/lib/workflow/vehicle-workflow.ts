@@ -4,8 +4,9 @@
  */
 import type { DataProvider, SavePhotoInput } from "@/lib/data/types";
 import type { Vehicle, VehicleInput, VehiclePhoto, VehicleStatus } from "@/lib/domain/types";
-import { AppError, VehicleChangedError } from "@/lib/errors";
+import { AppError, DuplicateReferenceError, VehicleChangedError } from "@/lib/errors";
 import type { ShotTemplate } from "@/lib/shots/shot-template";
+import { findReferenceConflict, referenceKey } from "@/lib/vehicles/reference";
 import {
   allRequiredProcessed,
   canCompleteCapture,
@@ -79,6 +80,27 @@ export async function markProcessedIfDone(
   return true;
 }
 
+/**
+ * "Interne Fahrzeugnummer" must be unique (src/lib/vehicles/reference.ts):
+ * throws DuplicateReferenceError when another vehicle has it already.
+ * `ownVehicleId`: the vehicle being saved.
+ */
+export async function assertReferenceAvailable(
+  data: DataProvider,
+  reference: string | null,
+  ownVehicleId: string | null = null,
+): Promise<void> {
+  if (referenceKey(reference) === null) return;
+  const conflict = findReferenceConflict(reference, await data.listVehicleReferences(), ownVehicleId);
+  if (conflict) throw new DuplicateReferenceError(conflict.id);
+}
+
+/** "Neues Fahrzeug": creates the vehicle – not with a reference another vehicle has. */
+export async function createVehicleWithUniqueReference(data: DataProvider, input: VehicleInput): Promise<Vehicle> {
+  await assertReferenceAvailable(data, input.internalReference);
+  return data.createVehicle(input);
+}
+
 /** The fields of "Fahrzeugdaten" (VehicleInput). */
 const VEHICLE_DATA_FIELDS = [
   "manufacturer",
@@ -104,7 +126,8 @@ const MAX_SAVE_ATTEMPTS = 3;
  * the form showed) – never over vehicle data changed since then: that
  * throws VehicleChangedError with the current vehicle. A change of the
  * status alone (e.g. a photo saved in the background) is no conflict: the
- * input is then saved on the current data.
+ * input is then saved on the current data. A reference another vehicle has
+ * is refused (DuplicateReferenceError).
  */
 export async function saveVehicleData(
   data: DataProvider,
@@ -112,6 +135,7 @@ export async function saveVehicleData(
   input: VehicleInput,
   base: Vehicle,
 ): Promise<Vehicle> {
+  await assertReferenceAvailable(data, input.internalReference, vehicleId);
   let expectedUpdatedAt = base.updatedAt;
   for (let attempt = 1; ; attempt += 1) {
     try {
