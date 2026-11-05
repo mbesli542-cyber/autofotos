@@ -283,7 +283,7 @@ export function CameraCapture({
       setFlashKey(0);
       setBanner(null);
       setShowCheckInfo(false);
-      setTips(null);
+      // The tips stay: their dialog closes while the camera is hidden and opens again with it.
     };
   }, [returnTo]);
 

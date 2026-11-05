@@ -26,11 +26,12 @@ export function RotatePhonePrompt({ paused = false }: { paused?: boolean }) {
 
   if (!shown || paused) return null;
   return (
-    <div className="pointer-events-none absolute inset-x-3 top-3 bottom-20 z-10 flex items-center justify-center">
+    // Below the shot's check chip at the top (a rejection reason stays readable), above the instruction box.
+    <div className="pointer-events-none absolute inset-x-3 top-12 bottom-28 z-10 flex items-center justify-center">
       <button
         type="button"
         onClick={() => setShown(false)}
-        className="pointer-events-auto flex max-w-[15rem] animate-fade-in flex-col items-center gap-1.5 rounded-2xl border border-white/15 bg-black/70 px-4 py-3 text-center text-white shadow-lg backdrop-blur-md"
+        className="pointer-events-auto flex max-w-[15rem] animate-fade-in flex-col items-center gap-1 rounded-2xl border border-white/15 bg-black/70 px-4 py-2.5 text-center text-white shadow-lg backdrop-blur-md"
         aria-label="Bitte Smartphone quer halten – Hinweis ausblenden"
       >
         <Smartphone className="size-8 text-ae-blue motion-safe:animate-turn-phone motion-reduce:rotate-90" aria-hidden />
