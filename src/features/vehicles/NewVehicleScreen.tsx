@@ -8,7 +8,8 @@ import { PageContainer } from "@/components/layout/PageContainer";
 import { VehicleForm } from "@/components/vehicles/VehicleForm";
 import { getAppServices } from "@/lib/app-services";
 import type { VehicleInput } from "@/lib/domain/types";
-import { toUserMessage } from "@/lib/errors";
+import { DuplicateReferenceError, toUserMessage } from "@/lib/errors";
+import { createVehicleWithUniqueReference } from "@/lib/workflow/vehicle-workflow";
 
 export function NewVehicleScreen() {
   const router = useRouter();
@@ -17,11 +18,12 @@ export function NewVehicleScreen() {
 
   async function handleCreate(input: VehicleInput) {
     try {
-      const vehicle = await getAppServices().backend.data.createVehicle(input);
+      const vehicle = await createVehicleWithUniqueReference(getAppServices().backend.data, input);
       // The camera replaces the form in the history: "Zurück" must not show an empty form.
       router.replace(`/fahrzeuge/${vehicle.id}/kamera`);
       setFormKey((key) => key + 1);
     } catch (error) {
+      if (error instanceof DuplicateReferenceError) throw error; // shown at the field
       throw new Error(toUserMessage(error, "Fahrzeug konnte nicht erstellt werden. Bitte versuchen Sie es erneut."));
     }
   }

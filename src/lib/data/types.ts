@@ -6,6 +6,7 @@
  * - MockDataProvider / DemoAuthService (demo mode, no backend needed)
  */
 import type {
+  PhotoVersion,
   ProcessingPresetId,
   ProcessingWarning,
   Vehicle,
@@ -72,6 +73,21 @@ export interface RecordProcessedPhotoInput {
   warnings: readonly ProcessingWarning[];
 }
 
+/** The processor refused a photo ("Foto neu aufnehmen"): nothing was processed. */
+export interface RecordPhotoRejectionInput {
+  photoId: string;
+  /** The job's reason, e.g. "vehicle_cropped" (quality gate). */
+  errorCode: string;
+  /** The processor's German reason. */
+  message: string;
+}
+
+/** A vehicle's "Interne Fahrzeugnummer" (only vehicles that have one). */
+export interface VehicleReference {
+  id: string;
+  internalReference: string;
+}
+
 export interface UpdateVehicleOptions {
   /** `updatedAt` of the vehicle the input is based on (optimistic check). */
   expectedUpdatedAt?: string;
@@ -94,11 +110,19 @@ export interface DataProvider {
    * keeps vehicles and originals (no delete policy), so it has no such method.
    */
   deleteVehicle?(vehicleId: string): Promise<void>;
+  /** Every vehicle with an internal reference (to keep the references unique). */
+  listVehicleReferences(): Promise<VehicleReference[]>;
 
   /** Active photos of a vehicle (unsorted – sort with the shot template). */
   listPhotos(vehicleId: string): Promise<VehiclePhoto[]>;
   /** Resolves displayable URLs (signed URLs / object URLs). */
   resolvePhotoUrls(photos: readonly VehiclePhoto[]): Promise<VehiclePhotoWithUrls[]>;
+  /**
+   * The file of one version of a photo, for "Speichern" (export) – read with
+   * the signed-in session's own storage access. AppError("not_found") when
+   * the photo has no such version or the file is gone.
+   */
+  getPhotoFile(photo: VehiclePhoto, version: PhotoVersion): Promise<Blob>;
   /**
    * Stores a NEW original. An existing photo for the same shot is archived,
    * never overwritten – unless the new capture is OLDER than the active photo
@@ -113,6 +137,13 @@ export interface DataProvider {
   saveProcessedPhoto(input: SaveProcessedPhotoInput): Promise<VehiclePhoto>;
   /** Links a result that the processing service already stored (with the processor's hints). */
   recordProcessedPhoto(input: RecordProcessedPhotoInput): Promise<void>;
+  /**
+   * Keeps the processor's rejection with a photo that has NO processed
+   * result (a "rejected:<errorCode>" hint, processing-warnings.ts), so every
+   * device knows the shot must be retaken. A photo with a result is left as
+   * it is; a later result replaces the rejection.
+   */
+  recordPhotoRejection(input: RecordPhotoRejectionInput): Promise<void>;
 }
 
 export interface Backend {

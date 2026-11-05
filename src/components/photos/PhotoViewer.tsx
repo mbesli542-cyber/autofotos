@@ -2,12 +2,14 @@
 
 import { Camera, ChevronLeft, ChevronRight, CircleCheck, ImageOff, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { SavePhotoButton } from "@/components/export/SavePhotoButton";
 import { ProcessingWarningList } from "@/components/processing/ProcessingWarningList";
 import { Button } from "@/components/ui/Button";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { Spinner } from "@/components/ui/Spinner";
 import { getAppServices, getShotTemplate } from "@/lib/app-services";
 import { AppError, toUserMessage } from "@/lib/errors";
+import type { ExportVehicle } from "@/lib/export/listing-export";
 import { formatDateTime } from "@/lib/format";
 import { formatSlotNumber, type PhotoSlot } from "@/lib/photos/photo-slots";
 import { needsResultCheck } from "@/lib/processing/processing-warnings";
@@ -43,7 +45,8 @@ const DISCARD_FAILED_MESSAGE = "Das Foto konnte nicht verworfen werden. Bitte ve
  * answer. The actions come right below the version switch, before hints and
  * details, so they never need scrolling – however many hints a small phone
  * shows. Short viewports (phones in landscape) show details and actions next
- * to the photo, so hints never squeeze it.
+ * to the photo, so hints never squeeze it. With `exportVehicle`, "Speichern"
+ * in the header saves the version shown as AE_{ref}_{nn}_{shot}.{ext}.
  */
 export function PhotoViewer({
   slots,
@@ -55,6 +58,7 @@ export function PhotoViewer({
   onDelete,
   onRetryUpload,
   checks,
+  exportVehicle,
 }: {
   slots: readonly PhotoSlot[];
   selectedKey: string | null;
@@ -66,6 +70,8 @@ export function PhotoViewer({
   onRetryUpload?: (slot: PhotoSlot) => void;
   /** Results of the automatic check by shot key (shot-check.ts). */
   checks?: ReadonlyMap<string, ShotCheckState>;
+  /** The vehicle of the photos: shows "Speichern" (export file name from its reference). */
+  exportVehicle?: ExportVehicle;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [variant, setVariant] = useState<PhotoVariant>(defaultVariant);
@@ -215,6 +221,9 @@ export function PhotoViewer({
             <div className="hidden sm:block">
               <PhotoVersionToggle value={shownVariant} onChange={setVariant} />
             </div>
+          )}
+          {exportVehicle && slot.photo && !slot.pending && imageUrl && (
+            <SavePhotoButton vehicle={exportVehicle} photo={slot.photo} version={shownVariant} />
           )}
           <button
             type="button"

@@ -12,7 +12,7 @@ import { VehicleForm } from "@/components/vehicles/VehicleForm";
 import { useVehicleDetail } from "@/hooks/use-vehicle-data";
 import { getAppServices } from "@/lib/app-services";
 import type { Vehicle, VehicleInput } from "@/lib/domain/types";
-import { toUserMessage, VehicleChangedError } from "@/lib/errors";
+import { DuplicateReferenceError, toUserMessage, VehicleChangedError } from "@/lib/errors";
 import { vehicleToFormValues } from "@/lib/vehicles/validation";
 import { saveVehicleData } from "@/lib/workflow/vehicle-workflow";
 import { VehicleNotFound } from "./VehicleNotFound";
@@ -73,6 +73,7 @@ export function EditVehicleScreen({ vehicleId }: { vehicleId: string }) {
         reload();
         return;
       }
+      if (error instanceof DuplicateReferenceError) throw error; // shown at the field
       throw new Error(toUserMessage(error, "Fahrzeugdaten konnten nicht gespeichert werden."));
     }
     // Fresh form with the saved (normalised) data.

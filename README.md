@@ -103,7 +103,49 @@ Photos are **always ordered by this template** (never by upload time).
 Export names are deterministic: `AE_{internalReference}_01_front_left_45.jpg`
 (`buildExportFileName` in `src/lib/naming/file-naming.ts`). Additional photos
 ("Weitere Fotos hinzufügen") are stored as `extra_01`, `extra_02`, … after
-the 15 required shots.
+the 15 required shots and exported as `_16_extra_01`, `_17_extra_02`, …
+(`exportOrderOf`), so plain name order is the listing order. The "Interne
+Fahrzeugnummer" is unique (`src/lib/vehicles/reference.ts`, compared as the
+file names would, ignoring case): "Diese Fahrzeugnummer ist schon vergeben."
+Only a new or changed number is checked – vehicles that already share a
+number (data from before the rule) stay editable. The check runs in the app
+(no database constraint yet: the seed and older data contain duplicates).
+
+### Export ("Alle Fotos speichern")
+
+On the vehicle page (primary in the "Bearbeitet" view) – and per photo with
+"Speichern" in the large view, for the version shown:
+
+1. A summary first (`src/lib/export/listing-export.ts`, pure): "15 Fotos
+   bereit" or e.g. "13 bearbeitet · 1 noch nicht bearbeitet · 1 muss neu
+   aufgenommen werden", with the shots to look at. Per template shot the
+   processed result, otherwise the original (marked); extra photos as
+   originals after them. Rejected shots are left out unless ticked – on
+   every device: a processor rejection is kept with the photo (a
+   `rejected:<errorCode>` entry in `processing_warnings` of a photo without
+   a processed result, written by `processPhoto` via
+   `DataProvider.recordPhotoRejection`), so the desktop that downloads the
+   ZIP knows it as well as the phone that took the photo. A file that cannot
+   be loaded never blocks the others: a missing one can be left out
+   ("Ohne dieses Foto speichern") or – for a missing showroom image –
+   replaced by the original ("Original verwenden", marked in the summary).
+2. Phones: the share sheet (`navigator.share({ files })` when `canShare` is
+   true), in parts of at most 10 files / 48 MB (Chrome on Android's limit),
+   one tap each. The sheet knows before the tap whether this browser can
+   share the files (`canShareFileTypes`) and otherwise says "ZIP" from the
+   start. The hint names "Bilder sichern" on iOS only (Android: a target such
+   as Google Fotos or "Dateien"); after the share it says neutrally that the
+   files were handed to the share menu. Only the files that will be saved
+   are loaded while the summary is read (rejected shots once ticked), so the
+   share starts from a fresh tap. Cancelling is no error; any other refusal
+   offers the ZIP.
+3. Desktop and fallback: `AE_{ref}_Fotos.zip`, built in the browser by a
+   dependency-free store-only ZIP writer (`src/lib/export/zip.ts`, refuses
+   archives that would need ZIP64).
+
+The files come from `DataProvider.getPhotoFile` – IndexedDB in demo mode, a
+Storage download with the signed-in session in Supabase mode (no signed URL,
+no service key, no extra API route).
 
 ---
 
@@ -249,7 +291,7 @@ What they create:
 | --- | --- |
 | `organizations`, `organization_members` | Seeds "AutoExperten Schwetzingen". New auth users join it automatically (trigger on `auth.users`); existing users are back-filled. |
 | `vehicles` | `id, user_id, manufacturer, model, color, license_plate, vin, mileage, first_registration, internal_reference, notes, status (new/capturing/complete/processed), created_at, updated_at` + `organization_id`. `updated_at` is set by a trigger on every change; "Fahrzeugdaten" saves only while it is unchanged (see [What the app does](#what-the-app-does)). |
-| `vehicle_photos` | `id, vehicle_id, shot_key, shot_order, title, original_storage_path, processed_storage_path, processed_preset, processing_warnings (file 3), thumbnail_storage_path, width, height, taken_at, archived_at, created_at, updated_at`. One *active* photo per shot (partial unique index). A trigger makes `original_storage_path` (and `vehicle_id`, `shot_key`) immutable. `processing_warnings`: jsonb array of `{ code, message }`, at most 20 entries / 16 KB, written with the processed version, replaced by a new processing, `null` for a new photo. |
+| `vehicle_photos` | `id, vehicle_id, shot_key, shot_order, title, original_storage_path, processed_storage_path, processed_preset, processing_warnings (file 3), thumbnail_storage_path, width, height, taken_at, archived_at, created_at, updated_at`. One *active* photo per shot (partial unique index). A trigger makes `original_storage_path` (and `vehicle_id`, `shot_key`) immutable. `processing_warnings`: jsonb array of `{ code, message }`, at most 20 entries / 16 KB, written with the processed version, replaced by a new processing, `null` for a new photo. A photo without a processed version may carry one entry `{ "code": "rejected:<errorCode>", … }`: the processor's rejection (written only while `processed_storage_path` is null; a later result replaces it). |
 | `add_vehicle_photo()` | Inserts a new photo and archives the active photo of the same shot in one transaction – **unless the new capture is older** (`taken_at`) than the active one, e.g. a queued upload that arrives after a retake, or a photo from a second device: then the new photo is stored archived and the newer one stays active. Equal or newer captures replace it. The active photo counts as taken at most 5 minutes after it was saved (`created_at`), so a device clock running ahead blocks later retakes for 5 minutes at most. Calls for the same shot run one after another (advisory lock); idempotent for upload retries (same photo id). |
 | `can_access_vehicle_object()` | Used by the storage policies: true if the first path segment is a vehicle the user may access (RLS applies). Since file 2 it looks the vehicle up by primary key – signing 2,000 cover URLs took ≈ 0.13–0.19 s instead of 11–12 s. |
 | `processing_jobs` | Prepared for a persistent job log (not used yet – job state lives in the processor). |
@@ -891,12 +933,13 @@ src/
     login/, offline/, manifest.ts, layout.tsx, globals.css
   features/                    screen components (compose components + hooks)
   components/                  reusable UI
-    brand/ layout/ ui/ vehicles/ photos/ camera/ processing/ auth/ providers/
+    brand/ layout/ ui/ vehicles/ photos/ camera/ processing/ export/ auth/ providers/
   hooks/                       auth, data loading, upload queue, camera stream
   lib/
     shots/        shot template + pure progress/ordering logic
     vehicles/     validation, status rules, summaries
     naming/       export names & storage paths
+    export/       listing export: set + summary, share sheet/download, ZIP writer, file loader
     data/         DataProvider/AuthService + mock (IndexedDB) & Supabase impls
     workflow/     operations that keep vehicle status in sync (incl. saveVehicleData)
     offline/      IndexedDB helper, upload queue

@@ -11,9 +11,12 @@
  * Only a real, completed processor result is ever saved – together with the
  * processor's hints on it (`warnings`, e.g. "photo shows the other side"),
  * which processPhoto also returns. Any failure throws (with the processor's
- * German message where available) and saves nothing; a failed job throws
+ * German message where available) and saves no result; a failed job throws
  * ProcessingJobFailedError carrying the processor's errorCode (e.g. a
- * quality-gate rejection → "Foto neu aufnehmen").
+ * quality-gate rejection → "Foto neu aufnehmen"). A rejection that a new
+ * photo fixes (quality-gate.ts needsRetake) is kept with the photo first
+ * (data.recordPhotoRejection – best effort), so every device knows the shot
+ * must be retaken.
  */
 import type { BackendMode, DataProvider } from "@/lib/data/types";
 import type { ProcessingPresetId, ProcessingWarning, VehiclePhotoWithUrls } from "@/lib/domain/types";
@@ -21,13 +24,14 @@ import { AppError } from "@/lib/errors";
 import * as client from "./processing-client";
 import { loadOriginalPhoto, prepareProcessingUpload } from "./prepare-upload";
 import { parseProcessingWarnings } from "./processing-warnings";
+import { needsRetake, retakeFallbackMessage } from "./quality-gate";
 import type { ProcessingJob, ProcessingJobStatus } from "./types";
 
 export type PhotoStep = "preparing" | ProcessingJobStatus | "saving";
 
 export interface PhotoProcessingDeps {
   mode: BackendMode;
-  data: Pick<DataProvider, "saveProcessedPhoto" | "recordProcessedPhoto">;
+  data: Pick<DataProvider, "saveProcessedPhoto" | "recordProcessedPhoto" | "recordPhotoRejection">;
   accessCode?: string | null;
   signal?: AbortSignal;
   onStep?: (step: PhotoStep, progress?: number) => void;
@@ -59,10 +63,22 @@ export class ProcessingJobFailedError extends AppError {
   }
 }
 
-function ensureCompleted(job: ProcessingJob): void {
-  if (job.status !== "complete") {
-    throw new ProcessingJobFailedError(job.errorCode ?? null, job.error ?? "Bearbeitung fehlgeschlagen.");
+/** Shown when the processor rejected a photo without a text (never expected). */
+const REJECTION_FALLBACK = "Bitte Foto neu aufnehmen.";
+
+async function ensureCompleted(
+  job: ProcessingJob,
+  photo: VehiclePhotoWithUrls,
+  data: PhotoProcessingDeps["data"],
+): Promise<void> {
+  if (job.status === "complete") return;
+  const errorCode = job.errorCode ?? null;
+  if (needsRetake(errorCode) && errorCode !== null) {
+    // Kept with the photo for every device – never in the way of reporting the rejection.
+    const message = job.error?.trim() || retakeFallbackMessage(errorCode) || REJECTION_FALLBACK;
+    await data.recordPhotoRejection({ photoId: photo.id, errorCode, message }).catch(() => undefined);
   }
+  throw new ProcessingJobFailedError(errorCode, job.error ?? "Bearbeitung fehlgeschlagen.");
 }
 
 export async function processPhoto(
@@ -81,7 +97,7 @@ export async function processPhoto(
     );
     deps.onStep?.(status);
     const job = await api.waitForProcessingJob(jobId, { ...options, onUpdate });
-    ensureCompleted(job);
+    await ensureCompleted(job, photo, deps.data);
     if (job.result?.kind !== "stored") throw new AppError("unknown", { userMessage: NO_RESULT_MESSAGE });
     const warnings = parseProcessingWarnings(job.warnings);
     deps.onStep?.("saving");
@@ -100,7 +116,7 @@ export async function processPhoto(
   const { jobId, status } = await api.submitUploadProcessing({ file, preset, shotKey: photo.shotKey }, options);
   deps.onStep?.(status);
   const job = await api.waitForProcessingJob(jobId, { ...options, onUpdate });
-  ensureCompleted(job);
+  await ensureCompleted(job, photo, deps.data);
   if (job.result?.kind !== "file") throw new AppError("unknown", { userMessage: NO_RESULT_MESSAGE });
   const warnings = parseProcessingWarnings(job.warnings);
   deps.onStep?.("saving");

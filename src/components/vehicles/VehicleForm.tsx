@@ -5,6 +5,7 @@ import { TextAreaField, TextField } from "@/components/ui/FormField";
 import { LoadingButton } from "@/components/ui/LoadingButton";
 import { StickyActions } from "@/components/layout/PageContainer";
 import type { VehicleInput } from "@/lib/domain/types";
+import { DuplicateReferenceError } from "@/lib/errors";
 import {
   emptyVehicleFormValues,
   validateVehicleForm,
@@ -33,6 +34,17 @@ const MANUFACTURER_SUGGESTIONS = [
 ];
 
 /**
+ * Focuses a field with an error – centred, so the sticky save button never
+ * covers it (phones).
+ */
+function focusField(name: string) {
+  const element = document.getElementById(name);
+  if (!element) return;
+  element.scrollIntoView?.({ block: "center" });
+  element.focus({ preventScroll: true });
+}
+
+/**
  * Vehicle data form (create + edit). Only Hersteller and Modell are required.
  */
 export function VehicleForm({
@@ -48,7 +60,10 @@ export function VehicleForm({
   submitLabel: string;
   loadingText: string;
   submitIcon?: ReactNode;
-  /** Should throw (with a German message) on failure. */
+  /**
+   * Should throw (with a German message) on failure; a
+   * DuplicateReferenceError is shown at "Interne Fahrzeugnummer".
+   */
   onSubmit: (input: VehicleInput) => Promise<void>;
   /** Called when the employee changes a field (the form now holds unsaved input). */
   onEdit?: () => void;
@@ -84,13 +99,19 @@ export function VehicleForm({
     if (!result.ok) {
       setErrors(result.errors);
       const firstInvalid = Object.keys(result.errors)[0];
-      if (firstInvalid) document.getElementById(firstInvalid)?.focus();
+      if (firstInvalid) focusField(firstInvalid);
       return;
     }
     setSubmitting(true);
     try {
       await onSubmit(result.value);
     } catch (error) {
+      if (error instanceof DuplicateReferenceError) {
+        // At the field: the export file names would collide with the other vehicle's.
+        setErrors({ [error.field]: error.message });
+        focusField(error.field);
+        return;
+      }
       setSubmitError(error instanceof Error ? error.message : "Bitte versuchen Sie es erneut.");
     } finally {
       setSubmitting(false);

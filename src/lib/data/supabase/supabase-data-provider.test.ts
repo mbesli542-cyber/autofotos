@@ -431,6 +431,30 @@ describe("SupabaseDataProvider – the processor's hints on a processed version"
     expect(rowToPhoto({ ...row, processed_storage_path: null }).processingWarnings).toEqual([]);
     expect(PHOTO_COLUMNS.split(", ")).toContain("processing_warnings");
   });
+
+  it("reads a stored rejection back for a photo without a processed version (every device knows it)", () => {
+    const rejected = { code: "rejected:vehicle_too_small", message: "Fahrzeug im Originalfoto zu klein. Bitte näher fotografieren." };
+    const row: VehiclePhotoRow = {
+      id: "p2",
+      vehicle_id: VEHICLE_ID,
+      shot_key: "rear",
+      shot_order: 7,
+      title: "Hinten",
+      original_storage_path: `${VEHICLE_ID}/rear/p2.jpg`,
+      processed_storage_path: null,
+      processed_preset: null,
+      processing_warnings: [removed, rejected],
+      thumbnail_storage_path: null,
+      width: null,
+      height: null,
+      taken_at: "2026-10-28T09:00:00+00:00",
+      archived_at: null,
+      created_at: "2026-10-28T09:00:00+00:00",
+      updated_at: "2026-10-28T09:00:00+00:00",
+    };
+    // Only the rejection – other hints belonged to a result that no longer exists.
+    expect(rowToPhoto(row).processingWarnings).toEqual([rejected]);
+  });
 });
 
 describe("SupabaseDataProvider.listVehicles", () => {
@@ -613,7 +637,13 @@ describe("SupabaseDataProvider before the hints migration (20261028000100) was a
 
   /** PostgREST of a database without vehicle_photos.processing_warnings (or with it: `hasColumn`). */
   function postgrest({ hasColumn = false, otherMissingColumn = false } = {}) {
-    const requests: { method: string; path: string; select: string | null; body: Record<string, unknown> | null }[] = [];
+    const requests: {
+      method: string;
+      path: string;
+      select: string | null;
+      body: Record<string, unknown> | null;
+      params: URLSearchParams;
+    }[] = [];
     const json = (status: number, body: unknown) =>
       new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     const fetchImpl = async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -621,7 +651,7 @@ describe("SupabaseDataProvider before the hints migration (20261028000100) was a
       const method = init.method ?? "GET";
       const select = url.searchParams.get("select");
       const body = typeof init.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : null;
-      requests.push({ method, path: url.pathname, select, body });
+      requests.push({ method, path: url.pathname, select, body, params: url.searchParams });
       if (otherMissingColumn) {
         return json(400, { code: "42703", details: null, hint: null, message: "column vehicle_photos.focus does not exist" });
       }
@@ -722,5 +752,175 @@ describe("SupabaseDataProvider before the hints migration (20261028000100) was a
     const broken = postgrest({ otherMissingColumn: true });
     await expect(new SupabaseDataProvider(broken.client).listPhotos(VEHICLE_ID)).rejects.toBeInstanceOf(AppError);
     expect(broken.requests).toHaveLength(1);
+  });
+
+  const REJECTION = {
+    photoId: "p1",
+    errorCode: "vehicle_cropped",
+    message: "Das Fahrzeug ist im Foto angeschnitten. Bitte das ganze Fahrzeug mit etwas Abstand neu fotografieren.",
+  };
+
+  it("keeps a rejection with the photo – only on a photo without a processed result", async () => {
+    const { client, requests } = postgrest({ hasColumn: true });
+    await new SupabaseDataProvider(client).recordPhotoRejection(REJECTION);
+    expect(requests).toHaveLength(1);
+    const [request] = requests;
+    expect([request?.method, request?.path, request?.body]).toEqual([
+      "PATCH",
+      "/rest/v1/vehicle_photos",
+      { processing_warnings: [{ code: "rejected:vehicle_cropped", message: REJECTION.message }] },
+    ]);
+    // Conditional: a result saved meanwhile is never marked as rejected; nothing else changes.
+    expect(request?.params.get("id")).toBe("eq.p1");
+    expect(request?.params.get("processed_storage_path")).toBe("is.null");
+  });
+
+  it("before the migration: the rejection stays on this device – no error, asked once", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { client, requests } = postgrest();
+    const provider = new SupabaseDataProvider(client);
+    await provider.recordPhotoRejection(REJECTION);
+    await provider.recordPhotoRejection(REJECTION);
+    expect(requests).toHaveLength(1);
+    warn.mockRestore();
+  });
+});
+
+describe("SupabaseDataProvider – files for 'Speichern' and the references", () => {
+  const ORIGINAL_PATH = `${VEHICLE_ID}/front/p1.jpg`;
+  const PROCESSED_PATH = `${VEHICLE_ID}/autoexperten_standard/front/p1.jpg`;
+
+  function photo(overrides: Partial<VehiclePhoto> = {}): VehiclePhoto {
+    return {
+      ...rowToPhoto({
+        id: "p1",
+        vehicle_id: VEHICLE_ID,
+        shot_key: "front",
+        shot_order: 2,
+        title: "Vorne",
+        original_storage_path: ORIGINAL_PATH,
+        processed_storage_path: PROCESSED_PATH,
+        processed_preset: "autoexperten_standard",
+        processing_warnings: [],
+        thumbnail_storage_path: null,
+        width: 4000,
+        height: 3000,
+        taken_at: "2026-10-28T10:00:00.000Z",
+        archived_at: null,
+        created_at: "2026-10-28T10:00:00.000Z",
+        updated_at: "2026-10-28T10:00:00.000Z",
+      }),
+      ...overrides,
+    };
+  }
+
+  /** A real supabase-js client over a fake server: Storage objects and the vehicles' references. */
+  function server({
+    objects = {} as Record<string, { body: string; type: string }>,
+    references = [] as { id: string; internal_reference: string | null }[],
+    maxRows = 1000,
+    storageDown = false,
+  } = {}) {
+    const requests: { method: string; path: string; query: Record<string, string>; authorization: string | null }[] = [];
+    const fetchImpl = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
+      requests.push({
+        method: init.method ?? "GET",
+        path: decodeURIComponent(url.pathname),
+        query: Object.fromEntries(url.searchParams),
+        authorization: headers.get("authorization"),
+      });
+      if (url.pathname.startsWith("/storage/v1/object/")) {
+        if (storageDown) throw new TypeError("Failed to fetch");
+        const key = decodeURIComponent(url.pathname.replace(/^\/storage\/v1\/object\/(authenticated\/)?/, ""));
+        const object = objects[key];
+        if (!object) {
+          return new Response(JSON.stringify({ statusCode: "404", error: "not_found", message: "Object not found" }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(object.body, { status: 200, headers: { "content-type": object.type } });
+      }
+      if (url.pathname === "/rest/v1/vehicles") {
+        const after = url.searchParams.get("id")?.replace(/^gt\./, "") ?? null;
+        const limit = Number(url.searchParams.get("limit") ?? Infinity);
+        const onlyWithReference = url.searchParams.get("internal_reference") === "not.is.null";
+        const rows = references
+          .filter((row) => !onlyWithReference || row.internal_reference !== null)
+          .filter((row) => after === null || row.id > after)
+          .sort((a, b) => (a.id < b.id ? -1 : 1))
+          .slice(0, Math.min(limit, maxRows));
+        return new Response(JSON.stringify(rows), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`unexpected request ${url.pathname}`);
+    };
+    const client = createClient("https://project.supabase.co", "anon-key", {
+      global: { fetch: fetchImpl as typeof fetch },
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    return { client, requests };
+  }
+
+  it("downloads the processed result and the original from their buckets with the session (no signed URL)", async () => {
+    const { client, requests } = server({
+      objects: {
+        [`vehicle-processed/${PROCESSED_PATH}`]: { body: "processed-jpeg", type: "image/jpeg" },
+        [`vehicle-originals/${ORIGINAL_PATH}`]: { body: "original-jpeg", type: "image/jpeg" },
+      },
+    });
+    const provider = new SupabaseDataProvider(client);
+
+    const processed = await provider.getPhotoFile(photo(), "processed");
+    const original = await provider.getPhotoFile(photo(), "original");
+
+    expect(await processed.text()).toBe("processed-jpeg");
+    expect(processed.type).toBe("image/jpeg");
+    expect(await original.text()).toBe("original-jpeg");
+    expect(requests.map((request) => [request.method, request.path])).toEqual([
+      ["GET", `/storage/v1/object/vehicle-processed/${PROCESSED_PATH}`],
+      ["GET", `/storage/v1/object/vehicle-originals/${ORIGINAL_PATH}`],
+    ]);
+    // The browser client's own key/session – never a service-role key.
+    expect(requests.every((request) => request.authorization === "Bearer anon-key")).toBe(true);
+  });
+
+  it("reports a missing version or file as not found and a dropped connection as such – in German", async () => {
+    const { client } = server();
+    const provider = new SupabaseDataProvider(client);
+    const unprocessed = await provider
+      .getPhotoFile(photo({ processedStoragePath: null }), "processed")
+      .catch((error: unknown) => error);
+    expect(unprocessed).toMatchObject({ code: "not_found" });
+    const gone = await provider.getPhotoFile(photo(), "original").catch((error: unknown) => error);
+    expect(gone).toMatchObject({ code: "not_found" });
+    expect(toUserMessage(gone)).toBe("Diese Version des Fotos ist nicht mehr vorhanden.");
+
+    const offline = await new SupabaseDataProvider(server({ storageDown: true }).client)
+      .getPhotoFile(photo(), "original")
+      .catch((error: unknown) => error);
+    expect(offline).toMatchObject({ code: "network" });
+  });
+
+  it("lists every vehicle reference, page after page, also below the project's max-rows", async () => {
+    const references = Array.from({ length: 2500 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      internal_reference: index % 2 === 0 ? `FZ-${index}` : null,
+    }));
+    const { client, requests } = server({ references, maxRows: 400 });
+    const list = await new SupabaseDataProvider(client).listVehicleReferences();
+    expect(list).toHaveLength(1250);
+    expect(new Set(list.map((entry) => entry.id)).size).toBe(1250);
+    expect(list[0]).toEqual({ id: references[0]?.id, internalReference: "FZ-0" });
+    expect(requests[0]?.query).toMatchObject({
+      select: "id,internal_reference",
+      internal_reference: "not.is.null",
+      order: "id.asc",
+      limit: "1000",
+    });
+    expect(requests[1]?.query.id).toBe(`gt.${list[399]?.id}`);
+    // 1250 references in pages of 400, then one empty page.
+    expect(requests).toHaveLength(5);
   });
 });

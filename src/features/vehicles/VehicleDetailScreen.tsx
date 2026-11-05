@@ -1,8 +1,9 @@
 "use client";
 
-import { Camera, CloudOff, ImageOff, Images, Pencil, RotateCcw, Trash2, TriangleAlert } from "lucide-react";
+import { Camera, CloudOff, Download, ImageOff, Images, Pencil, RotateCcw, Trash2, TriangleAlert } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { ExportSheet } from "@/components/export/ExportSheet";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { PageContainer } from "@/components/layout/PageContainer";
 import { PhotoGrid } from "@/components/photos/PhotoGrid";
@@ -23,6 +24,7 @@ import { useVehicleDetail } from "@/hooks/use-vehicle-data";
 import { getAppServices, getBackendMode, getShotTemplate } from "@/lib/app-services";
 import { cn } from "@/lib/cn";
 import { toUserMessage } from "@/lib/errors";
+import { buildExportPlan } from "@/lib/export/listing-export";
 import { vehicleDisplayName } from "@/lib/format";
 import { failedUploadsText, summarizeFailedUploads } from "@/lib/offline/upload-status";
 import { buildPhotoSlots, type PhotoSlot } from "@/lib/photos/photo-slots";
@@ -57,10 +59,17 @@ export function VehicleDetailScreen({
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   // Only demo mode deletes vehicles (data on this device); the online database keeps them.
   const canDelete = getBackendMode() === "demo";
 
-  useLayoutEffect(() => () => setChosenVariant(null), []);
+  useLayoutEffect(
+    () => () => {
+      setChosenVariant(null);
+      setExportOpen(false);
+    },
+    [],
+  );
   // The route stays mounted while hidden: leaving it dismisses the question.
   useEffect(() => () => setConfirmDelete(false), []);
 
@@ -73,6 +82,15 @@ export function VehicleDetailScreen({
   const savedKeys = useMemo(() => new Set(photos.map((photo) => photo.shotKey)), [photos]);
   const progress = getShotProgress(template, savedKeys);
   const hasProcessed = photos.some((photo) => photo.urls.processed);
+  const vehicleForExport = state.status === "ready" ? state.vehicle : null;
+  /** "Alle Fotos speichern": the listing set in shot order (processed, else the original). */
+  const exportPlan = useMemo(
+    () =>
+      vehicleForExport
+        ? buildExportPlan({ template, vehicle: vehicleForExport, slots, checks })
+        : null,
+    [template, vehicleForExport, slots, checks],
+  );
 
   const cameraHref = `/fahrzeuge/${vehicleId}/kamera`;
   const reviewHref = `/fahrzeuge/${vehicleId}/fotos`;
@@ -136,6 +154,20 @@ export function VehicleDetailScreen({
   const failedText = failedUploadsText(failed);
   /** Processed versions the processor asks to check ("Bearbeitet" view). */
   const toCheck = allSlots.filter((slot) => processedNeedsCheck(slot, variant)).length;
+  /** The finished set can be saved for the listing once it is complete (or has results). */
+  const canExport = photos.length > 0 && (progress.isComplete || hasProcessed);
+  /** In the "Bearbeitet" view and for a processed vehicle, saving is THE next step. */
+  const exportFirst = canExport && (variant === "processed" || vehicle.status === "processed");
+  const exportButton = canExport && (
+    <Button
+      size="lg"
+      variant={exportFirst ? "primary" : "secondary"}
+      icon={<Download className="size-5" aria-hidden />}
+      onClick={() => setExportOpen(true)}
+    >
+      Alle Fotos speichern
+    </Button>
+  );
 
   return (
     <>
@@ -203,14 +235,20 @@ export function VehicleDetailScreen({
               />
             </div>
 
-            <div className="mt-4 grid gap-2 sm:flex">
+            <div className="mt-4 grid gap-2 sm:flex sm:flex-wrap">
+              {exportFirst && exportButton}
               {!progress.isComplete && (
                 <ButtonLink href={cameraHref} size="lg" icon={<Camera className="size-5" aria-hidden />}>
                   {progress.captured === 0 ? "Aufnahmen starten" : "Aufnahmen fortsetzen"}
                 </ButtonLink>
               )}
               {progress.isComplete && canProcessVehicle(vehicle.status) && (
-                <ButtonLink href={processHref} size="lg" icon={<Pencil className="size-5" aria-hidden />}>
+                <ButtonLink
+                  href={processHref}
+                  size="lg"
+                  variant={exportFirst ? "secondary" : "primary"}
+                  icon={<Pencil className="size-5" aria-hidden />}
+                >
                   Fotos bearbeiten
                 </ButtonLink>
               )}
@@ -224,6 +262,7 @@ export function VehicleDetailScreen({
                   Fotos überprüfen
                 </ButtonLink>
               )}
+              {!exportFirst && exportButton}
             </div>
           </div>
         </section>
@@ -336,7 +375,21 @@ export function VehicleDetailScreen({
         onDelete={handleDelete}
         onRetryUpload={(slot) => slot.pending && getAppServices().uploads.retry(slot.pending.id)}
         checks={checks}
+        exportVehicle={vehicle}
       />
+
+      {exportPlan && (
+        <ExportSheet
+          open={exportOpen}
+          vehicle={vehicle}
+          plan={exportPlan}
+          onClose={() => setExportOpen(false)}
+          onShowShot={(key) => {
+            setExportOpen(false);
+            setSelectedKey(key);
+          }}
+        />
+      )}
     </>
   );
 }

@@ -113,6 +113,7 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Shot completion / ordering / navigation (pure) | `src/lib/shots/shot-progress.ts` |
 | Vehicle validation & status rules (pure) | `src/lib/vehicles/` |
 | File & storage naming (`AE_{ref}_{nn}_{shot}.jpg`) | `src/lib/naming/file-naming.ts` |
+| Export "Alle Fotos speichern" (listing set + summary, share sheet in parts / ZIP, per-photo "Speichern"; unique "Interne Fahrzeugnummer") | `src/lib/export/` (`listing-export.ts`, `device-save.ts`, `zip.ts` store-only ZIP writer, `export-files.ts`), `src/components/export/`, `src/lib/vehicles/reference.ts`, `DataProvider.getPhotoFile` |
 | Backend contracts (`DataProvider`, `AuthService`) | `src/lib/data/types.ts` |
 | Demo mode (IndexedDB) | `src/lib/data/mock/` |
 | Supabase implementation | `src/lib/data/supabase/` |
@@ -125,7 +126,7 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Camera (stream, capture, picked-file check, quality-check interface) | `src/lib/camera/` (`photo-file.ts`: JPG/PNG/WebP/HEIC ≤ 50 MB), `src/components/camera/` |
 | Processing contract, config, presets, real processor, client, adapters | `src/lib/processing/` |
 | Processing runs (per vehicle, outside the screen), start blockers, processor hints | `src/lib/processing/processing-runs.ts`, `run-blockers.ts`, `processing-warnings.ts`, `src/components/processing/ProcessingWarningList.tsx` |
-| Instant per-photo check in the camera (auto-processing after a capture is saved, green/red shot segments; one job per photo shared with runs) | `src/lib/processing/photo-checks.ts`, `shot-check.ts`, `src/hooks/use-photo-checks.ts`, `src/components/camera/CheckBanner.tsx`, `AutoCheckInfo.tsx` |
+| Instant per-photo check in the camera (auto-processing after a capture is saved, green/red shot segments; one job per photo shared with runs; a rejection is kept with the photo for every device: `rejected:<code>` in `processing_warnings` while there is no result, `DataProvider.recordPhotoRejection`) | `src/lib/processing/photo-checks.ts`, `shot-check.ts`, `src/hooks/use-photo-checks.ts`, `src/components/camera/CheckBanner.tsx`, `AutoCheckInfo.tsx` |
 | "Neu aufnehmen" summaries (review header, completion question, list badge, Kamera tab) | `src/lib/processing/retake-summary.ts`, `src/hooks/use-retake-shots.ts` |
 | Processing connection wording (offline / Showroom-Rechner unreachable / not set up) | `src/lib/processing/processor-connection.ts` |
 | Data backend decision (`NEXT_PUBLIC_DATA_BACKEND`) | `src/lib/data/backend-mode.ts` |

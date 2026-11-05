@@ -61,7 +61,11 @@ function setup(mode: "demo" | "supabase", finalJob: ProcessingJob) {
     waitForProcessingJob: vi.fn(async () => finalJob),
     downloadProcessingResult: vi.fn(async () => result),
   };
-  const data = { saveProcessedPhoto: vi.fn(async () => PHOTO), recordProcessedPhoto: vi.fn(async () => undefined) };
+  const data = {
+    saveProcessedPhoto: vi.fn(async () => PHOTO),
+    recordProcessedPhoto: vi.fn(async () => undefined),
+    recordPhotoRejection: vi.fn(async (): Promise<void> => undefined),
+  };
   const deps: PhotoProcessingDeps = {
     mode,
     data,
@@ -111,9 +115,11 @@ describe("processPhoto – demo upload adapter", () => {
     );
     expect(ctx.api.downloadProcessingResult).not.toHaveBeenCalled();
     expect(ctx.data.saveProcessedPhoto).not.toHaveBeenCalled();
+    // No error code: nothing says a new photo fixes it – no rejection is kept.
+    expect(ctx.data.recordPhotoRejection).not.toHaveBeenCalled();
   });
 
-  it("passes the quality-gate code of a rejected photo on and saves nothing", async () => {
+  it("passes the quality-gate code of a rejected photo on and saves no result", async () => {
     const ctx = setup(
       "demo",
       job({
@@ -130,6 +136,40 @@ describe("processPhoto – demo upload adapter", () => {
     });
     expect(ctx.api.downloadProcessingResult).not.toHaveBeenCalled();
     expect(ctx.data.saveProcessedPhoto).not.toHaveBeenCalled();
+    // The rejection is kept with the photo for every device.
+    expect(ctx.data.recordPhotoRejection).toHaveBeenCalledWith({
+      photoId: "photo_1",
+      errorCode: "vehicle_too_small",
+      message: "Fahrzeug im Originalfoto zu klein. Bitte näher fotografieren.",
+    });
+  });
+
+  it("keeps a rejection without a text with the gate's own German message", async () => {
+    const ctx = setup("demo", job({ status: "failed", error: null, errorCode: "vehicle_cropped" }));
+    await expect(processPhoto(PHOTO, "autoexperten_standard", ctx.deps)).rejects.toBeInstanceOf(ProcessingJobFailedError);
+    expect(ctx.data.recordPhotoRejection).toHaveBeenCalledWith({
+      photoId: "photo_1",
+      errorCode: "vehicle_cropped",
+      message: "Das Fahrzeug ist im Foto angeschnitten. Bitte das ganze Fahrzeug mit etwas Abstand neu fotografieren.",
+    });
+  });
+
+  it("still reports the rejection when it cannot be kept (offline, migration missing)", async () => {
+    const ctx = setup(
+      "demo",
+      job({ status: "failed", error: "Fahrzeug im Originalfoto zu klein.", errorCode: "vehicle_too_small" }),
+    );
+    ctx.data.recordPhotoRejection.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await expect(processPhoto(PHOTO, "autoexperten_standard", ctx.deps)).rejects.toMatchObject({
+      errorCode: "vehicle_too_small",
+      message: "Fahrzeug im Originalfoto zu klein.",
+    });
+  });
+
+  it("keeps no rejection for failures a new photo does not fix", async () => {
+    const ctx = setup("demo", job({ status: "failed", error: "Zeitüberschreitung.", errorCode: "timeout" }));
+    await expect(processPhoto(PHOTO, "autoexperten_standard", ctx.deps)).rejects.toBeInstanceOf(ProcessingJobFailedError);
+    expect(ctx.data.recordPhotoRejection).not.toHaveBeenCalled();
   });
 
   it("refuses jobs without a file result", async () => {
@@ -177,6 +217,20 @@ describe("processPhoto – Supabase contract adapter", () => {
     const outcome = await processPhoto(PHOTO, "autoexperten_standard", ctx.deps);
     expect(outcome).toEqual({ warnings: [MIRRORED] });
     expect(ctx.data.recordProcessedPhoto).toHaveBeenCalledWith(expect.objectContaining({ warnings: [MIRRORED] }));
+  });
+
+  it("keeps a quality-gate rejection with the photo", async () => {
+    const ctx = setup(
+      "supabase",
+      job({ status: "failed", error: "Die Perspektive passt nicht zum Showroom.", errorCode: "perspective_mismatch" }),
+    );
+    await expect(processPhoto(PHOTO, "autoexperten_standard", ctx.deps)).rejects.toBeInstanceOf(ProcessingJobFailedError);
+    expect(ctx.data.recordPhotoRejection).toHaveBeenCalledWith({
+      photoId: "photo_1",
+      errorCode: "perspective_mismatch",
+      message: "Die Perspektive passt nicht zum Showroom.",
+    });
+    expect(ctx.data.recordProcessedPhoto).not.toHaveBeenCalled();
   });
 
   it("refuses file results (nothing stored on the server)", async () => {

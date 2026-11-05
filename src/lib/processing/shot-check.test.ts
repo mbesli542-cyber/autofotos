@@ -130,6 +130,22 @@ describe("getShotCheckState", () => {
     expect(getShotCheckState(slot(null), [], "on")).toEqual({ kind: "none" });
   });
 
+  it("shows a rejection kept with the photo on every device – also with the checks off", () => {
+    const rejected = photo("p1", undefined, { processingWarnings: [{ code: "rejected:vehicle_too_small", message: TOO_SMALL }] });
+    // Another device: no check of this photo at all.
+    expect(getShotCheckState(slot(rejected), [], "no_processor")).toEqual({ kind: "retake", reason: TOO_SMALL });
+    // A check that could not run does not hide it either.
+    expect(getShotCheckState(slot(rejected), [check("p1", { status: "error", message: "Offline" })], "on")).toEqual({
+      kind: "retake",
+      reason: TOO_SMALL,
+    });
+    // A newer check of this device wins (checked again right now, or passed).
+    expect(getShotCheckState(slot(rejected), [check("p1", { status: "checking" })], "on")).toEqual({ kind: "checking" });
+    // A retake saved meanwhile: the rejection of the photo it replaced no longer counts.
+    const newer = { photoId: "p2", takenAt: "2026-11-03T10:05:00.000Z" };
+    expect(getShotCheckState(slot(rejected), [], "on", newer)).toEqual({ kind: "none" });
+  });
+
   it("never shows the result of a replaced photo still on the list – also with the checks off", () => {
     const old = photo("p_old", "2026-11-03T10:00:00.000Z", {
       processedStoragePath: "x.jpg",

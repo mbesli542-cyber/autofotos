@@ -9,20 +9,30 @@
  */
 import type {
   DataProvider,
+  RecordPhotoRejectionInput,
   RecordProcessedPhotoInput,
   SavePhotoInput,
   SaveProcessedPhotoInput,
   UpdateVehicleOptions,
+  VehicleReference,
   VehicleWithPhotos,
 } from "@/lib/data/types";
 import type {
+  PhotoVersion,
   Vehicle,
   VehicleInput,
   VehiclePhoto,
   VehiclePhotoWithUrls,
   VehicleStatus,
 } from "@/lib/domain/types";
-import { AppError, VehicleChangedError, storageError } from "@/lib/errors";
+import {
+  AppError,
+  isNetworkError,
+  PHOTO_FILE_LOAD_FAILED_MESSAGE,
+  PHOTO_FILE_MISSING_MESSAGE,
+  storageError,
+  VehicleChangedError,
+} from "@/lib/errors";
 import { createId } from "@/lib/ids";
 import {
   buildOriginalStoragePath,
@@ -33,7 +43,11 @@ import {
 } from "@/lib/naming/file-naming";
 import { IdbDatabase } from "@/lib/offline/idb";
 import { isOlderThanSavedPhoto } from "@/lib/photos/capture-order";
-import { parseProcessingWarnings } from "@/lib/processing/processing-warnings";
+import {
+  parseProcessingWarnings,
+  rejectionWarning,
+  storedPhotoWarnings,
+} from "@/lib/processing/processing-warnings";
 import { CURRENT_DEMO_DATA_VERSION, DEMO_STORES, migrateDemoData, setDemoDataVersion } from "./migrations";
 import { buildSeedData, STATIC_PATH_PREFIX, unusedSampleVehicleIds, type StoredPhoto } from "./seed";
 
@@ -73,7 +87,7 @@ function stripArchived(photo: StoredPhoto): VehiclePhoto {
   delete rest.archivedAt;
   return {
     ...(rest as VehiclePhoto),
-    processingWarnings: photo.processedStoragePath ? parseProcessingWarnings(photo.processingWarnings) : [],
+    processingWarnings: storedPhotoWarnings(photo.processedStoragePath, photo.processingWarnings),
   };
 }
 
@@ -214,6 +228,14 @@ export class MockDataProvider implements DataProvider {
     await this.db.put(STORES.vehicles, { ...existing, status, updatedAt: laterTimestamp(existing.updatedAt) });
   }
 
+  async listVehicleReferences(): Promise<VehicleReference[]> {
+    await this.ensureReady();
+    const vehicles = await this.db.getAll<Vehicle>(STORES.vehicles);
+    return vehicles.flatMap((vehicle) =>
+      vehicle.internalReference ? [{ id: vehicle.id, internalReference: vehicle.internalReference }] : [],
+    );
+  }
+
   async listPhotos(vehicleId: string): Promise<VehiclePhoto[]> {
     await this.ensureReady();
     return (await this.activePhotos(vehicleId)).map(stripArchived);
@@ -244,6 +266,28 @@ export class MockDataProvider implements DataProvider {
         return { ...photo, urls: { original, thumbnail: thumbnail ?? original, processed } };
       }),
     );
+  }
+
+  async getPhotoFile(photo: VehiclePhoto, version: PhotoVersion): Promise<Blob> {
+    await this.ensureReady();
+    const path = version === "processed" ? photo.processedStoragePath : photo.originalStoragePath;
+    if (!path) throw new AppError("not_found", { userMessage: PHOTO_FILE_MISSING_MESSAGE });
+    if (path.startsWith(STATIC_PATH_PREFIX)) {
+      // Demo seed photos are files of the app itself (public/demo).
+      let response: Response;
+      try {
+        response = await fetch(path.slice(STATIC_PATH_PREFIX.length));
+      } catch (error) {
+        throw isNetworkError(error)
+          ? new AppError("network", { cause: error })
+          : new AppError("unknown", { userMessage: PHOTO_FILE_LOAD_FAILED_MESSAGE, cause: error });
+      }
+      if (!response.ok) throw new AppError("not_found", { userMessage: PHOTO_FILE_MISSING_MESSAGE });
+      return response.blob();
+    }
+    const file = await this.db.get<StoredFile>(STORES.files, path);
+    if (!file) throw new AppError("not_found", { userMessage: PHOTO_FILE_MISSING_MESSAGE });
+    return file.blob;
   }
 
   async savePhoto(input: SavePhotoInput): Promise<VehiclePhoto> {
@@ -377,6 +421,18 @@ export class MockDataProvider implements DataProvider {
       processingWarnings,
       updatedAt,
     }));
+    if (!stored) throw new AppError("not_found");
+  }
+
+  async recordPhotoRejection(input: RecordPhotoRejectionInput): Promise<void> {
+    await this.ensureReady();
+    const rejection = parseProcessingWarnings([rejectionWarning(input.errorCode, input.message)]);
+    // In one transaction: a result saved meanwhile is never marked as rejected.
+    const stored = await this.db.update<StoredPhoto>(STORES.photos, input.photoId, (current) =>
+      current.processedStoragePath
+        ? current
+        : { ...current, processingWarnings: rejection, updatedAt: new Date().toISOString() },
+    );
     if (!stored) throw new AppError("not_found");
   }
 }

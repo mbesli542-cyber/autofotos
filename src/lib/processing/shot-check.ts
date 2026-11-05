@@ -7,7 +7,8 @@
  * - checking: the shot's newest capture is being saved or checked
  * - ok:       its result is saved (`hint`: a processor hint asking to check it)
  * - retake:   the processor rejected it or its result says the photo is the
- *             problem (`reason`: the processor's German text)
+ *             problem (`reason`: the processor's German text) – also on
+ *             another device: a rejection is kept with the photo
  * - error:    it could not be checked (`reason`); "Fotos bearbeiten" processes it later
  *
  * A check always belongs to one photo: the result of a photo that a newer
@@ -19,7 +20,7 @@ import { isOlderCapture, isOlderThanSavedPhoto } from "@/lib/photos/capture-orde
 import type { PhotoSlot } from "@/lib/photos/photo-slots";
 import type { PhotoCheck, PhotoChecksSnapshot, SavedCapture } from "./photo-checks";
 import { PROCESSOR_UNREACHABLE_SENTENCE } from "./processor-connection";
-import { getWarningKind, warningsToCheck } from "./processing-warnings";
+import { getWarningKind, storedRejection, warningsToCheck } from "./processing-warnings";
 import { PROCESSING_NOT_CONNECTED_MESSAGE } from "./types";
 
 export type ShotCheckState =
@@ -101,17 +102,19 @@ export function getShotCheckState(
   // A newer capture is still being saved: it is checked next – the photo it replaces no longer counts.
   if (slot.pending) return slot.pending.status !== "failed" && checksOn ? CHECKING : NONE;
   const check = currentCheck(slot, vehicleChecks);
+  // What is saved with the photo: its result (with hints) or the processor's rejection.
+  const stored = slot.photo !== null && (slot.photo.processedStoragePath !== null || storedRejection(slot.photo) !== null);
   if (check) {
     const state = getPhotoCheckState(check, checksOn);
-    // A check that could not run: a result saved earlier for the photo still tells.
-    if (state.kind !== "error" || !slot.photo?.processedStoragePath || check.photoId !== slot.photo.id) return state;
+    // A check that could not run: what was saved earlier for the photo still tells.
+    if (state.kind !== "error" || !stored || check.photoId !== slot.photo?.id) return state;
   }
   const replaced =
     slot.photo !== null &&
     newestCapture !== undefined &&
     newestCapture.photoId !== slot.photo.id &&
     !isOlderThanSavedPhoto(newestCapture.takenAt, slot.photo);
-  if (slot.photo?.processedStoragePath && !replaced) return fromWarnings(slot.photo.processingWarnings);
+  if (slot.photo && stored && !replaced) return fromWarnings(slot.photo.processingWarnings);
   return NONE;
 }
 

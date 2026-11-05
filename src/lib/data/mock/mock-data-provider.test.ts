@@ -270,6 +270,77 @@ describe("MockDataProvider – the processor's hints on a processed version", ()
   });
 });
 
+describe("MockDataProvider.recordPhotoRejection – the processor's rejection kept with the photo", () => {
+  const REJECTION = {
+    errorCode: "vehicle_cropped",
+    message: "Das Fahrzeug ist im Foto angeschnitten. Bitte das ganze Fahrzeug mit etwas Abstand neu fotografieren.",
+  };
+  const STORED = { code: "rejected:vehicle_cropped", message: REJECTION.message };
+
+  async function setup() {
+    const db = createDemoDatabase(`test-${createId()}`);
+    const provider = new MockDataProvider(db);
+    const vehicle = await provider.createVehicle(NEW_VEHICLE);
+    const save = (photoId: string, takenAt: string) =>
+      provider.savePhoto({
+        photoId,
+        vehicleId: vehicle.id,
+        shotKey: "rear",
+        shotOrder: 7,
+        title: "Hinten",
+        file: new Blob([photoId], { type: "image/jpeg" }),
+        thumbnail: null,
+        width: 4000,
+        height: 3000,
+        takenAt,
+      });
+    const hints = () =>
+      provider.listPhotos(vehicle.id).then((photos) => photos.map((item) => [item.id, item.processingWarnings]));
+    return { db, provider, vehicle, save, hints };
+  }
+
+  it("keeps it with a photo without a result – read back by every later listing", async () => {
+    const { db, provider, save, hints } = await setup();
+    const photo = await save("first", "2026-10-28T10:00:00.000Z");
+    await provider.recordPhotoRejection({ photoId: photo.id, ...REJECTION });
+    expect(await hints()).toEqual([["first", [STORED]]]);
+    // A fresh provider on the same data (a reload) still knows it.
+    const reloaded = await new MockDataProvider(db).listPhotos(photo.vehicleId);
+    expect(reloaded[0]?.processingWarnings).toEqual([STORED]);
+    expect(reloaded[0]?.processedStoragePath).toBeNull();
+  });
+
+  it("is replaced by a later result and never marks a photo that has one", async () => {
+    const { provider, save, hints } = await setup();
+    const photo = await save("first", "2026-10-28T10:00:00.000Z");
+    await provider.recordPhotoRejection({ photoId: photo.id, ...REJECTION });
+    const result = new Blob(["showroom"], { type: "image/jpeg" });
+    await provider.saveProcessedPhoto({ photo, preset: "autoexperten_standard", file: result, warnings: [REMOVED] });
+    expect(await hints()).toEqual([["first", [REMOVED]]]);
+    // A late rejection (e.g. a second processing) leaves the saved result as it is.
+    await provider.recordPhotoRejection({ photoId: photo.id, ...REJECTION });
+    expect(await hints()).toEqual([["first", [REMOVED]]]);
+  });
+
+  it("a retake starts without it", async () => {
+    const { provider, save, hints } = await setup();
+    const photo = await save("first", "2026-10-28T10:00:00.000Z");
+    await provider.recordPhotoRejection({ photoId: photo.id, ...REJECTION });
+    await save("retake", "2026-10-28T10:05:00.000Z");
+    expect(await hints()).toEqual([["retake", []]]);
+  });
+
+  it("drops other hints left on a record without a result", async () => {
+    const { db, provider, save, hints } = await setup();
+    const photo = await save("first", "2026-10-28T10:00:00.000Z");
+    const record = await db.get<StoredPhoto>(DEMO_STORES.photos, photo.id);
+    if (!record) throw new Error("record missing");
+    await db.put(DEMO_STORES.photos, { ...record, processingWarnings: [REMOVED, STORED] });
+    expect(await hints()).toEqual([["first", [STORED]]]);
+    await provider.archivePhoto(photo.id);
+  });
+});
+
 describe("MockDataProvider.recordProcessedPhoto – the photo was archived meanwhile", () => {
   /**
    * A result arrives for "old" while a retake (or "Foto löschen") archives it.
@@ -552,5 +623,85 @@ describe("MockDataProvider – deleting data on this device", () => {
     expect(error).toBeInstanceOf(AppError);
     expect((error as AppError).code).toBe("storage_full");
     expect(toUserMessage(error)).toBe("Der Speicher auf diesem Gerät ist voll. Bitte bereits gespeicherte Fahrzeuge löschen.");
+  });
+});
+
+describe("MockDataProvider – files for 'Speichern' and the references", () => {
+  async function vehicleWithPhoto() {
+    const data = new MockDataProvider(createDemoDatabase(`test-${createId()}`));
+    const vehicle = await data.createVehicle({
+      manufacturer: "Audi",
+      model: "A6",
+      color: null,
+      licensePlate: null,
+      vin: null,
+      mileage: null,
+      firstRegistration: null,
+      internalReference: "FZ-7001",
+      notes: null,
+    });
+    const saved = await data.savePhoto({
+      photoId: createId(),
+      vehicleId: vehicle.id,
+      shotKey: "front",
+      shotOrder: 2,
+      title: "Vorne",
+      file: new Blob(["original-heic"], { type: "image/heic" }),
+      thumbnail: null,
+      width: 4000,
+      height: 3000,
+      takenAt: "2026-11-05T09:00:00.000Z",
+    });
+    return { data, vehicle, saved };
+  }
+
+  it("reads the original and the processed result from IndexedDB", async () => {
+    const { data, saved } = await vehicleWithPhoto();
+    const original = await data.getPhotoFile(saved, "original");
+    expect([await original.text(), original.type]).toEqual(["original-heic", "image/heic"]);
+
+    const processed = await data.saveProcessedPhoto({
+      photo: saved,
+      preset: "autoexperten_standard",
+      file: new Blob(["processed-jpeg"], { type: "image/jpeg" }),
+      warnings: [],
+    });
+    const result = await data.getPhotoFile(processed, "processed");
+    expect([await result.text(), result.type]).toEqual(["processed-jpeg", "image/jpeg"]);
+    // The original is untouched.
+    expect(await (await data.getPhotoFile(processed, "original")).text()).toBe("original-heic");
+  });
+
+  it("refuses a version the photo does not have, in German", async () => {
+    const { data, saved } = await vehicleWithPhoto();
+    const error = await data.getPhotoFile(saved, "processed").catch((reason: unknown) => reason);
+    expect(error).toMatchObject({ code: "not_found", message: "Diese Version des Fotos ist nicht mehr vorhanden." });
+  });
+
+  it("fetches the demo seed photos from the app's own files", async () => {
+    const data = new MockDataProvider(createDemoDatabase(`test-${createId()}`));
+    const seeded = (await data.listVehicles()).find((item) => item.photos.length === 15);
+    const seedPhoto = seeded?.photos.find((photo) => photo.shotKey === "front_left_45");
+    if (!seedPhoto) throw new Error("seed without photos");
+    const fetchMock = vi.fn(async () => new Response("<svg/>", { headers: { "content-type": "image/svg+xml" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const blob = await data.getPhotoFile(seedPhoto, "original");
+      expect(fetchMock).toHaveBeenCalledWith("/demo/shots/front_left_45.svg");
+      expect(await blob.text()).toBe("<svg/>");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("lists the vehicles that have an internal reference", async () => {
+    const { data, vehicle } = await vehicleWithPhoto();
+    const references = await data.listVehicleReferences();
+    expect(references).toContainEqual({ id: vehicle.id, internalReference: "FZ-7001" });
+    // The demo seed's numbers.
+    expect(references.map((entry) => entry.internalReference)).toEqual(
+      expect.arrayContaining(["FZ-2041", "FZ-2042", "FZ-2043"]),
+    );
+    expect(references.every((entry) => entry.internalReference)).toBe(true);
   });
 });
