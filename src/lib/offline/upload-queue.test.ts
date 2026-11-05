@@ -559,6 +559,43 @@ describe("UploadQueue.clear (demo reset)", () => {
   });
 });
 
+describe("UploadQueue.removeVehicle ('Fahrzeug löschen')", () => {
+  it("drops every waiting capture of the vehicle with its stored copy – the others stay", async () => {
+    const { vehicle, failures, save, capture } = await setup();
+    const db = createUploadQueueDatabase();
+    const queue = new UploadQueue(save, 480, db);
+    failures.push(new TypeError("Failed to fetch"), new TypeError("Failed to fetch"), new TypeError("Failed to fetch"));
+    await queue.enqueue(capture(T0, "rear"));
+    await queue.enqueue(capture(T1, "front"));
+    const other = await queue.enqueue({ ...capture(T1, "rear"), vehicleId: "another-vehicle" });
+    await flush();
+    expect(queue.getSnapshot().items).toHaveLength(3);
+
+    await queue.removeVehicle(vehicle.id);
+    expect(queue.getSnapshot().items.map((item) => item.id)).toEqual([other.id]);
+    expect(await persisted(db)).toEqual([other.id]);
+  });
+
+  it("resolves only once an upload of the vehicle in progress has ended", async () => {
+    const { capture } = await setup();
+    let finish: () => void = () => undefined;
+    const save = vi.fn<UploadProcessor>(() => new Promise<void>((resolve) => (finish = resolve)));
+    const queue = new UploadQueue(save, 480, createUploadQueueDatabase());
+    const item = await queue.enqueue(capture(T0));
+    await flush();
+    expect(queue.getSnapshot().items[0]?.status).toBe("uploading");
+
+    let removed = false;
+    const removing = queue.removeVehicle(item.vehicleId).then(() => (removed = true));
+    await flush();
+    expect(queue.getSnapshot().items).toEqual([]);
+    expect(removed).toBe(false);
+    finish();
+    await removing;
+    expect(removed).toBe(true);
+  });
+});
+
 describe("UploadQueue over plain HTTP (no crypto.randomUUID)", () => {
   it("queues a picked photo ('Foto hochladen')", async () => {
     const { capture, save } = await setup();

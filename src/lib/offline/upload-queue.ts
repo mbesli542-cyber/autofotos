@@ -111,6 +111,8 @@ export class UploadQueue {
   private readonly discarding = new Map<string, Promise<void>>();
   private running = false;
   private runPromise: Promise<void> = Promise.resolve();
+  /** The upload in progress (its vehicle; settles when it ended either way). */
+  private inFlight: { vehicleId: string; settled: Promise<void> } | null = null;
   private restorePromise: Promise<void> | null = null;
 
   constructor(
@@ -291,6 +293,21 @@ export class UploadQueue {
     await this.db.clear([STORE]);
   }
 
+  /**
+   * Removes every capture of a vehicle that is being deleted: records,
+   * previews and persisted copies. Resolves once an upload of that vehicle
+   * in progress has ended, so nothing of it is written afterwards.
+   */
+  async removeVehicle(vehicleId: string): Promise<void> {
+    // Captures left over from an earlier session are known once restored.
+    await this.restorePromise;
+    const records = [...this.records.values()].filter((record) => record.vehicleId === vehicleId);
+    const persisted = records.filter((record) => !this.unpersisted.has(record.id));
+    for (const record of records) this.forget(record.id);
+    await Promise.all(persisted.map((record) => this.db.delete(STORE, record.id)));
+    if (this.inFlight?.vehicleId === vehicleId) await this.inFlight.settled;
+  }
+
   /* ---------- internals ---------- */
 
   private toItem(record: PendingUploadRecord, status: UploadItemStatus): UploadItem {
@@ -369,7 +386,9 @@ export class UploadQueue {
             this.forget(record.id);
             continue;
           }
-          await this.processor(record, prepared);
+          const upload = this.processor(record, prepared);
+          this.inFlight = { vehicleId: record.vehicleId, settled: upload.then(() => undefined, () => undefined) };
+          await upload;
           const done = this.items.find((item) => item.id === record.id);
           // Listeners first – while the capture is still in the queue – so no screen
           // shows the shot without it in between (e.g. the replaced photo's check).

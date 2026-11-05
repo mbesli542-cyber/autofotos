@@ -1,8 +1,9 @@
 "use client";
 
-import { Building2, Globe, LogOut, Phone, RotateCcw, UserRound } from "lucide-react";
+import { Building2, Globe, HardDrive, LogOut, Phone, Trash2, UserRound } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
+import { ShootingTipsList } from "@/components/camera/ShootingTips";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { PageContainer } from "@/components/layout/PageContainer";
 import { Button } from "@/components/ui/Button";
@@ -13,7 +14,11 @@ import { useAuthState } from "@/hooks/use-auth";
 import { getAppServices, getBackendMode, getShotTemplate } from "@/lib/app-services";
 import { MockDataProvider } from "@/lib/data/mock/mock-data-provider";
 import { toUserMessage } from "@/lib/errors";
+import { formatStorageSize, requestPersistentStorage, storageUsageBytes } from "@/lib/offline/persistent-storage";
+import { photoChecks } from "@/lib/processing/photo-checks";
+import { processingRuns } from "@/lib/processing/processing-runs";
 import { getOrderedShots, SHOT_CATEGORY_LABELS } from "@/lib/shots/shot-template";
+import { DELETE_ALL_CONFIRMATION } from "@/lib/workflow/device-data";
 
 function Card({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -32,9 +37,23 @@ export function MoreScreen() {
   const template = getShotTemplate();
   const [confirmReset, setConfirmReset] = useState(false);
   const [resetting, setResetting] = useState(false);
+  /** Storage used on this device and whether the browser keeps it (demo mode; null: unknown). */
+  const [storage, setStorage] = useState<{ usage: number | null; persisted: boolean | null } | null>(null);
+  const [storageVersion, setStorageVersion] = useState(0);
 
   // The route stays mounted while hidden: leaving it dismisses the question.
   useEffect(() => () => setConfirmReset(false), []);
+
+  useEffect(() => {
+    if (!isDemo) return;
+    let active = true;
+    void Promise.all([storageUsageBytes(), requestPersistentStorage()]).then(([usage, persisted]) => {
+      if (active) setStorage({ usage, persisted });
+    });
+    return () => {
+      active = false;
+    };
+  }, [isDemo, storageVersion]);
 
   async function handleSignOut() {
     await getAppServices().authStore.signOut();
@@ -47,11 +66,14 @@ export function MoreScreen() {
     if (!(data instanceof MockDataProvider)) return;
     setResetting(true);
     try {
-      // Captures still waiting for their upload belong to the old demo data.
+      // Captures still waiting for their upload, checks and runs belong to the deleted data.
       await uploads.clear();
-      await data.resetDemoData();
-      toast.success("Demo-Daten wurden zurückgesetzt.");
+      processingRuns.clear();
+      photoChecks.stopAll();
+      await data.clearAllData();
+      toast.success("Alle Daten auf diesem Gerät wurden gelöscht.");
       setConfirmReset(false);
+      setStorageVersion((version) => version + 1);
     } catch (error) {
       toast.error(toUserMessage(error));
     } finally {
@@ -86,6 +108,10 @@ export function MoreScreen() {
           >
             Abmelden
           </Button>
+        </Card>
+
+        <Card title="Tipps für perfekte Fotos">
+          <ShootingTipsList />
         </Card>
 
         <Card title={`Fotostandard · ${template.name}`}>
@@ -124,18 +150,33 @@ export function MoreScreen() {
         </Card>
 
         {isDemo && (
-          <Card title="Demo-Modus">
+          <Card title="Daten auf diesem Gerät">
             <p className="text-sm text-ae-muted">
               Fahrzeuge und Fotos werden nur lokal in diesem Browser gespeichert.
+            </p>
+            {storage?.usage != null && (
+              <p className="mt-2 flex items-center gap-2 text-sm">
+                <HardDrive className="size-4 text-ae-muted" aria-hidden />
+                Belegt: {formatStorageSize(storage.usage)}
+              </p>
+            )}
+            {storage?.persisted === false && (
+              <p className="mt-2 text-xs text-ae-subtle">
+                Tipp: Fügen Sie die App zum Home-Bildschirm hinzu – dann löscht der Browser die Daten nicht von
+                selbst.
+              </p>
+            )}
+            <p className="mt-2 text-xs text-ae-subtle">
+              Einzelne Fahrzeuge löschen Sie auf der Fahrzeugseite unter „Fahrzeug löschen“.
             </p>
             <Button
               variant="danger"
               fullWidth
               className="mt-4"
               onClick={() => setConfirmReset(true)}
-              icon={<RotateCcw className="size-4" aria-hidden />}
+              icon={<Trash2 className="size-4" aria-hidden />}
             >
-              Demo-Daten zurücksetzen
+              Alle Daten auf diesem Gerät löschen
             </Button>
           </Card>
         )}
@@ -147,9 +188,10 @@ export function MoreScreen() {
 
       <ConfirmDialog
         open={confirmReset}
-        title="Demo-Daten zurücksetzen?"
-        description="Alle lokal erfassten Fahrzeuge und Fotos werden gelöscht und die Beispielfahrzeuge wiederhergestellt."
-        confirmLabel="Zurücksetzen"
+        title="Alle Daten auf diesem Gerät löschen?"
+        description="Alle Fahrzeuge, Fotos und bearbeiteten Ergebnisse auf diesem Gerät werden endgültig gelöscht. Das lässt sich nicht rückgängig machen."
+        confirmLabel="Alles löschen"
+        confirmText={DELETE_ALL_CONFIRMATION}
         busy={resetting}
         onConfirm={handleResetDemo}
         onCancel={() => setConfirmReset(false)}

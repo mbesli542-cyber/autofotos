@@ -1,30 +1,35 @@
 "use client";
 
-import { Camera, CloudOff, ImageOff, Images, Pencil, RotateCcw, TriangleAlert } from "lucide-react";
+import { Camera, CloudOff, ImageOff, Images, Pencil, RotateCcw, Trash2, TriangleAlert } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { PageContainer } from "@/components/layout/PageContainer";
 import { PhotoGrid } from "@/components/photos/PhotoGrid";
 import { PhotoVersionToggle } from "@/components/photos/PhotoVersionToggle";
 import { PhotoViewer } from "@/components/photos/PhotoViewer";
 import { processedNeedsCheck, type PhotoVariant } from "@/components/photos/ShotThumbnail";
-import { ButtonLink } from "@/components/ui/Button";
+import { Button, ButtonLink } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { PageLoading } from "@/components/ui/Spinner";
-import { StatusBadge } from "@/components/ui/StatusBadge";
+import { RetakeBadge, StatusBadge } from "@/components/ui/StatusBadge";
 import { useToast } from "@/components/ui/Toast";
 import { VehicleInfoCard } from "@/components/vehicles/VehicleInfoCard";
 import { useShotCheckStates } from "@/hooks/use-photo-checks";
 import { usePendingUploads } from "@/hooks/use-upload-queue";
 import { useVehicleDetail } from "@/hooks/use-vehicle-data";
-import { getAppServices, getShotTemplate } from "@/lib/app-services";
+import { getAppServices, getBackendMode, getShotTemplate } from "@/lib/app-services";
 import { cn } from "@/lib/cn";
+import { toUserMessage } from "@/lib/errors";
 import { vehicleDisplayName } from "@/lib/format";
 import { buildPhotoSlots, type PhotoSlot } from "@/lib/photos/photo-slots";
+import { processingRuns } from "@/lib/processing/processing-runs";
+import { retakeCountLabel } from "@/lib/processing/retake-summary";
 import { getShotProgress } from "@/lib/shots/shot-progress";
 import { canProcessVehicle } from "@/lib/vehicles/status";
+import { deleteVehicleFromDevice } from "@/lib/workflow/device-data";
 import { deletePhotoAndSyncStatus } from "@/lib/workflow/vehicle-workflow";
 import { useExtraPhotoRetake } from "@/features/review/use-extra-photo-retake";
 import { VehicleNotFound } from "./VehicleNotFound";
@@ -48,8 +53,14 @@ export function VehicleDetailScreen({
   const [chosenVariant, setChosenVariant] = useState<PhotoVariant | null>(null);
   const variant = chosenVariant ?? initialVariant;
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  // Only demo mode deletes vehicles (data on this device); the online database keeps them.
+  const canDelete = getBackendMode() === "demo";
 
   useLayoutEffect(() => () => setChosenVariant(null), []);
+  // The route stays mounted while hidden: leaving it dismisses the question.
+  useEffect(() => () => setConfirmDelete(false), []);
 
   const photos = useMemo(() => (state.status === "ready" ? state.photos : []), [state]);
   const slots = useMemo(() => buildPhotoSlots(template, photos, pending), [template, photos, pending]);
@@ -71,6 +82,22 @@ export function VehicleDetailScreen({
     await deletePhotoAndSyncStatus(getAppServices().backend.data, template, slot.photo);
     toast.success("Foto gelöscht.");
     reload();
+  }
+
+  /** "Fahrzeug löschen": the vehicle with its photos, results and waiting captures. */
+  async function handleDeleteVehicle() {
+    setDeleting(true);
+    try {
+      const { backend, uploads } = getAppServices();
+      await deleteVehicleFromDevice({ data: backend.data, uploads, runs: processingRuns }, vehicleId);
+      setConfirmDelete(false);
+      toast.success("Fahrzeug gelöscht.");
+      router.replace("/fahrzeuge");
+    } catch (error) {
+      toast.error(toUserMessage(error));
+    } finally {
+      setDeleting(false);
+    }
   }
 
   function handleRetake(slot: PhotoSlot) {
@@ -137,7 +164,10 @@ export function VehicleDetailScreen({
                 <Camera className="size-10" aria-hidden />
               </div>
             )}
-            <StatusBadge status={vehicle.status} onImage className="absolute top-3 left-3" />
+            <div className="absolute top-3 left-3 flex flex-wrap gap-1.5">
+              <StatusBadge status={vehicle.status} onImage />
+              {retakes.length > 0 && <RetakeBadge count={retakes.length} onImage />}
+            </div>
           </div>
           <div className="p-4">
             <h2 className="text-xl font-bold tracking-tight">{vehicleDisplayName(vehicle)}</h2>
@@ -151,15 +181,22 @@ export function VehicleDetailScreen({
                 <span className="font-semibold">
                   {progress.captured} / {progress.required} Fotos
                 </span>
-                <span className="text-ae-muted">
-                  {progress.isComplete ? "Alle Pflichtfotos vorhanden" : `Noch ${progress.remaining} Fotos`}
-                </span>
+                {retakes.length > 0 ? (
+                  <span className="font-semibold text-ae-danger">
+                    {progress.isComplete ? "" : `Noch ${progress.remaining} Fotos · `}
+                    {retakeCountLabel(retakes.length)}
+                  </span>
+                ) : (
+                  <span className="text-ae-muted">
+                    {progress.isComplete ? "Alle Pflichtfotos vorhanden" : `Noch ${progress.remaining} Fotos`}
+                  </span>
+                )}
               </div>
               <ProgressBar
                 value={progress.captured}
                 max={progress.required}
                 label="Fotofortschritt"
-                tone={progress.isComplete ? "success" : "blue"}
+                tone={retakes.length > 0 ? "danger" : progress.isComplete ? "success" : "blue"}
               />
             </div>
 
@@ -261,7 +298,28 @@ export function VehicleDetailScreen({
         </section>
 
         <VehicleInfoCard vehicle={vehicle} editHref={`/fahrzeuge/${vehicleId}/daten`} />
+
+        {canDelete && (
+          <Button
+            variant="ghost"
+            className="self-center text-ae-danger hover:text-ae-danger"
+            onClick={() => setConfirmDelete(true)}
+            icon={<Trash2 className="size-4" aria-hidden />}
+          >
+            Fahrzeug löschen
+          </Button>
+        )}
       </PageContainer>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Fahrzeug löschen?"
+        description={`${vehicleDisplayName(vehicle)} wird mit allen Fotos und bearbeiteten Ergebnissen von diesem Gerät gelöscht. Das lässt sich nicht rückgängig machen.`}
+        confirmLabel="Fahrzeug löschen"
+        busy={deleting}
+        onConfirm={() => void handleDeleteVehicle()}
+        onCancel={() => setConfirmDelete(false)}
+      />
 
       {extraRetake.input}
 

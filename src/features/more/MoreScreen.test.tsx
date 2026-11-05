@@ -29,13 +29,21 @@ function renderMore() {
   );
   const view = render(ui());
   const confirmDialog = () => document.querySelector<HTMLDialogElement>("dialog[aria-labelledby='confirm-title']");
-  const openReset = () => fireEvent.click(screen.getByRole("button", { name: /Demo-Daten zurücksetzen/ }));
-  const confirm = () => {
+  const openReset = () =>
+    fireEvent.click(screen.getByRole("button", { name: /Alle Daten auf diesem Gerät löschen/ }));
+  const dialogEl = () => {
     const dialog = confirmDialog();
     if (!dialog) throw new Error("confirm dialog missing");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Zurücksetzen" }));
+    return dialog;
   };
-  return { ...view, ui, confirmDialog, openReset, confirm };
+  const typeConfirmation = (text: string) =>
+    fireEvent.change(within(dialogEl()).getByLabelText(/Zum Bestätigen/), { target: { value: text } });
+  const confirmButton = () => within(dialogEl()).getByRole("button", { name: "Alles löschen" });
+  const confirm = () => {
+    typeConfirmation("LÖSCHEN");
+    fireEvent.click(confirmButton());
+  };
+  return { ...view, ui, confirmDialog, openReset, confirm, typeConfirmation, confirmButton };
 }
 
 function demoData(): MockDataProvider {
@@ -58,9 +66,27 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("<MoreScreen /> – 'Demo-Daten zurücksetzen'", () => {
-  it("shows a German error and keeps the dialog usable when the reset fails", async () => {
-    vi.spyOn(demoData(), "resetDemoData").mockRejectedValue(new DOMException("Quota", "QuotaExceededError"));
+describe("<MoreScreen /> – 'Alle Daten auf diesem Gerät löschen'", () => {
+  it("deletes only after LÖSCHEN was typed (any case), and an empty field again for the next question", async () => {
+    const clear = vi.spyOn(demoData(), "clearAllData");
+    const { openReset, typeConfirmation, confirmButton, confirmDialog } = renderMore();
+    openReset();
+    expect(confirmDialog()?.open).toBe(true);
+    expect(confirmButton()).toBeDisabled();
+    typeConfirmation("LÖSCH");
+    expect(confirmButton()).toBeDisabled();
+    typeConfirmation(" löschen ");
+    expect(confirmButton()).toBeEnabled();
+
+    fireEvent.click(within(confirmDialog() as HTMLDialogElement).getByRole("button", { name: "Abbrechen" }));
+    expect(clear).not.toHaveBeenCalled();
+    openReset();
+    expect(within(confirmDialog() as HTMLDialogElement).getByLabelText(/Zum Bestätigen/)).toHaveValue("");
+    expect(confirmButton()).toBeDisabled();
+  });
+
+  it("shows a German error and keeps the dialog usable when deleting fails", async () => {
+    vi.spyOn(demoData(), "clearAllData").mockRejectedValue(new DOMException("Blocked", "UnknownError"));
     const unhandled: unknown[] = [];
     const track = (reason: unknown) => unhandled.push(reason);
     process.on("unhandledRejection", track);
@@ -75,7 +101,7 @@ describe("<MoreScreen /> – 'Demo-Daten zurücksetzen'", () => {
       expect(confirmDialog()?.open).toBe(true);
       const dialog = confirmDialog();
       if (!dialog) throw new Error("confirm dialog missing");
-      expect(within(dialog).getByRole("button", { name: "Zurücksetzen" })).toBeEnabled();
+      expect(within(dialog).getByRole("button", { name: "Alles löschen" })).toBeEnabled();
     } finally {
       process.off("unhandledRejection", track);
     }
@@ -94,13 +120,13 @@ describe("<MoreScreen /> – 'Demo-Daten zurücksetzen'", () => {
     });
     await waitFor(() => expect(uploads.getSnapshot().items[0]?.status).toBe("failed"));
     const clear = vi.spyOn(uploads, "clear");
-    const reset = vi.spyOn(demoData(), "resetDemoData");
+    const reset = vi.spyOn(demoData(), "clearAllData");
 
     const { openReset, confirm, confirmDialog } = renderMore();
     openReset();
     await act(async () => confirm());
 
-    await waitFor(() => expect(screen.getByText("Demo-Daten wurden zurückgesetzt.")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Alle Daten auf diesem Gerät wurden gelöscht.")).toBeInTheDocument());
     expect(uploads.getSnapshot().items).toEqual([]);
     expect(clear).toHaveBeenCalledOnce();
     expect(clear.mock.invocationCallOrder[0]).toBeLessThan(reset.mock.invocationCallOrder[0] ?? 0);

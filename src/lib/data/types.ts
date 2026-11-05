@@ -88,6 +88,12 @@ export interface DataProvider {
    */
   updateVehicle(vehicleId: string, input: VehicleInput, options?: UpdateVehicleOptions): Promise<Vehicle>;
   setVehicleStatus(vehicleId: string, status: VehicleStatus): Promise<void>;
+  /**
+   * Deletes a vehicle with its photos and results for good – only where the
+   * backend allows it: demo mode (data on this device). The Supabase schema
+   * keeps vehicles and originals (no delete policy), so it has no such method.
+   */
+  deleteVehicle?(vehicleId: string): Promise<void>;
 
   /** Active photos of a vehicle (unsorted – sort with the shot template). */
   listPhotos(vehicleId: string): Promise<VehiclePhoto[]>;

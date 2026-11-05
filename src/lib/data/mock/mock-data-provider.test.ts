@@ -4,11 +4,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SavePhotoInput } from "@/lib/data/types";
 import type { ProcessingWarning, Vehicle } from "@/lib/domain/types";
-import { VehicleChangedError } from "@/lib/errors";
+import { AppError, VehicleChangedError, toUserMessage } from "@/lib/errors";
 import { createId } from "@/lib/ids";
 import { createDemoDatabase, MockDataProvider } from "./mock-data-provider";
 import { CURRENT_DEMO_DATA_VERSION, DEMO_STORES, getDemoDataVersion, migrateDemoData } from "./migrations";
-import type { StoredPhoto } from "./seed";
+import { buildSeedData, isSampleVehicleId, SAMPLE_VEHICLE_IDS, type StoredPhoto } from "./seed";
 
 const VEHICLE: Vehicle = {
   id: "veh-old",
@@ -394,5 +394,163 @@ describe("MockDataProvider over plain HTTP (no crypto.randomUUID)", () => {
     const vehicle = await provider.createVehicle(NEW_VEHICLE);
     expect(vehicle.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect((await provider.getVehicle(vehicle.id))?.model).toBe("Golf");
+  });
+});
+
+describe("MockDataProvider – sample vehicles only illustrate an empty app", () => {
+  const S63 = "5d0c6f1e-63a1-4c84-9a5f-0d5b3f2c6301";
+
+  it("shows the samples on a fresh device and removes them with the first real vehicle", async () => {
+    const provider = new MockDataProvider(createDemoDatabase(`test-${createId()}`));
+    const before = await provider.listVehicles();
+    expect(before.map((item) => item.vehicle.id).every(isSampleVehicleId)).toBe(true);
+    expect(before.length).toBe(SAMPLE_VEHICLE_IDS.size);
+
+    const vehicle = await provider.createVehicle(NEW_VEHICLE);
+    expect((await provider.listVehicles()).map((item) => item.vehicle.id)).toEqual([vehicle.id]);
+    expect(await provider.listPhotos(S63)).toEqual([]);
+  });
+
+  it("keeps a sample someone photographed (real work), drops the others", async () => {
+    const provider = new MockDataProvider(createDemoDatabase(`test-${createId()}`));
+    await provider.savePhoto({
+      photoId: createId(),
+      vehicleId: S63,
+      shotKey: "rear",
+      shotOrder: 7,
+      title: "Hinten",
+      file: new Blob(["jpeg"], { type: "image/jpeg" }),
+      thumbnail: null,
+      width: 4000,
+      height: 3000,
+      takenAt: new Date().toISOString(),
+    });
+    const vehicle = await provider.createVehicle(NEW_VEHICLE);
+    expect((await provider.listVehicles()).map((item) => item.vehicle.id).sort()).toEqual([S63, vehicle.id].sort());
+  });
+
+  it("removes them at the next start of a device that already has real vehicles (real data kept)", async () => {
+    const db = await legacyDatabase();
+    const { vehicles, photos } = buildSeedData();
+    await db.putMany(DEMO_STORES.vehicles, vehicles);
+    await db.putMany(DEMO_STORES.photos, photos);
+
+    const provider = new MockDataProvider(db);
+    const ids = (await provider.listVehicles()).map((item) => item.vehicle.id).sort();
+    expect(ids).toEqual(["veh-capturing", "veh-old"]);
+    expect(await db.get(DEMO_STORES.files, "vehicle-originals/veh-old/front_left_45/photo-old.jpg")).toBeDefined();
+  });
+});
+
+describe("MockDataProvider – deleting data on this device", () => {
+  async function vehicleWithFiles(provider: MockDataProvider) {
+    const vehicle = await provider.createVehicle(NEW_VEHICLE);
+    const save = (shotKey: string, takenAt: string) =>
+      provider.savePhoto({
+        photoId: createId(),
+        vehicleId: vehicle.id,
+        shotKey,
+        shotOrder: 1,
+        title: shotKey,
+        file: new Blob(["original"], { type: "image/jpeg" }),
+        thumbnail: new Blob(["thumb"], { type: "image/jpeg" }),
+        width: 4000,
+        height: 3000,
+        takenAt,
+      });
+    const first = await save("front_left_45", "2026-11-05T10:00:00.000Z");
+    await save("front_left_45", "2026-11-05T10:01:00.000Z"); // a retake: the first is archived
+    await provider.saveProcessedPhoto({
+      photo: first,
+      preset: "autoexperten_standard",
+      file: new Blob(["result"], { type: "image/jpeg" }),
+      warnings: [],
+    });
+    return vehicle;
+  }
+
+  it("'Fahrzeug löschen' removes the vehicle, every photo record and every file of it – nothing else", async () => {
+    const db = createDemoDatabase(`test-${createId()}`);
+    const provider = new MockDataProvider(db);
+    const doomed = await vehicleWithFiles(provider);
+    const kept = await vehicleWithFiles(provider);
+    const filesOf = async (vehicleId: string) =>
+      (await db.getAll<{ path: string }>(DEMO_STORES.files)).filter((file) => file.path.includes(`/${vehicleId}/`));
+    expect((await filesOf(doomed.id)).length).toBe(5); // 2 originals, 2 thumbnails, 1 result
+
+    await provider.deleteVehicle(doomed.id);
+
+    expect(await provider.getVehicle(doomed.id)).toBeNull();
+    expect(await db.getAllByIndex(DEMO_STORES.photos, "vehicleId", doomed.id)).toEqual([]);
+    expect(await filesOf(doomed.id)).toEqual([]);
+    expect(await provider.getVehicle(kept.id)).not.toBeNull();
+    expect((await filesOf(kept.id)).length).toBe(5);
+    expect((await db.getAllByIndex(DEMO_STORES.photos, "vehicleId", kept.id)).length).toBe(2);
+  });
+
+  it("a result arriving after its vehicle was deleted is not kept", async () => {
+    const db = createDemoDatabase(`test-${createId()}`);
+    const provider = new MockDataProvider(db);
+    const vehicle = await provider.createVehicle(NEW_VEHICLE);
+    const saved = await provider.savePhoto({
+      photoId: createId(),
+      vehicleId: vehicle.id,
+      shotKey: "front",
+      shotOrder: 2,
+      title: "Vorne",
+      file: new Blob(["original"], { type: "image/jpeg" }),
+      thumbnail: null,
+      width: 4000,
+      height: 3000,
+      takenAt: new Date().toISOString(),
+    });
+    await provider.deleteVehicle(vehicle.id);
+    await expect(
+      provider.saveProcessedPhoto({ photo: saved, preset: "autoexperten_standard", file: new Blob(["r"]), warnings: [] }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(await db.getAll(DEMO_STORES.files)).toEqual([]);
+  });
+
+  it("'Alle Daten löschen' removes everything; the sample vehicles do not come back", async () => {
+    const db = createDemoDatabase(`test-${createId()}`);
+    const provider = new MockDataProvider(db);
+    await vehicleWithFiles(provider);
+
+    await provider.clearAllData();
+
+    expect(await provider.listVehicles()).toEqual([]);
+    expect(await db.getAll(DEMO_STORES.files)).toEqual([]);
+    expect(await db.getAll(DEMO_STORES.photos)).toEqual([]);
+    // Also after the next app start.
+    expect(await new MockDataProvider(db).listVehicles()).toEqual([]);
+    expect(await getDemoDataVersion(db)).toBe(CURRENT_DEMO_DATA_VERSION);
+  });
+
+  it("reports a full device storage as 'Speicher voll' instead of 'erneut versuchen'", async () => {
+    const db = createDemoDatabase(`test-${createId()}`);
+    const provider = new MockDataProvider(db);
+    const vehicle = await provider.createVehicle(NEW_VEHICLE);
+    const put = db.put.bind(db);
+    vi.spyOn(db, "put").mockImplementation(async (store, value) => {
+      if (store === DEMO_STORES.files) throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+      return put(store, value);
+    });
+    const error = await provider
+      .savePhoto({
+        photoId: createId(),
+        vehicleId: vehicle.id,
+        shotKey: "front",
+        shotOrder: 2,
+        title: "Vorne",
+        file: new Blob(["original"], { type: "image/jpeg" }),
+        thumbnail: null,
+        width: 4000,
+        height: 3000,
+        takenAt: new Date().toISOString(),
+      })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AppError);
+    expect((error as AppError).code).toBe("storage_full");
+    expect(toUserMessage(error)).toBe("Der Speicher auf diesem Gerät ist voll. Bitte bereits gespeicherte Fahrzeuge löschen.");
   });
 });

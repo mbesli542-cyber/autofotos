@@ -22,7 +22,7 @@ import type {
   VehiclePhotoWithUrls,
   VehicleStatus,
 } from "@/lib/domain/types";
-import { AppError, VehicleChangedError } from "@/lib/errors";
+import { AppError, VehicleChangedError, storageError } from "@/lib/errors";
 import { createId } from "@/lib/ids";
 import {
   buildOriginalStoragePath,
@@ -34,8 +34,8 @@ import {
 import { IdbDatabase } from "@/lib/offline/idb";
 import { isOlderThanSavedPhoto } from "@/lib/photos/capture-order";
 import { parseProcessingWarnings } from "@/lib/processing/processing-warnings";
-import { DEMO_STORES, migrateDemoData } from "./migrations";
-import { buildSeedData, STATIC_PATH_PREFIX, type StoredPhoto } from "./seed";
+import { CURRENT_DEMO_DATA_VERSION, DEMO_STORES, migrateDemoData, setDemoDataVersion } from "./migrations";
+import { buildSeedData, STATIC_PATH_PREFIX, unusedSampleVehicleIds, type StoredPhoto } from "./seed";
 
 const STORES = DEMO_STORES;
 
@@ -85,17 +85,21 @@ export class MockDataProvider implements DataProvider {
 
   /**
    * Runs before any data is read or written: pending data migrations first
-   * (e.g. removing simulated processed versions), then the demo seed.
+   * (e.g. removing simulated processed versions), then the demo seed (the
+   * sample vehicles of an empty app, once per device) – and the samples go
+   * again as soon as a real vehicle exists.
    */
   private ensureReady(): Promise<void> {
     this.ready ??= (async () => {
       await migrateDemoData(this.db);
       const marker = await this.db.get<{ key: string }>(STORES.meta, "seeded");
-      if (marker) return;
-      const { vehicles, photos } = buildSeedData();
-      await this.db.putMany(STORES.vehicles, vehicles);
-      await this.db.putMany(STORES.photos, photos);
-      await this.db.put(STORES.meta, { key: "seeded", at: new Date().toISOString() });
+      if (!marker) {
+        const { vehicles, photos } = buildSeedData();
+        await this.db.putMany(STORES.vehicles, vehicles);
+        await this.db.putMany(STORES.photos, photos);
+        await this.db.put(STORES.meta, { key: "seeded", at: new Date().toISOString() });
+      }
+      await this.removeUnusedSamples();
     })().catch((error: unknown) => {
       this.ready = null; // retry on the next call
       throw error;
@@ -103,13 +107,53 @@ export class MockDataProvider implements DataProvider {
     return this.ready;
   }
 
-  /** Clears all demo data and restores the seed vehicles. */
-  async resetDemoData(): Promise<void> {
+  /** Removes the sample vehicles nobody worked on once a real vehicle exists (seed.ts). */
+  private async removeUnusedSamples(): Promise<void> {
+    const [vehicles, photos] = await Promise.all([
+      this.db.getAll<Vehicle>(STORES.vehicles),
+      this.db.getAll<StoredPhoto>(STORES.photos),
+    ]);
+    const unused = unusedSampleVehicleIds(vehicles, photos);
+    if (unused.length === 0) return;
+    // Their photos are drawn files of the app (static paths): there are no stored files to delete.
+    await this.db.deleteMany([
+      { store: STORES.vehicles, keys: unused },
+      ...unused.map((vehicleId) => ({ store: STORES.photos, index: { name: "vehicleId", value: vehicleId } })),
+    ]);
+  }
+
+  /**
+   * Deletes everything stored on this device – vehicles, photos, results –
+   * for good. The sample vehicles do not come back (an empty app).
+   */
+  async clearAllData(): Promise<void> {
     await this.db.clear([STORES.vehicles, STORES.photos, STORES.files, STORES.meta]);
     for (const url of this.objectUrls.values()) URL.revokeObjectURL(url);
     this.objectUrls.clear();
+    await setDemoDataVersion(this.db, CURRENT_DEMO_DATA_VERSION);
+    await this.db.put(STORES.meta, { key: "seeded", at: new Date().toISOString() });
     this.ready = null;
     await this.ensureReady();
+  }
+
+  /**
+   * Deletes a vehicle from this device for good: its record, every photo
+   * record (also archived ones) and every stored file of it – originals,
+   * thumbnails and processing results – in one transaction.
+   */
+  async deleteVehicle(vehicleId: string): Promise<void> {
+    await this.ensureReady();
+    const prefixes = Object.values(STORAGE_BUCKETS).map((bucket) => `${bucket}/${vehicleId}/`);
+    await this.db.deleteMany([
+      { store: STORES.vehicles, keys: [vehicleId] },
+      { store: STORES.photos, index: { name: "vehicleId", value: vehicleId } },
+      { store: STORES.files, keyPrefixes: prefixes },
+    ]);
+    for (const [path, url] of [...this.objectUrls]) {
+      if (!prefixes.some((prefix) => path.startsWith(prefix))) continue;
+      URL.revokeObjectURL(url);
+      this.objectUrls.delete(path);
+    }
   }
 
   private async activePhotos(vehicleId: string): Promise<StoredPhoto[]> {
@@ -149,6 +193,8 @@ export class MockDataProvider implements DataProvider {
       updatedAt: now,
     };
     await this.db.put(STORES.vehicles, vehicle);
+    // The first real vehicle: the samples nobody worked on are no longer needed.
+    await this.removeUnusedSamples();
     return vehicle;
   }
 
@@ -232,7 +278,7 @@ export class MockDataProvider implements DataProvider {
         await this.db.put<StoredFile>(STORES.files, { path: thumbnailPath, blob: input.thumbnail });
       }
     } catch (error) {
-      throw new AppError("storage", { cause: error });
+      throw storageError(error);
     }
 
     const now = new Date().toISOString();
@@ -292,14 +338,22 @@ export class MockDataProvider implements DataProvider {
     try {
       await this.db.put<StoredFile>(STORES.files, { path, blob: file });
     } catch (error) {
-      throw new AppError("storage", { cause: error });
+      throw storageError(error);
     }
     const cachedUrl = this.objectUrls.get(path);
     if (cachedUrl) {
       URL.revokeObjectURL(cachedUrl);
       this.objectUrls.delete(path);
     }
-    await this.recordProcessedPhoto({ photoId: photo.id, preset, processedStoragePath: path, warnings });
+    try {
+      await this.recordProcessedPhoto({ photoId: photo.id, preset, processedStoragePath: path, warnings });
+    } catch (error) {
+      // The photo is gone (its vehicle was deleted meanwhile): its result must not stay behind.
+      if (error instanceof AppError && error.code === "not_found") {
+        await this.db.delete(STORES.files, path).catch(() => undefined);
+      }
+      throw error;
+    }
     return {
       ...photo,
       processedStoragePath: path,
