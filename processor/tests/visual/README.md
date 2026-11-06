@@ -93,8 +93,10 @@ below are those of the zoom cut: the photos were not reachable (Wikimedia rate
 limit) on the day the SAM cut was added. Run the set with the SAM graphs built,
 look at every newly accepted case at 100 % (no piece of the other object left,
 no piece of the car cut, no halo) and update `expected` only where the result
-truly deserves it (`--no-sam2` gives the earlier behaviour). Run them with
-`--no-detector` to see the composite.
+truly deserves it (`--no-sam2` gives the earlier behaviour – it also switches
+the automatic glass masks of interior cases off; the runner's one `LockedSam2`
+serves both under the shared lock). Run them with `--no-detector` to see the
+composite.
 
 Case 11 is the other direction: BiRefNet's alpha at the black mirror on the
 right of the photo is ≈ 0.01 (the mirror stands in front of the dark car

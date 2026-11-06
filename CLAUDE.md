@@ -97,24 +97,49 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
   portrait/square photos and tells which mask regions are the vehicle, another
   object or a lost vehicle part – it never draws the cut line and never
   generates or changes a pixel. A lost part may only be taken from the
-  whole-frame BiRefNet pass, never drawn in. **Dealer decision (2026-11-06):**
-  on his lot other cars, vans and posts stand behind the photographed car and
-  touch its silhouette; SAM 2.1 (`processor/app/pipeline/sam2.py`, Apache-2.0,
-  graphs built from the pinned checkpoint, SHA-256) may draw the cut line in
-  **contested zones only** (`mask.sam_cut`): around a detector-verified
-  foreign region glued to the outline (the region grown by a few mask cells,
-  inside our alpha), prompted with "our car" (points in our car's eroded
-  detector-instance core near the contact + our car's box) and "not that"
-  (points in the foreign object's eroded instance core). SAM only TIGHTENS the
-  alpha inside that zone (never grows the vehicle), never thins thin parts
+  whole-frame BiRefNet pass, never drawn in.
+- **Dealer decisions (2026-11-06) – SAM 2.1 for two jobs, nothing else.**
+  SAM 2.1 (`processor/app/pipeline/sam2.py`, Apache-2.0, ONNX graphs BUILT from
+  the pinned checkpoint by `scripts/export_sam2.py` / the Docker stage
+  `sam2-export`, SHA-256 pinned) is ONE instance per process (`segmenter.sam2`,
+  attached by `create_segmenter`, loaded on first use, shared by both jobs;
+  `PROCESSOR_SAM2_ENABLED` auto/true/false governs both, `PROCESSOR_GLASS_MASKS`
+  sam2/none the glass provider only; `/health` `sam2`, `sam2Loaded`,
+  `sam2Error`, `glassMasks`). Like the detector it only READS the photo – it
+  never generates, moves or changes a pixel. (a) **Contested-zone cut**
+  (`mask.sam_cut`): on his lot other cars, vans and posts stand behind the
+  photographed car and touch its silhouette; SAM may draw the cut line in
+  **contested zones only** – around a detector-verified foreign region glued to
+  the outline (the region grown by a few mask cells, inside our alpha), prompted
+  with "our car" (points in our car's eroded detector-instance core near the
+  contact + our car's box) and "not that" (points in the foreign object's eroded
+  instance core, never inside our alpha outside the region). SAM only TIGHTENS
+  the alpha inside that zone (never grows the vehicle), never thins thin parts
   below the model alpha, the detector still never draws the line itself, and
   BiRefNet stays the matting model everywhere else. Every guard must hold
   (SAM's mask agrees with the BiRefNet alpha outside the zone, the foreign core
   is removed, 0 px of our car's core and of thin parts removed, cut confined to
-  the zone, cut line on a colour edge or SAM confident, at most 2 regions);
-  if one fails the photo keeps the existing German rejection. The zoom cut
-  (a second BiRefNet pass) stays as the second method and as the only one
-  without the SAM graphs.
+  the zone, no foreign object continuing beyond the zone, cut line on a colour
+  edge or SAM confident, at most 2 regions); if one fails the photo keeps the
+  existing German rejection. The zoom cut (a second BiRefNet pass) stays as the
+  second method and as the only one without the SAM graphs. (b) **Through-glass
+  showroom for interior shots** (`glass_backdrop.py`, preset `glassBackdrop`):
+  an interior photo stays exactly as photographed – dashboard, steering wheel,
+  mirrors (interior and exterior mirror glass are NEVER glass: what they reflect
+  stays), pillars, wipers, stickers, the glass's own reflections – and ONLY what
+  is seen through the see-through glass (windscreen, side windows) becomes a
+  defocused view of the shipped studio plate; side/rear panes never show the
+  lettering. The glass mask comes from the automatic SAM 2.1 provider
+  (`glass_mask.py`: evidence from seeds + the detector's cars outside, nothing
+  drawn; vetoed when a window stays unresolved) and passes a gate; when unsure
+  the photo stays the ORIGINAL with the hint `glass_backdrop_skipped` (an
+  "info" hint in the app – the original is a valid listing image), never a half
+  result. (c) **The shipped preset enables it**: `autoexperten-standard.json`
+  and the three variants set `glassBackdrop.enabled = true` for cockpit,
+  front_interior, driver_seat, rear_seats with `minGlassFraction` 0.1 (a narrow
+  windscreen strip of 6.9 % leaked onto a light-grey dash strip in his photos –
+  such a photo stays the original); the module default stays off, every field
+  is written out. Known limit: light-grey interior next to the glass.
 - **One fixed showroom, eight angle-specific plates: the dealer's own studio
   (processor/showroom3d/dealer_*.py).** The shipped plate set
   `public/presets/autoexperten-haendler/` is the dealer's own showroom image
@@ -199,9 +224,11 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Brand config / official logo | `src/config/brand.ts`, `src/components/brand/BrandLogo.tsx`, `public/brand/` |
 | Showroom preset, dealer studio plates, branding layer | `public/presets/` (README; `autoexperten-haendler/` = the shipped plate set + its README; `variants/` = the three shadow strengths), `processor/showroom3d/` (`dealer_*.py` + `render_dealer_passes.py` build the shipped set; `render_plates.py` = the earlier 3D room), `processor/app/showroom/` (`plates.py`, `wall_branding.py`, `branding.py`, `icons.py` Lucide ISC) |
 | Image processor (Python/FastAPI) | `processor/` (see `processor/README.md`) |
-| Processor pipeline steps | `processor/app/pipeline/` (decode, detection, segmentation, matting, mask, vehicle_geometry, placement, quality, light, grounding/shadow, reflection, composite, export; `room_depth.py` variant placement fit; `glass_backdrop.py` interior shots: the showroom ONLY through the see-through glass, interior untouched, preset `glassBackdrop` off by default, glass alpha from a pluggable `glass_masks` provider, gate → original + `glass_backdrop_skipped`; `detail_backdrop.py` EXPERIMENTAL detail-shot showroom backdrop, off by default; debug allow-list `debug.py`; `sam2.py` SAM 2.1 prompted segmentation – box/point prompts → mask logits, Apache-2.0, ONNX graphs BUILT by `scripts/export_sam2.py` and pinned by SHA-256 in `SAM2_REGISTRY`, it reads the photo and never changes a pixel; `glass_mask.py` the automatic glass-mask provider for `glass_backdrop.py` (`PROCESSOR_GLASS_MASKS=sam2`, default; `none`): seeds on a grid + the detector's cars outside → SAM view + objects inside it, interior-seed masks subtracted, mirror blobs cut out, panes sanity-checked – loaded lazily on the first interior photo whose preset enables `glassBackdrop`; light-grey interior next to the glass is its weak spot) |
-| Contested cut of a glued foreign object (SAM 2.1 first, zoom cut second; guards, diagnostics `findings[].verify.samCut`/`zoomCut`, `cutBy`; `segmenter.sam2` optional – off with a logged note without the graphs; `PROCESSOR_SAM2_ENABLED`; CLI/runner `--no-sam2`) | `processor/app/pipeline/mask.py` (`sam_cut`, `zoom_cut`, `CUT_METHODS`), `sam2.py` (`create_sam2_if_available`), `segmentation.py`, `app/config.py`, tests `processor/tests/test_sam_cut.py` |
-| Processor scripts | `processor/scripts/` (`download_models.py` – both models, SHA-256, verifies the built SAM 2.1 graphs; `export_sam2.py` – SAM 2.1 → ONNX in a separate pinned torch venv / Docker stage `sam2-export` (`--build-arg SAM2_MODEL=…`), `--verify` against PyTorch; `make_portrait_cases.py` – derived portrait test frames; `visual_regression.py`; `render_showroom_preview.py`) |
+| Processor pipeline steps | `processor/app/pipeline/` (decode, detection, segmentation, matting, mask, vehicle_geometry, placement, quality, light, grounding/shadow, reflection, composite, export; `room_depth.py` variant placement fit; `detail_backdrop.py` EXPERIMENTAL detail-shot showroom backdrop, off by default; debug allow-list `debug.py`) |
+| SAM 2.1 – ONE instance per process (`segmenter.sam2`, attached by `create_segmenter`, nothing loaded before first use; box/point prompts → mask logits, Apache-2.0, ONNX graphs BUILT by `scripts/export_sam2.py` and pinned by SHA-256 in `SAM2_REGISTRY`; `PROCESSOR_SAM2_ENABLED` auto/true/false governs both uses, a missing graph or a warm-up checksum refusal switches both off with a logged note; `/health` `sam2`, `sam2Loaded`, `sam2Error`, `glassMasks`; CLI/runner `--no-sam2`, runner `LockedSam2` covers encode/predict/decode) | `processor/app/pipeline/sam2.py` (`create_sam2_if_available`), `segmentation.py`, `app/config.py`, `app/main.py`, `scripts/visual_regression.py`; tests `processor/tests/test_sam2.py`, `test_sam2_wiring.py` |
+| Contested cut of a glued foreign object (SAM 2.1 first, zoom cut second; guards, diagnostics `findings[].verify.samCut`/`zoomCut`, `cutBy`) | `processor/app/pipeline/mask.py` (`sam_cut`, `zoom_cut`, `CUT_METHODS`), `detection.py` (`RegionCheck.other_mask`); tests `processor/tests/test_sam_cut.py` |
+| Through-glass showroom for interior shots (preset `glassBackdrop`, ON in the shipped preset and variants; glass alpha from a `glass_masks` provider, views forward/side/rear, gate → original + `glass_backdrop_skipped`, `shotKind` `interior_glass_backdrop`) and the automatic glass masks (`PROCESSOR_GLASS_MASKS=sam2`, default, `none`; `shared_glass_masks(segmenter)` reads `segmenter.sam2` + detector per call – `GlassMasksUnavailable` → `no_mask_provider`; seeds + the detector's cars outside → SAM view + objects inside it, mirror blobs cut out, panes sanity-checked, veto on an unresolved window; weak spot: light-grey interior next to the glass) | `processor/app/pipeline/glass_backdrop.py`, `glass_mask.py`, `app/main.py` (`create_glass_masks`, `glass_masks_state`), `app/jobs/manager.py`; tests `processor/tests/test_glass_backdrop.py`, `test_glass_mask.py` |
+| Processor scripts | `processor/scripts/` (`download_models.py` – both models, SHA-256; without names / `--all` also the CONFIGURED SAM 2.1 graphs, verified only (not built = reported, foreign = error); `export_sam2.py` – SAM 2.1 → ONNX in a separate pinned torch venv / the Docker stage `sam2-export` (default on, `--build-arg SAM2=off` opts out, `SAM2_MODEL=…` picks the model), `--verify` against PyTorch; `make_portrait_cases.py` – derived portrait test frames; `visual_regression.py`; `render_showroom_preview.py`) |
 | Dev test page (dev only) | `src/app/dev/processing-test`, `src/app/api/dev/`, `src/lib/dev-tools.ts` |
 
 Routes: `/login`, `/fahrzeuge`, `/fahrzeuge/neu`, `/fahrzeuge/[id]`,
@@ -241,8 +268,13 @@ dev only (404 in production unless `ENABLE_DEV_TOOLS=true`): `/dev/processing-te
 - Processor: settings come from env / `processor/.env` (`app/config.py`);
   `PROCESSOR_DEBUG=true` writes debug images (and serves `/docs`) – never on
   public instances. The processor does not run on Vercel (BiRefNet model
-  224 MB, ≈ 7 GB peak RAM per job; detector + 0.1–0.3 GB, ≈ 4–12 s; SAM 2.1
-  for the contested cut + ≈ 2–3.5 s per contested region, no higher peak). The
+  224 MB, ≈ 7 GB peak RAM per job; detector + 0.1–0.3 GB, ≈ 4–12 s; SAM 2.1 –
+  one lazy instance – + ≈ 2–3.5 s per contested region and ≈ 4–7 s per interior
+  glass photo (encoder + detector + 15–30 prompts), no higher peak: an interior
+  glass job followed by two contested exterior jobs in one process peaked at
+  7.1 GB). The Docker build builds the SAM 2.1 graphs by default
+  (`--build-arg SAM2=off` opts out and sets `PROCESSOR_SAM2_ENABLED=false`;
+  `PROCESSOR_GLASS_MASKS=none` switches only the glass provider off). The
   Docker image sets `PROCESSOR_REQUIRE_API_KEY=true` – no start without
   `PROCESSOR_API_KEY`; plain `uvicorn` works without a key. Publish it on
   `127.0.0.1` locally.

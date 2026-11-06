@@ -12,10 +12,13 @@ detector (`segmenter.detector`, an instance-segmentation model, see
 `detection.py`): BiRefNet cuts the outline, the detector says which part of it
 is the vehicle. Both are loaded by `warm_up` and reported by `loaded`; a
 missing or broken file of either is a `ModelUnavailableError`. It also carries
-SAM 2.1 for the contested cut (`segmenter.sam2`, see `sam2.py` and
-`mask.sam_cut`) when its built graphs exist – optional: `warm_up` only verifies
-their checksums, the sessions load with the first contested region; without
-the graphs `sam2` is None and a glued foreign object rejects the photo as before.
+the process's ONE SAM 2.1 (`segmenter.sam2`, see `sam2.py`: the contested cut
+`mask.sam_cut` and the automatic glass masks `glass_mask.shared_glass_masks`
+share it) when its built graphs exist and PROCESSOR_SAM2_ENABLED is not false –
+optional: `warm_up` only verifies their checksums, the sessions load with the
+first contested region or interior glass photo; without the graphs `sam2` is
+None, a glued foreign object rejects the photo as before and interior shots stay
+the original with a hint.
 
 `segment_vehicle` decides what BiRefNet sees: the whole frame, or – for tall
 (portrait or square) frames, where the car is only a thin band of the

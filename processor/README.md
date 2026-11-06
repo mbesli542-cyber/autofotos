@@ -42,28 +42,34 @@ quality gate with a German retake hint.
 | 11 Light wrap, premultiplied composite, JPEG export (4:3, 2400 × 1800 – preset `output.longEdgeMin` = `longEdgeMax` = 2400, the plates' resolution –, quality 92, sRGB, no EXIF/GPS; typically ≈ 0.75–1 MB) | `harmonize.py`, `composite.py`, `export.py` |
 
 Orchestration: `app/pipeline/pipeline.py` (`process_photo`). Interior shots
-(cockpit, seats, trunk, odometer …) are **not** composited – they are only
-re-encoded (orientation, sRGB, long edge scaled down to at most
-`output.longEdgeMax` = 2400 px, never up) because a showroom background makes
-no sense there.
+(cockpit, seats, trunk, odometer …) are **not** composited: the four glass shots
+get the showroom ONLY through their see-through glass (next paragraph – on in
+the shipped preset since 2026-11-06, the interior itself untouched), every other
+interior/detail shot is only re-encoded (orientation, sRGB, long edge scaled
+down to at most `output.longEdgeMax` = 2400 px, never up) because a showroom
+background makes no sense there.
 
-**Glass backdrop – the showroom THROUGH the glass of interior shots (off by
-default).** Dealer decision: an interior photo stays exactly as photographed –
+**Glass backdrop – the showroom THROUGH the glass of interior shots (ON in the
+shipped preset, dealer decision 2026-11-06).** An interior photo stays exactly as photographed –
 dashboard, steering wheel, mirror, pillars, wipers, stickers on the glass, the
 glass's own reflections – and ONLY what is seen through the see-through glass
 (windscreen, side windows: car park, other cars, buildings) is replaced by a
 defocused view of the shipped studio plate, like a car standing inside the
-showroom. Preset section `glassBackdrop` (`enabled: false`; `shots` ⊆
-`cockpit`, `front_interior`, `driver_seat`, `rear_seats`; every field written
-out when the section is set): `app/pipeline/glass_backdrop.py`. The glass alpha
+showroom. Preset section `glassBackdrop` (`enabled: true` with all four shots
+`cockpit`, `front_interior`, `driver_seat`, `rear_seats` in the shipped preset
+and its variants – the module default is off, a preset without the section is
+unchanged; every field written out when the section is set):
+`app/pipeline/glass_backdrop.py`. The glass alpha
 (1 = see-through glass) comes from a **pluggable mask provider** the caller
 injects – `process_photo(..., glass_masks=)`, `JobManager(glass_masks=)`: a
 callable `(rgb, shot_key) -> GlassMask | None` (`GlassMask.alpha` H×W float32,
 optional `panes` with their own view; without panes the mask's connected
 components are the panes); shipped: `file_glass_masks(path)` – a
-grey PNG next to the photo (CLI `--glass-mask`, default `<photo>-glass.png`) –,
-a prompted segmentation model is the next provider. Without a provider those
-shots stay the original with the hint. Each pane gets a plate view by shot and
+grey PNG next to the photo (CLI `--glass-mask`, default `<photo>-glass.png`) –
+and, in the service, the automatic SAM 2.1 provider (`shared_glass_masks`, next
+paragraph). Without a provider, or while the provider has no SAM 2.1 to look
+with (`GlassMasksUnavailable`: off, graphs not built, refused at warm-up),
+those shots stay the original with the hint (`no_mask_provider`). Each pane gets a plate view by shot and
 position (`view_for_pane`): `forward` (cockpit/front_interior: the brand wall
 ahead, the official logo in view – the only view that may show the
 lettering), `side` (driver_seat/rear_seats side windows: the slat panel and
@@ -93,10 +99,13 @@ mirror and trim are not – measured on the dealer's ID.5 photos: correct masks
 photo is rejected too, rightly), `branding_in_view` (`assess_crop`: a side/rear
 crop grown by 3 blur sigmas would overlap a branding box of the plate –
 letter fragments never appear by accident), `no_mask_provider`, `mask_invalid`,
-`showroom_unavailable`. Switched on by the preset only (shipped `enabled:
-false`); the mask comes from the automatic SAM 2.1 provider (next paragraph,
-`PROCESSOR_GLASS_MASKS=sam2`, the default) or a hand-made PNG beside the photo
-(CLI). Metadata: `shotKind` `interior_glass_backdrop` /
+`showroom_unavailable`. Switched on by the preset (shipped `enabled: true`,
+`minGlassFraction` 0.1 – the dealer's narrow windscreen strip of 6.9 % of the
+frame leaked onto a light-grey dash strip and now stays the original; every
+other gate value is the code default); the mask comes from the automatic
+SAM 2.1 provider (next paragraph, `PROCESSOR_GLASS_MASKS=sam2`, the default)
+or a hand-made PNG beside the photo (CLI). The app shows the hint as
+information (the original is a valid listing image), never as a check. Metadata: `shotKind` `interior_glass_backdrop` /
 `interior_passthrough`, `glassBackdrop` (gate, maskSource, panes with crop /
 light / grain, timings); debug `mask.png` (glass alpha), `geometry.jpg`
 (region + gate), `background.jpg` (the backdrop), `final.jpg`. Tests:
@@ -105,8 +114,13 @@ light / grain, timings); debug `mask.png` (glass alpha), `geometry.jpg`
 **Automatic glass masks – SAM 2.1 (`app/pipeline/glass_mask.py`,
 `PROCESSOR_GLASS_MASKS=sam2`, default; `none` = no provider).** The
 `GlassMaskProvider` of the glass backdrop; `create_app` / the CLI (without a
-mask PNG) wire it with the segmenter's vehicle detector. Lazy: the SAM 2.1
-graphs load on the first interior photo whose preset enables the backdrop,
+mask PNG) / the regression runner wire it as `shared_glass_masks(segmenter)`:
+on every call it reads the process's ONE SAM 2.1 instance (`segmenter.sam2`,
+the same the contested cut uses) and the segmenter's vehicle detector – while
+`segmenter.sam2` is None (PROCESSOR_SAM2_ENABLED=false, graphs not built,
+refused at warm-up) it raises `GlassMasksUnavailable` and the shot stays the
+original with `no_mask_provider`. Lazy: the SAM 2.1 graphs load on the first
+photo that needs them (an interior glass photo or a contested exterior region),
 never earlier. SAM 2.1 does not know "the view through the windscreen" as one
 object (a point gives the car / sky / building behind the glass, a box a patchy
 background without them), so the mask is built from evidence, nothing is drawn:
@@ -160,13 +174,20 @@ detected car) and vetoes the photo; door + seat (no glass): `None`. Probes:
 the flipped cockpit passes with the fence at one edge missing (seed
 placement), the flipped driver's seat, a crop that cuts the windscreen away
 around a car ("just a car") and darkened "night" copies (no bright seed) give
-`None`. So two of the four glass photos get the showroom, the others stay the
-original with the hint – the rules prefer nothing to a half result. Limits
+`None`. With the shipped gate (`minGlassFraction` 0.1) one of the four glass
+photos gets the showroom (the cockpit, glass 22 % of the frame – checked at
+100 % after the integration: dash, mirror and pillars untouched, 314 px with a
+difference > 10 outside the mask, JPEG ringing at the rim; a thin band of the
+original stays along the lower windscreen edge above the dash, the sticker on
+the glass is mostly covered, the small left pane keeps a faint ghost of the
+car outside); the windscreen strip of the front interior (6.9 %) stays the
+original with `glass_too_small`, the two vetoed photos with `no_glass`, the
+door photo is no glass shot – the rules prefer nothing to a half result. Limits
 to know: light-grey interior next to the glass (dash top, door panel, A-pillar
 lit by the window) is the one thing neither SAM nor the gate separates from
 daylight through glass – the gate's `interiorStructure` only sees dark
-interior; a pane may be partial (the dealer checks the result like any other
-"check" hint). Tests: `tests/test_glass_mask.py` (synthetic cockpit with a fake
+interior; a pane may be partial, a sticker on the glass is covered. The
+skipped hint is information in the app, not a check. Tests: `tests/test_glass_mask.py` (synthetic cockpit with a fake
 prompted segmenter, mirror rule, bump trim, detector seeds, wiring; the real
 graphs when built).
 
@@ -444,22 +465,29 @@ Docker below).
 To add another backend implement `VehicleSegmenter` and register it in
 `create_segmenter()` (it also attaches the detector, `segmenter.detector`).
 
-**Prompted segmentation – SAM 2.1 (the contested cut).** Separating OUR car
-from a car, van or post that touches it (step 4 above, `mask.sam_cut` – the
-dealer's decision of 2026-11-06) needs a model that answers "which pixels belong
-to the object at this box / these points"; a second planned use is the window
-glass of cockpit photos. That is Meta's Segment Anything 2.1, run like the
+**Prompted segmentation – SAM 2.1 (the contested cut and the automatic glass
+masks; ONE instance per process).** Separating OUR car from a car, van or post
+that touches it (step 4 above, `mask.sam_cut` – the dealer's decision of
+2026-11-06) needs a model that answers "which pixels belong to the object at
+this box / these points"; the second use is the glass of interior photos
+(`glass_mask.py`, above). That is Meta's Segment Anything 2.1, run like the
 other models with ONNX Runtime on the CPU (`app/pipeline/sam2.py`). Like the
 detector it only READS the photo: it never generates, moves or changes a pixel,
 BiRefNet stays the matting model everywhere outside the contested zone, and the
-cut only ever lowers alpha. It is optional: `create_segmenter` attaches it
-(`segmenter.sam2`) when both built graphs exist in the models folder
-(`PROCESSOR_SAM2_ENABLED`: unset = on when they exist, `true` = on and a
-missing graph logs a WARNING, `false` = off); without it a glued foreign object
-rejects the photo as before. The warm-up only verifies the checksums (a foreign
-file is refused loudly, `/health` `sam2Error`, and the cut is off); the
-sessions load with the first contested region – a job without one never loads
-them (`/health` `sam2`, `sam2Loaded`).
+cut only ever lowers alpha. It is optional and there is exactly one of it:
+`create_segmenter` attaches it (`segmenter.sam2`) when both built graphs exist
+in the models folder (`PROCESSOR_SAM2_ENABLED`: unset = on when they exist,
+`true` = on and a missing graph logs a WARNING, `false` = off – the Docker
+image sets it from its build-arg `SAM2`), and the glass provider reads that
+same instance per call (`shared_glass_masks`; `PROCESSOR_GLASS_MASKS=none`
+switches only the provider off); without it a glued foreign object rejects the
+photo as before and interior shots stay the original with a hint. The warm-up
+only verifies the checksums (a foreign file is refused loudly, `/health`
+`sam2Error`, and both uses are off); the sessions load with the first
+contested region or interior glass photo – a job that needs neither never
+loads them (`/health` `sam2`, `sam2Loaded`, `glassMasks`: "sam2" while the
+provider can run, null while it waits for a SAM 2.1 that is off/not built/
+refused, "none" when switched off).
 
 | | |
 | --- | --- |
@@ -485,6 +513,7 @@ photos; one process per row, peak = `ru_maxrss`):**
 | BiRefNet (+ detector) alone, one segmentation | 4.7 s | 13.6 s | – | 6.9 GB (0.6–1.0 GB resident after the run) |
 | BiRefNet segmentation, then SAM 2.1 in the SAME process (BiRefNet session kept) | 5.0 s + 1.3 s | 1.8–2.4 s | 27 ms / 95 ms | **6.9 GB** – no higher than BiRefNet alone |
 | the same with the BiRefNet session dropped before SAM 2.1 | 5.2 s + 1.2 s | 2.0–2.6 s | 28 ms / 115 ms | 6.9 GB (0.6 GB resident before SAM 2.1) |
+| ONE process, three real dealer photos in a row (integration check 2026-11-06, graphs loaded once): cockpit interior glass job (SAM encode 3.7 s + detector 1.2 s + 26 prompts ≈ 2 s, 14.8 s in all incl. the 2.4 s composite) → two exterior lot photos (2000 × 1125 chat copies) each with one contested region cut by SAM (35.7 s and 24.4 s in all, BiRefNet 11–22 s of it) | 1.1 s | 1.9 s per contested tile | 42–66 ms | **7.1 GB** peak over the three jobs (1.4 GB after the interior job alone) – BiRefNet's peak, no higher |
 | the contested cut inside an exterior job (two grey VW cut-outs touching, 2400 × 1800, one region, verification tile 883–935 px; measured 2026-11-06) | 1.1–1.3 s | 3.3–3.7 s (1.6–2.1 s for the same tile alone; 5.5–5.8 s with other work on the machine) | 47–160 ms incl. the resampling of 3 masks to the tile | **6.75–7.3 GB** – BiRefNet's peak, no higher; the job 36.7 s in all (BiRefNet 17.8 s, mask step 8.2 s incl. SAM 3.4 s and the detector's verification, light 3.0 s, grounding 3.0 s) |
 
 So SAM 2.1 fits in the same process after BiRefNet without sequential loading:
@@ -1143,22 +1172,34 @@ tried when SAM fails and the methods run in the configured order; a SAM that
 cannot run is logged and the photo judged as without it; the wiring: graphs
 present/absent/foreign, `PROCESSOR_SAM2_ENABLED`, warm-up, `/health`, the
 per-window embedding cache; one integration test cuts a second synthetic car
-with the built graphs and is skipped without them) and the Supabase store (HTTP
-mocked). Tests use small synthetic plate sets with exact geometry
+with the built graphs and is skipped without them), the one-instance wiring
+(`tests/test_sam2_wiring.py`: the glass provider reads `segmenter.sam2`,
+nothing loads before first use, SAM off / not built / refused at warm-up
+switches both uses off, `/health` `sam2` + `glassMasks` consistent, the
+regression runner's `LockedSam2` locks encode/predict/decode and feeds the
+provider; `download_models.py` tolerates unbuilt graphs but never foreign
+ones) and the Supabase store (HTTP mocked). Tests use small synthetic plate sets with exact geometry
 (`tests/plate_fixtures.py`), synthetic vehicles and a fake segmenter – no
 model download needed; one smoke test runs against the real plate set when it
 exists.
 
 ## Known limitations
 
-- **Windows:** outdoor scenery seen through the glass or reflected in it
-  (trees, sky, snow, other cars) stays. It cannot be removed reliably without
-  changing factual vehicle content: a tested glass treatment greyed a police
-  livery stripe, a roof light-bar lens and a green emission sticker and
-  darkened a dashboard, for a barely visible benefit, and was removed. A
-  reliable solution would need a discriminative glass/car-parts segmentation
-  model; separating the interior from the see-through scenery would remain
-  unsolved even then.
+- **Windows (exterior shots):** outdoor scenery seen through the glass or
+  reflected in it (trees, sky, snow, other cars) stays. It cannot be removed
+  reliably without changing factual vehicle content: a tested glass treatment
+  greyed a police livery stripe, a roof light-bar lens and a green emission
+  sticker and darkened a dashboard, for a barely visible benefit, and was
+  removed.
+- **Windows (interior shots, since 2026-11-06):** the view THROUGH the glass is
+  replaced only where the SAM 2.1 glass mask is safe (Glass backdrop above);
+  light-grey interior next to the glass (dash top, door panel, lit A-pillar) is
+  the known weak spot, a sticker on the glass is covered, a thin band of the
+  original can stay along the lower windscreen edge, a small pane keeps a faint
+  ghost of the outside (`glassKeep` 0.05), and a photo with an unresolved
+  window, a narrow strip (< 10 % of the frame), an open door with the dash
+  reflected in the windscreen or night light stays the original with the hint.
+  Mirror glass is never treated.
 - **Lighting:** harmonisation is limited to the conservative, guarded
   exposure/white-balance correction (`light.py`, `HARD_LIMITS` + colour guard),
   or – the dealer's decision, `vehicleAdjustments.studioLight` – the guarded

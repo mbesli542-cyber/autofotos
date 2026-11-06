@@ -1,15 +1,17 @@
 """Prompted segmentation with Segment Anything 2.1 (SAM 2.1) through ONNX Runtime (CPU).
 
-Used by the contested cut (``mask.sam_cut``, the dealer's decision of 2026-11-06):
-inside the contested zone around a detector-verified foreign object glued to the
-outline, SAM 2.1 – prompted with "our car" and "not that" – draws the cut line that
-BiRefNet and the detector cannot. A second planned use is the window glass of
-cockpit photos. Like the detector (``detection.py``) SAM 2.1 only READS the photo:
+Used for two jobs (the dealer's decisions of 2026-11-06): the contested cut
+(``mask.sam_cut`` – inside the contested zone around a detector-verified foreign
+object glued to the outline, SAM 2.1, prompted with "our car" and "not that", draws
+the cut line that BiRefNet and the detector cannot) and the automatic glass masks
+of interior shots (``glass_mask.py`` – the see-through glass behind which the
+showroom appears). Like the detector (``detection.py``) SAM 2.1 only READS the photo:
 it answers "which pixels belong to the object at this box / these points"; it never
 generates, moves or changes a pixel. BiRefNet stays the matting model everywhere
-else, and the cut only ever lowers alpha. The segmenter is created by
-``create_sam2_if_available`` (``segmenter.sam2``) and loads its sessions on first
-use – a job without a contested region never loads them.
+else, and the cut only ever lowers alpha. There is ONE segmenter per process,
+created by ``create_sam2_if_available`` (``segmenter.sam2``, shared by both jobs
+through ``glass_mask.shared_glass_masks``); it loads its sessions on first use – a
+job that needs neither a contested cut nor a glass mask never loads them.
 
 **Model.** Meta's SAM 2.1 ``facebook/sam2.1-hiera-small`` (code and weights
 Apache-2.0, see ``SAM2_REGISTRY``), exported to two ONNX graphs by

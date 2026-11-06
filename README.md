@@ -619,6 +619,23 @@ scratches, damage, wear and the interior must stay truthful. Only the
 surroundings change. Original photos are never modified – results are
 separate files.
 
+**What changed for employees on 2026-11-06 (dealer decisions).** *Interior
+photos* (Cockpit, Innenraum vorne, Fahrersitz, Fond): the interior stays exactly
+as photographed – only what is seen through the windscreen and the side windows
+(car park, other cars, buildings) becomes a soft view of the AutoExperten
+showroom; mirrors and stickers stay as they are. When the processor cannot find
+the glass safely (a narrow windscreen strip, an open door with the dash
+reflected in the glass, night light) the photo is saved unchanged with the note
+"Innenraumfoto: … – Außenansicht nicht ersetzt." – that is information, not a
+request to check or retake: the original is a valid listing photo. *Photos on
+the lot*: a car, van or post standing right behind the vehicle and touching its
+outline no longer rejects the photo automatically – the processor separates the
+neighbour from our car when it can do so safely (nothing of our car is cut,
+no piece of the other car stays); when it cannot, the photo is rejected as
+before with "Ein anderes Objekt … berührt die Fahrzeugkontur" and the shot is
+retaken with free background behind the car. Nothing is drawn or generated;
+the vehicle pixels are the original ones.
+
 ### Configuration
 
 Two independent decisions (pure helpers in `src/lib`):
