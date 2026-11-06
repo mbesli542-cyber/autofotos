@@ -202,6 +202,17 @@ def test_detector_seeds_come_from_cars_outside_only():
     assert result.mask is not None and _iou(result.mask.alpha >= 0.5, truth) > 0.9
 
 
+def test_a_pane_that_is_just_a_detected_car_is_no_pane():
+    """A crop that cuts the window away around a car: SAM's object is the car, the gate would pass
+    (bright, no dark structure) – the pane's box matches the car's box, so it is dropped."""
+    rgb, objects, _ = make_scene()
+    objects = {name: mask for name, mask in objects.items() if name in ("car", "dash", "console")}
+    detector = FakeDetector([_instance("car", 0.9, CAR)])
+    result = gm.find_glass(FakeSam(objects), rgb, "cockpit", gm.GlassMaskConfig(min_inner_pane=0.0), detector)
+    assert result.mask is None
+    assert any(p["verdict"] == "just_a_car" for p in result.panes)
+
+
 def test_a_pane_that_covers_only_part_of_a_car_is_incomplete():
     rgb, objects, _ = make_scene()
     # SAM's objects end at a diagonal: the right part of the pane is never found
@@ -212,6 +223,21 @@ def test_a_pane_that_covers_only_part_of_a_car_is_incomplete():
     result = gm.find_glass(FakeSam(objects), rgb, "cockpit", gm.GlassMaskConfig(), detector)
     assert result.mask is None
     assert any(p["verdict"] == "incomplete" for p in result.panes)
+
+
+def test_a_second_bright_window_the_search_cannot_resolve_vetoes_the_photo():
+    """One window in the showroom and the next still in the car park would be a bad result: a bright
+    region at the top that is no pane makes the provider return nothing."""
+    rgb, objects, _ = make_scene()
+    rgb[0:360, 1440:1600] = (200, 202, 206)  # a second window (behind a pillar) SAM knows no object for
+    objects = {name: mask for name, mask in objects.items() if name not in ("pillar_right", "headliner")}
+    result = gm.find_glass(FakeSam(objects), rgb, "cockpit", gm.GlassMaskConfig())
+    assert result.mask is None
+    assert any(share >= gm.GlassMaskConfig().unassigned_veto for share in result.unassigned)
+    # the same photo with the region resolved as an object is a two-pane mask
+    objects["second"] = _rect((1440, 0, 1600, 360))
+    result = gm.find_glass(FakeSam(objects), rgb, "cockpit", gm.GlassMaskConfig())
+    assert result.mask is not None and len(result.mask.panes) == 2
 
 
 # --------------------------------------------------------------------------- rules

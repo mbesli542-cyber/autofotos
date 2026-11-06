@@ -82,6 +82,10 @@ class GlassMaskConfig:
     seed_rows: float = 0.5
     #: A seed on a point darker than this (sRGB luminance 0..1, 5 × 5 median) is skipped.
     seed_min_lum: float = 0.2
+    #: Bright regions (luminance ≥ brightLum, at least brightRegion of the frame, in the seed rows) that
+    #: hold no prompted grid seed get a seed at their centre.
+    bright_lum: float = 0.45
+    bright_region: float = 0.01
     #: Detector seeds: a detected vehicle (score ≥ detectorScore) whose box covers between detectorMinArea
     #: (a car reflected in the mirror is tiny) and detectorMaxArea of the photo (the photographed car
     #: itself fills the frame) seeds a point at its centre.
@@ -148,8 +152,23 @@ class GlassMaskConfig:
     #: A pane's centroid must lie above this share of the height and its lowest row above paneBottom.
     max_pane_centroid: float = 0.45
     pane_bottom: float = 0.7
-    #: A pane's median luminance must reach this.
+    #: A pane's median luminance must reach this …
     min_pane_lum: float = 0.35
+    #: … and the median luminance of the 2 % ring around it may not exceed this: glass is framed by
+    #: darker interior (pillars, headliner, dash); a bright ring means one object cut out of the view
+    #: (a car outside without the window around it) – never a pane.
+    max_pane_ring: float = 0.65
+    #: A pane whose bounding box matches a detected car's box this closely (IoU) and whose ring is brighter
+    #: than carRing is just that car cut out of the view (a crop that cuts the window away around it) –
+    #: never a pane; a car that fills a window is framed by the dark window frame and stays.
+    car_box_iou: float = 0.6
+    car_ring: float = 0.45
+    #: Veto: a bright region (≥ brightLum) in the seed rows of at least this share of the frame that is
+    #: no pane and touches the top border (a window, not a dash top) – a second window the search did
+    #: not resolve – makes the photo unsure: no mask at all rather than one window in the showroom and
+    #: the next in the car park. Mode "not_interior" instead ignores regions the interior seeds cover.
+    unassigned_veto: float = 0.02
+    unassigned_mode: str = "top_touching"
     #: Feather (Gaussian sigma, photo px) of the binary region.
     feather_px: float = 2.0
 
@@ -168,6 +187,8 @@ class GlassMaskResult:
     detector_seeds: list[tuple[int, int]] = field(default_factory=list)
     views: list[dict] = field(default_factory=list)
     panes: list[dict] = field(default_factory=list)
+    #: Bright regions neither pane nor interior (share of the frame each); one ≥ unassignedVeto vetoes.
+    unassigned: list[float] = field(default_factory=list)
     work: dict[str, np.ndarray] = field(default_factory=dict)
 
 
@@ -227,6 +248,13 @@ def _spread(items: list, count: int) -> list:
         return items
     idx = np.linspace(0, len(items) - 1, count).round().astype(int)
     return [items[i] for i in sorted(set(idx.tolist()))]
+
+
+def _box_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    ix0, iy0, ix1, iy1 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0, ix1 - ix0) * max(0, iy1 - iy0)
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / float(union) if union > 0 else 0.0
 
 
 def _bottom_touch(mask: np.ndarray) -> float:
@@ -341,11 +369,39 @@ def _detector_seeds(work: _Work, rgb: np.ndarray, detector: VehicleDetector | No
     return points, boxes
 
 
+def _unreached_bright(work: _Work, seeds: list[_Seed]) -> list[tuple[int, int]]:
+    """Centres of bright regions in the seed rows (≥ brightRegion of the frame) that hold no outside
+    seed: the grid is coarse, a fence or sky at a pane's edge must not stay unseeded."""
+    cfg = work.cfg
+    bright = work.lum_median >= cfg.bright_lum
+    bright[int(cfg.seed_rows * work.size[1]) :, :] = False
+    bright = cv2.morphologyEx(bright.astype(np.uint8), cv2.MORPH_OPEN, _disk(work.radius(0.008))) > 0
+    points = []
+    for region in _components(bright, int(cfg.bright_region * work.pixels)):
+        if any(region[s.y, s.x] for s in seeds if s.verdict == "outside"):
+            continue
+        shape = _shape(region)
+        cx, cy = int(shape["cx"]), int(shape["cy"])
+        if not region[cy, cx]:
+            ys, xs = np.nonzero(region)
+            nearest = int(np.argmin((xs - cx) ** 2 + (ys - cy) ** 2))
+            cx, cy = int(xs[nearest]), int(ys[nearest])
+        points.append((cx, cy))
+    return points
+
+
 def _classify_seeds(work: _Work, extra: list[tuple[int, int]], car_boxes: list) -> list[_Seed]:
     cfg = work.cfg
     thin = work.radius(cfg.thin_radius)
+    seeds = _classify_points(work, _grid(work) + extra, car_boxes, thin)
+    unreached = _unreached_bright(work, seeds)
+    return seeds + _classify_points(work, unreached, car_boxes, thin)
+
+
+def _classify_points(work: _Work, points: list[tuple[int, int]], car_boxes: list, thin: int) -> list[_Seed]:
+    cfg = work.cfg
     seeds = []
-    for x, y in _grid(work) + extra:
+    for x, y in points:
         if work.lum_median[y, x] < cfg.seed_min_lum:
             seeds.append(_Seed(x, y, [], "dark"))
             continue
@@ -605,6 +661,7 @@ def find_glass(
         bottom = shape["box"][3] / float(work.size[1])
         lum = float(np.median(work.lum[pane]))
         ring = _dilate(pane, work.radius(0.02)) & ~pane
+        ring_lum = float(np.median(work.lum[ring])) if ring.any() else 0.0
         x0, y0, x1, y1 = shape["box"]
         at_border = x0 == 0 or y0 == 0 or x1 >= work.size[0] or y1 >= work.size[1]
         verdict = "ok"
@@ -612,6 +669,10 @@ def find_glass(
             verdict = "low"
         elif lum < cfg.min_pane_lum:
             verdict = "dark"
+        elif ring_lum > cfg.car_ring and any(_box_iou(shape["box"], box) >= cfg.car_box_iou for box in car_boxes):
+            verdict = "just_a_car"
+        elif ring_lum > cfg.max_pane_ring:
+            verdict = "unframed"
         elif not at_border and shape["area"] < cfg.min_inner_pane * work.pixels:
             verdict = "inner"
         else:
@@ -627,7 +688,7 @@ def find_glass(
                 "area": round(shape["area"] / work.pixels, 4),
                 "bottom": round(bottom, 3),
                 "lum": round(lum, 3),
-                "ring": round(float(np.median(work.lum[ring])), 3) if ring.any() else None,
+                "ring": round(ring_lum, 3),
                 "atBorder": at_border,
                 "verdict": verdict,
             }
@@ -635,6 +696,23 @@ def find_glass(
         if verdict == "ok":
             panes.append(pane)
     if not panes:
+        return result
+    accepted = np.zeros(work.lum.shape, bool)
+    for pane in panes:
+        accepted |= pane
+    bright = work.lum_median >= cfg.bright_lum
+    bright[int(cfg.seed_rows * work.size[1]) :, :] = False
+    bright &= ~_dilate(accepted, work.radius(0.02))
+    if cfg.unassigned_mode == "not_interior":
+        bright &= ~_dilate(interior, work.radius(0.01))
+    bright = cv2.morphologyEx(bright.astype(np.uint8), cv2.MORPH_OPEN, _disk(work.radius(0.008))) > 0
+    blobs = _components(bright, int(0.005 * work.pixels))
+    if cfg.unassigned_mode == "top_touching":
+        blobs = [b for b in blobs if b[0].any()]
+    result.unassigned = [round(float(blob.mean()), 4) for blob in blobs]
+    result.work["unassigned"] = bright
+    if any(share >= cfg.unassigned_veto for share in result.unassigned):
+        mark("panes")
         return result
     full_size = (work.width, work.height)
     pane_objects = []
