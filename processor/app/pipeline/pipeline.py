@@ -6,7 +6,8 @@ Exterior shots:
     → segmentation (portrait/square frames: on a window around the vehicle)
     → model alpha snapped onto colour edges → clean-up (foreign spikes cut;
     semantic check: objects the detector does not see as part of THE vehicle
-    dropped or the photo rejected; vehicle parts the mask lost – taken from the
+    dropped, cut in their contested zone by SAM 2.1 or a zoom pass, or the
+    photo rejected; vehicle parts the mask lost – taken from the
     whole-frame pass after a window pass, otherwise the photo is rejected, a
     partly lost piece gives a hint) → bbox
     → vehicle geometry (tyre contacts, near end, perspective)
@@ -229,7 +230,8 @@ def process_photo(
     # the mask lost)
     progress(0.45, "mask")
     zoom = _zoom_segmenter(decoded.rgb, segmenter, segmentation)
-    alpha, edges, mask_info = _vehicle_alpha(decoded.rgb, coarse, detector, detections, zoom)
+    sam = _sam_prompter(decoded.rgb, getattr(segmenter, "sam2", None), segmentation)
+    alpha, edges, mask_info = _vehicle_alpha(decoded.rgb, coarse, detector, detections, zoom, sam)
     if (mask_info.parts_missing or mask_info.parts_partial) and segmentation.get("windowUsed"):
         # the window pass lost (a piece of) a part the detector sees (a dark mirror in front of a
         # dark car, the base of a mirror); the whole-frame pass may have it – taken only inside
@@ -257,7 +259,7 @@ def process_photo(
         }
         if taken:
             coarse = merged
-            alpha, edges, mask_info = _vehicle_alpha(decoded.rgb, coarse, detector, detections, zoom)
+            alpha, edges, mask_info = _vehicle_alpha(decoded.rgb, coarse, detector, detections, zoom, sam)
         del merged
         timer.mark("partsFromWholeFrame")
     del coarse
@@ -449,6 +451,7 @@ def process_photo(
         "shotKind": "exterior_showroom",
         "segmenter": getattr(segmenter, "name", type(segmenter).__name__),
         "detector": getattr(detector, "name", None) if detector is not None else None,
+        "sam2": getattr(getattr(segmenter, "sam2", None), "name", None),
         "segmentation": segmentation,
         "output": {"width": width, "height": height},
         "mask": {
@@ -498,16 +501,48 @@ def process_photo(
     return ProcessResult(jpeg=jpeg, width=width, height=height, warnings=warnings, metadata=metadata)
 
 
-def _vehicle_alpha(rgb: np.ndarray, coarse: np.ndarray, detector, detections, zoom=None):
+def _vehicle_alpha(rgb: np.ndarray, coarse: np.ndarray, detector, detections, zoom=None, sam=None):
     """(alpha, edge diagnostics, MaskInfo) of the coarse segmentation: snapped onto colour
-    edges, then cleaned up (and semantically checked with the detector; ``zoom``: BiRefNet on a
-    window, for the zoom cut of a glued foreign region)."""
+    edges, then cleaned up (and semantically checked with the detector; ``sam``: SAM 2.1 on a
+    window, for the SAM cut of a glued foreign region in its contested zone; ``zoom``: BiRefNet on
+    a window, for the zoom cut)."""
     alpha, edges = refine_edges(rgb, coarse)
     model = model_alpha(coarse)
     alpha, mask_info = clean_mask(
-        alpha, rgb=rgb, model=model, detector=detector, detections=detections, zoom_segment=zoom
+        alpha, rgb=rgb, model=model, detector=detector, detections=detections, zoom_segment=zoom, sam=sam
     )
     return alpha, edges, mask_info
+
+
+class _SamPrompter:
+    """SAM 2.1 on a window of the ORIGINAL pixels (``mask.PromptSegmenter``): the window's
+    embedding is computed once per job (the mask step may run twice); the encodes are listed in
+    ``segmentation["samPasses"]``. The sessions load on the first encode – a job without a
+    contested region never loads them."""
+
+    def __init__(self, rgb: np.ndarray, sam2, segmentation: dict):
+        self._rgb = rgb
+        self._sam2 = sam2
+        self._segmentation = segmentation
+        self._done: dict[tuple[int, int, int, int], object] = {}
+
+    def encode(self, window: tuple[int, int, int, int]):
+        if window not in self._done:
+            x0, y0, x1, y1 = window
+            started = time.perf_counter()
+            self._done[window] = self._sam2.encode(np.ascontiguousarray(self._rgb[y0:y1, x0:x1]))
+            self._segmentation.setdefault("samPasses", []).append(
+                {"window": list(window), "ms": int(round((time.perf_counter() - started) * 1000))}
+            )
+        return self._done[window]
+
+    def predict(self, embedding, points, box=None, multimask=True):
+        return self._sam2.predict(embedding, points, box, multimask=multimask)
+
+
+def _sam_prompter(rgb: np.ndarray, sam2, segmentation: dict) -> _SamPrompter | None:
+    """The SAM 2.1 prompter of ``mask.sam_cut`` for this photo, or None without a segmenter."""
+    return None if sam2 is None else _SamPrompter(rgb, sam2, segmentation)
 
 
 def _zoom_segmenter(rgb: np.ndarray, segmenter: VehicleSegmenter, segmentation: dict):

@@ -77,16 +77,23 @@ Cases 2, 3, 5, 10, 14, 16 and 17 contain an object of the background that the
 segmentation model (BiRefNet) merges into the car's outline. Before the
 semantic check (`app/pipeline/detection.py`) they were accepted with the object
 in the listing image (audit finding VQ-1; case 5 was found by the semantic
-check itself). A glued object is cut only where a second BiRefNet pass on the
-zoom tile around it, the detector's vehicle instance and a colour edge agree
-on the cut line (`mask.zoom_cut`): case 14 (the second white car behind the
-Passat) is cut and accepted with the hint `background_object_removed`. In the
-others a signal disagrees – the zoom pass keeps the snow cap (17) or merges
-the blue car (10), the bollard together with the coupe's own mirror (2, a
-region no object claims is never cut), part of the wheel (5); the cut would
-leave part of the wheel and touch the vehicle instance (3); the zoom pass keeps
-the sign (16 – its white table on the white fender is then not tried) – so the expected outcome
-stays the rejection with the "freier Hintergrund" message. Run them with
+check itself). A glued object is cut only inside its contested zone, where
+SAM 2.1 (`mask.sam_cut`, the dealer's decision of 2026-11-06 – prompted with
+our car and the other object, screened against the BiRefNet alpha, every guard
+passed) or a second BiRefNet pass on the zoom tile (`mask.zoom_cut`: the pass,
+the detector's vehicle instance and a colour edge agree) gives the cut line.
+With the zoom cut alone only case 14 (the second white car behind the Passat)
+was cut and accepted with the hint `background_object_removed`; in the others a
+signal disagreed – the zoom pass keeps the snow cap (17) or merges the blue
+car (10), the bollard together with the coupe's own mirror (2, a region no
+object claims is never cut), part of the wheel (5); the cut would leave part
+of the wheel and touch the vehicle instance (3); the zoom pass keeps the sign
+(16 – its white table on the white fender is then not tried). The expectations
+below are those of the zoom cut: the photos were not reachable (Wikimedia rate
+limit) on the day the SAM cut was added. Run the set with the SAM graphs built,
+look at every newly accepted case at 100 % (no piece of the other object left,
+no piece of the car cut, no halo) and update `expected` only where the result
+truly deserves it (`--no-sam2` gives the earlier behaviour). Run them with
 `--no-detector` to see the composite.
 
 Case 11 is the other direction: BiRefNet's alpha at the black mirror on the

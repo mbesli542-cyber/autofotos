@@ -97,7 +97,24 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
   portrait/square photos and tells which mask regions are the vehicle, another
   object or a lost vehicle part – it never draws the cut line and never
   generates or changes a pixel. A lost part may only be taken from the
-  whole-frame BiRefNet pass, never drawn in.
+  whole-frame BiRefNet pass, never drawn in. **Dealer decision (2026-11-06):**
+  on his lot other cars, vans and posts stand behind the photographed car and
+  touch its silhouette; SAM 2.1 (`processor/app/pipeline/sam2.py`, Apache-2.0,
+  graphs built from the pinned checkpoint, SHA-256) may draw the cut line in
+  **contested zones only** (`mask.sam_cut`): around a detector-verified
+  foreign region glued to the outline (the region grown by a few mask cells,
+  inside our alpha), prompted with "our car" (points in our car's eroded
+  detector-instance core near the contact + our car's box) and "not that"
+  (points in the foreign object's eroded instance core). SAM only TIGHTENS the
+  alpha inside that zone (never grows the vehicle), never thins thin parts
+  below the model alpha, the detector still never draws the line itself, and
+  BiRefNet stays the matting model everywhere else. Every guard must hold
+  (SAM's mask agrees with the BiRefNet alpha outside the zone, the foreign core
+  is removed, 0 px of our car's core and of thin parts removed, cut confined to
+  the zone, cut line on a colour edge or SAM confident, at most 2 regions);
+  if one fails the photo keeps the existing German rejection. The zoom cut
+  (a second BiRefNet pass) stays as the second method and as the only one
+  without the SAM graphs.
 - **One fixed showroom, eight angle-specific plates: the dealer's own studio
   (processor/showroom3d/dealer_*.py).** The shipped plate set
   `public/presets/autoexperten-haendler/` is the dealer's own showroom image
@@ -182,7 +199,8 @@ Fotos überprüfen → Foto wiederholen → Aufnahmen abschließen → Fotos bea
 | Brand config / official logo | `src/config/brand.ts`, `src/components/brand/BrandLogo.tsx`, `public/brand/` |
 | Showroom preset, dealer studio plates, branding layer | `public/presets/` (README; `autoexperten-haendler/` = the shipped plate set + its README; `variants/` = the three shadow strengths), `processor/showroom3d/` (`dealer_*.py` + `render_dealer_passes.py` build the shipped set; `render_plates.py` = the earlier 3D room), `processor/app/showroom/` (`plates.py`, `wall_branding.py`, `branding.py`, `icons.py` Lucide ISC) |
 | Image processor (Python/FastAPI) | `processor/` (see `processor/README.md`) |
-| Processor pipeline steps | `processor/app/pipeline/` (decode, detection, segmentation, matting, mask, vehicle_geometry, placement, quality, light, grounding/shadow, reflection, composite, export; `room_depth.py` variant placement fit; `detail_backdrop.py` EXPERIMENTAL detail-shot showroom backdrop, off by default; debug allow-list `debug.py`; `sam2.py` SAM 2.1 prompted segmentation – box/point prompts → mask logits, Apache-2.0, ONNX graphs BUILT by `scripts/export_sam2.py` and pinned by SHA-256 in `SAM2_REGISTRY`, model plumbing only: nothing uses it yet, it reads the photo and never changes a pixel) |
+| Processor pipeline steps | `processor/app/pipeline/` (decode, detection, segmentation, matting, mask, vehicle_geometry, placement, quality, light, grounding/shadow, reflection, composite, export; `room_depth.py` variant placement fit; `detail_backdrop.py` EXPERIMENTAL detail-shot showroom backdrop, off by default; debug allow-list `debug.py`; `sam2.py` SAM 2.1 prompted segmentation – box/point prompts → mask logits, Apache-2.0, ONNX graphs BUILT by `scripts/export_sam2.py` and pinned by SHA-256 in `SAM2_REGISTRY`; it reads the photo and never changes a pixel) |
+| Contested cut of a glued foreign object (SAM 2.1 first, zoom cut second; guards, diagnostics `findings[].verify.samCut`/`zoomCut`, `cutBy`; `segmenter.sam2` optional – off with a logged note without the graphs; `PROCESSOR_SAM2_ENABLED`; CLI/runner `--no-sam2`) | `processor/app/pipeline/mask.py` (`sam_cut`, `zoom_cut`, `CUT_METHODS`), `sam2.py` (`create_sam2_if_available`), `segmentation.py`, `app/config.py`, tests `processor/tests/test_sam_cut.py` |
 | Processor scripts | `processor/scripts/` (`download_models.py` – both models, SHA-256, verifies the built SAM 2.1 graphs; `export_sam2.py` – SAM 2.1 → ONNX in a separate pinned torch venv / Docker stage `sam2-export` (`--build-arg SAM2_MODEL=…`), `--verify` against PyTorch; `make_portrait_cases.py` – derived portrait test frames; `visual_regression.py`; `render_showroom_preview.py`) |
 | Dev test page (dev only) | `src/app/dev/processing-test`, `src/app/api/dev/`, `src/lib/dev-tools.ts` |
 
@@ -223,7 +241,8 @@ dev only (404 in production unless `ENABLE_DEV_TOOLS=true`): `/dev/processing-te
 - Processor: settings come from env / `processor/.env` (`app/config.py`);
   `PROCESSOR_DEBUG=true` writes debug images (and serves `/docs`) – never on
   public instances. The processor does not run on Vercel (BiRefNet model
-  224 MB, ≈ 7 GB peak RAM per job; detector + 0.1–0.3 GB, ≈ 4–12 s). The
+  224 MB, ≈ 7 GB peak RAM per job; detector + 0.1–0.3 GB, ≈ 4–12 s; SAM 2.1
+  for the contested cut + ≈ 2–3.5 s per contested region, no higher peak). The
   Docker image sets `PROCESSOR_REQUIRE_API_KEY=true` – no start without
   `PROCESSOR_API_KEY`; plain `uvicorn` works without a key. Publish it on
   `127.0.0.1` locally.

@@ -25,16 +25,23 @@ edges). Here:
    coarse outline's uncertainty). Verified foreign regions are
    dropped when they are a separate part of the mask (nothing of the car is
    touched). Glued to the outline, the instance masks are too coarse for the
-   cut line – the region is cut only when a second BiRefNet pass on the
-   ORIGINAL pixels of its zoom tile gives a cut line every signal agrees on
-   (``zoom_cut``: the pass agrees with the mask outside the contact zone, the
-   cut removes the region, stays out of the core of the tile's vehicle instance
-   and off thin parts, and runs along a colour edge of the photo; only regions
-   another detected object claims, alpha only, nothing added). Otherwise – and
-   for a region no object claims (it may hold a mirror the instance masks miss)
-   – it is reported (``foreign_suspected``) and the job is rejected. Thin parts
-   (antenna masts, mirror arms, wipers, roof rails, spoilers) are below the
-   thickness limit.
+   cut line – the region is cut only when a cut method gives a line every
+   signal agrees on, inside the contested zone (the region grown by a few mask
+   cells) only, alpha only, nothing added, only regions another detected
+   object claims: the SAM cut (``sam_cut`` – the dealer's decision of
+   2026-11-06: SAM 2.1 on the ORIGINAL pixels of the region's zoom tile,
+   prompted with "our car" and "not that", its mask screened against the
+   BiRefNet alpha outside the zone and the other object's core, the cut
+   guarded: region and foreign core removed, our car's core and thin parts
+   untouched, confined to the zone, along a colour edge or with a confident
+   SAM) and the zoom cut (``zoom_cut``: a second BiRefNet pass on the tile
+   that agrees with the mask outside the contact zone, removes the region,
+   stays out of the core of the tile's vehicle instance and off thin parts,
+   and runs along a colour edge of the photo), in the order of ``CUT_METHODS``.
+   Otherwise – and for a region no object claims (it may hold a mirror the
+   instance masks miss) – it is reported (``foreign_suspected``) and the job is
+   rejected. Thin parts (antenna masts, mirror arms, wipers, roof rails,
+   spoilers) are below the thickness limit.
    The other direction as well, checked on the cut-out as it will be (after
    step 4, so a see-through window that step 4 fills is no lost part): what the
    zoomed vehicle instance claims beyond the mask – thick and large, in the
@@ -53,15 +60,18 @@ edges). Here:
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import cv2
 import numpy as np
 
-from .segmentation import SegmentationError
+from .segmentation import ModelUnavailableError, SegmentationError
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover
     from .detection import Instance, RegionCheck, VehicleDetector
@@ -979,6 +989,428 @@ def _apply_zoom_cut(alpha: np.ndarray, cut: ZoomCut) -> np.ndarray:
     return out
 
 
+# --------------------------------------------------------------------------- SAM cut (contested zones)
+
+# The dealer's decision (2026-11-06): on his lot other cars, vans and posts stand right behind the
+# photographed car and touch its silhouette. BiRefNet merges them, the detector verifies the region
+# as another object but its instance masks are too coarse for the cut line, and the zoom cut only
+# rarely finds a line every signal agrees on – the photo was rejected. SAM 2.1 (``sam2.py``) may now
+# draw the cut line IN THE CONTESTED ZONE ONLY: the verified foreign region grown by a few mask
+# cells (where the true boundary lies), inside our alpha. Prompted with "our car" (positive points in
+# the eroded core of the tile's vehicle instance near the contact + our car's box) and "not that"
+# (negative points in the eroded core of the other object's instance), SAM's three candidates are
+# screened – the chosen one must agree with the BiRefNet alpha outside the zone and must not contain
+# the foreign core – and the cut is what that mask leaves out of our alpha inside the zone, with an
+# anti-aliased edge from SAM's own logits. SAM only TIGHTENS alpha (never grows the vehicle), never
+# thins a thin part below the model alpha, the detector still never draws the line itself, BiRefNet
+# stays the matting model everywhere else. If any guard fails the photo is rejected as before.
+
+#: At most this many contested regions of a photo get a SAM cut (one encode of the region's tile,
+#: ≈ 2 s, plus one decode); with more, or once one of them cannot be cut, the photo is rejected.
+SAM_MAX_CUTS = 2
+#: Both instance cores (our car's, the other object's) are the tile's instance masks eroded by this
+#: many of their mask cells – the band in which the coarse instance outline cannot tell the car's
+#: own edge from the object behind it (SEMANTIC_MIN_REACH_CELLS) –, so a prompt never lands on the
+#: wrong object and "untouched" means the certain part of our car. Measured on two grey VW cut-outs
+#: nose to tail: at 1.5 cells our car's instance still reached 1–2 px past the tail into the other
+#: car, and a correct SAM line lost 25 core px to the guard; at 3 cells it does not.
+SAM_CORE_CELLS = 3.0
+#: … plus this many cells of SAM's own low-resolution mask (the window side / SAM_LOGIT_CELLS px, 3–5 px
+#: on a verification tile): its edge is quantised at that resolution, so a correct line crosses a hard
+#: pixel boundary by a pixel or two (measured: a 2 px sliver at a spoiler lip over the car behind).
+SAM_CORE_LOGIT_CELLS = 1.0
+SAM_LOGIT_CELLS = 256  # = sam2.LOW_RES_SIZE (tests check)
+#: Prompt points are looked for this close (mask cells) to the contested zone first – the contact is
+#: what SAM has to decide –, then anywhere in the tile; at most this many per label.
+SAM_PROMPT_REACH_CELLS = 3.0
+SAM_MAX_POINTS = 3
+#: A candidate mask is "our car" only when it agrees with the BiRefNet alpha outside the zone: at
+#: most this share of the alpha's pixels there may differ (≥ 97 % agreement; SAM's edge is coarser
+#: than BiRefNet's, so a thin band along the whole outline always differs a little) …
+SAM_MAX_DISAGREE = 0.03
+#: … and contains at most this share of the foreign core (the other object's eroded instance).
+SAM_MAX_FOREIGN_INSIDE = 0.02
+#: The cut must remove the region (at most this share of it may be left) …
+SAM_MAX_LEFT = 0.1
+#: … and the foreign core that lay inside our alpha, almost completely (share at alpha 0) …
+SAM_MIN_CORE_REMOVED = 0.98
+#: … while nothing thick of the other object stays beyond the vehicle instance inside the zone or
+#: continues from the cut beyond the zone (SEMANTIC_MIN_THICKNESS thick and SEMANTIC_MIN_REACH_CELLS
+#: beyond the instance, outside the zone, next to the cut; measured: the lower front of a grey car
+#: behind the tail, 2.8 % of the width, which no candidate covered and which SAM took for our bumper –
+#: the zone could not reach it), not one pixel of our car's core is removed, and no thin part of
+#: the mask (antenna, mirror arm, wiper – thinner than SEMANTIC_MIN_THICKNESS, outside the region
+#: grown by one cell) is touched.
+SAM_MAX_VEHICLE_CUT_PX = 0
+SAM_MAX_THIN_CUT = 0
+#: The new cut line must run partly along a colour edge of the photo (share of its pixels within 1 px
+#: of a ΔE ≥ ZOOM_EDGE_DE edge – lower than the zoom cut's 0.6: a dark car in front of a dark car
+#: has little contrast, and SAM's edge is screened by the guards above) OR SAM must be confident
+#: about its mask (predicted IoU).
+SAM_MIN_EDGE_SUPPORT = 0.5
+SAM_MIN_IOU = 0.9
+#: Width (photo px) of the anti-aliased edge along the cut, taken from SAM's logit edge (signed
+#: distance to the zero crossing = logit / |∇logit|): the alpha is the lower of the two – the cut
+#: never adds alpha.
+SAM_EDGE_PX = 2.0
+#: The cut methods for a glued region, in the order tried (the first that gives a certain line wins):
+#: the SAM cut costs ≈ 2 s per region, the zoom cut one BiRefNet pass (≈ 13–25 s).
+CUT_METHODS: tuple[str, ...] = ("sam", "zoom")
+
+
+@runtime_checkable
+class PromptSegmenter(Protocol):
+    """SAM 2.1 on a window of the ORIGINAL pixels (photo px (x0, y0, x1, y1), see ``sam2.py``):
+    ``encode`` gives the window's embedding (the pipeline caches it per window), ``predict`` the
+    mask logits [K, window height, window width] (> 0 = inside) and the K predicted IoUs for
+    ``points`` [(x, y, label 1 = our car / 0 = not that), …] and ``box`` (x0, y0, x1, y1), both in
+    window px."""
+
+    def encode(self, window: tuple[int, int, int, int]): ...
+
+    def predict(self, embedding, points, box=None, multimask=True) -> tuple[np.ndarray, np.ndarray]: ...
+
+
+@dataclass
+class SamScene:
+    """The contested region's tile as the SAM cut sees it (bool arrays of the window's shape)."""
+
+    window: tuple[int, int, int, int]
+    photo_shape: tuple[int, int]
+    #: One mask cell of the tile's instance masks in photo px.
+    cell: float
+    #: BiRefNet's solid mask, the verified foreign region (inside it) and the contested zone.
+    mask: np.ndarray
+    region: np.ndarray
+    zone: np.ndarray
+    #: The tile's vehicle instance and the other objects' instances, and their eroded cores.
+    vehicle: np.ndarray
+    other: np.ndarray
+    vehicle_core: np.ndarray
+    foreign_core: np.ndarray
+    #: The prompts (window px): (x, y, 1) our car, (x, y, 0) not that; our car's box.
+    points: list[tuple[float, float, int]]
+    box: tuple[float, float, float, float]
+
+    def prompt_dict(self) -> dict:
+        return {
+            "points": [[round(x, 1), round(y, 1), label] for x, y, label in self.points],
+            "box": [round(v, 1) for v in self.box],
+        }
+
+
+@dataclass
+class SamCut:
+    """What ``sam_cut`` removes: ``region`` (bool) inside ``zone``, and SAM's anti-aliased alpha
+    ``soft`` along the cut (float), all of the shape of ``window`` (photo px (x0, y0, x1, y1))."""
+
+    window: tuple[int, int, int, int]
+    region: np.ndarray
+    soft: np.ndarray
+    zone: np.ndarray
+
+    def box(self) -> list[int]:
+        ys, xs = np.nonzero(self.region)
+        x0, y0 = self.window[:2]
+        return [x0 + int(xs.min()), y0 + int(ys.min()), x0 + int(xs.max()) + 1, y0 + int(ys.max()) + 1]
+
+
+def _prompt_points(core: np.ndarray, withins: list[np.ndarray | None], cell: float) -> list[tuple[float, float]]:
+    """Up to SAM_MAX_POINTS pixel centres of ``core``: for each ``withins`` entry (a bool area or None
+    for the whole tile) the most interior core pixel inside it (largest distance to the core's
+    outline, at least 1 px in), skipping points closer than one mask cell to a chosen one."""
+    if not core.any():
+        return []
+    dist = cv2.distanceTransform(core.astype(np.uint8), cv2.DIST_L2, 3)
+    chosen: list[tuple[float, float]] = []
+    for within in withins:
+        values = dist if within is None else np.where(within, dist, 0.0)
+        index = int(np.argmax(values))
+        if values.flat[index] < 1.0:
+            continue
+        y, x = divmod(index, values.shape[1])
+        if all(np.hypot(x + 0.5 - cx, y + 0.5 - cy) >= cell for cx, cy in chosen):
+            chosen.append((x + 0.5, y + 0.5))
+        if len(chosen) >= SAM_MAX_POINTS:
+            break
+    return chosen
+
+
+def sam_scene(
+    binary: np.ndarray, finding: SemanticFinding, *, scale: float, zone_px: float
+) -> tuple[SamScene | None, str | None]:
+    """The tile, zone, cores and prompts of a glued foreign ``finding`` of the vehicle mask ``binary``
+    (bool, photo size) – or (None, reason) when the finding has no zoom verdict, the region is
+    empty, or no prompt can be placed (no core of our car or of the other object in the tile)."""
+    from .segmentation import _to_photo
+
+    check = finding.verdict
+    if check is None or check.vehicle_mask is None or check.other_mask is None or finding.region is None:
+        return None, "no_zoom_verdict"
+    x0, y0, x1, y1 = check.window
+    shape = (y1 - y0, x1 - x0)
+    mask = binary[y0:y1, x0:x1].astype(bool)
+    region = _to_photo(finding.region, check.window, scale, shape) & mask
+    if not region.any():
+        return None, "empty_region"
+    cell = shape[1] / max(check.mask_cells or 108, 1)
+    size = (shape[1], shape[0])
+    vehicle = cv2.resize(check.vehicle_mask.astype(np.uint8), size, interpolation=cv2.INTER_NEAREST) > 0
+    other = cv2.resize(check.other_mask.astype(np.uint8), size, interpolation=cv2.INTER_NEAREST) > 0
+    zone = cv2.dilate(region.astype(np.uint8), _ellipse(max(2, int(round(zone_px))))) > 0
+    logit_px = max(shape) / SAM_LOGIT_CELLS
+    core_radius = max(1, int(round(SAM_CORE_CELLS * cell + SAM_CORE_LOGIT_CELLS * logit_px)))
+    vehicle_core = (cv2.erode(vehicle.astype(np.uint8), _ellipse(core_radius)) > 0) & mask & ~region
+    foreign_core = (cv2.erode(other.astype(np.uint8), _ellipse(core_radius)) > 0) & ~vehicle_core
+    near = cv2.dilate(zone.astype(np.uint8), _ellipse(max(1, int(round(SAM_PROMPT_REACH_CELLS * cell))))) > 0
+    positive = _prompt_points(vehicle_core, [near, None], cell)
+    # "not that": inside the glued part itself where the core reaches it, the other object right
+    # next to the contact, then anywhere in the tile
+    negative = _prompt_points(foreign_core, [region, near & ~mask, None], cell)
+    if not positive or not negative:
+        return None, "no_prompt"
+    ours = (vehicle | ~zone) & mask  # our car as both see it, without the contested zone
+    ys, xs = np.nonzero(ours)
+    box = (float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1))
+    scene = SamScene(
+        window=check.window,
+        photo_shape=binary.shape,
+        cell=cell,
+        mask=mask,
+        region=region,
+        zone=zone,
+        vehicle=vehicle,
+        other=other,
+        vehicle_core=vehicle_core,
+        foreign_core=foreign_core,
+        points=[(x, y, 1) for x, y in positive] + [(x, y, 0) for x, y in negative],
+        box=box,
+    )
+    return scene, None
+
+
+def _sam_soft_edge(logits: np.ndarray) -> np.ndarray:
+    """SAM's anti-aliased alpha along its mask edge: the signed distance (px) to the logit zero
+    crossing, logit / |∇logit| (bilinear logits – the first-order estimate of a smooth edge),
+    as a ramp of SAM_EDGE_PX; 0 well outside, 1 well inside (consistent with ``logits > 0``)."""
+    gx = cv2.Sobel(logits, cv2.CV_32F, 1, 0, ksize=3, scale=1.0 / 8.0)
+    gy = cv2.Sobel(logits, cv2.CV_32F, 0, 1, ksize=3, scale=1.0 / 8.0)
+    distance = logits / np.maximum(np.hypot(gx, gy), 1e-3)
+    soft = np.clip(0.5 + distance / SAM_EDGE_PX, 0.0, 1.0)
+    inside = logits > 0
+    return np.where(inside, np.maximum(soft, 0.5), np.minimum(soft, 0.5)).astype(np.float32)
+
+
+def sam_cut_on(
+    scene: SamScene,
+    rgb: np.ndarray,
+    logits: np.ndarray,
+    ious: np.ndarray,
+    *,
+    vehicle_w: int,
+    layers: dict | None = None,
+) -> tuple[SamCut | None, dict]:
+    """The SAM cut for ``scene`` from SAM's candidate mask ``logits`` [K, h, w] (window shape, > 0 =
+    inside) and predicted ``ious`` [K] – or None when no candidate is "our car" or a guard fails.
+    Returns the cut and its diagnostics (metadata); ``layers`` (optional dict) receives the
+    intermediate masks."""
+    from .matting import thin_parts
+    from .segmentation import colour_edges
+
+    x0, y0, x1, y1 = scene.window
+    shape = scene.mask.shape
+    height, width = scene.photo_shape
+    mask, region, zone = scene.mask, scene.region, scene.zone
+    diag: dict = {"window": list(scene.window), "cell": round(scene.cell, 2), **scene.prompt_dict()}
+    # agreement is measured outside the zone, away from the tile border inside the photo
+    border = max(1, int(round(ZOOM_BORDER * shape[1])))
+    inside = np.ones(shape, bool)
+    if x0 > 0:
+        inside[:, :border] = False
+    if x1 < width:
+        inside[:, -border:] = False
+    if y0 > 0:
+        inside[:border] = False
+    if y1 < height:
+        inside[-border:] = False
+    area = inside & ~(cv2.dilate(zone.astype(np.uint8), _ellipse(2)) > 0)
+    positive = [(int(x), int(y)) for x, y, label in scene.points if label == 1]
+    negative = [(int(x), int(y)) for x, y, label in scene.points if label == 0]
+    candidates: list[dict] = []
+    solids: list[np.ndarray] = []
+    for k in range(logits.shape[0]):
+        solid = logits[k] > 0
+        # SAM parts that touch the mask (an unrelated blob of SAM's is no reference)
+        count, labels = cv2.connectedComponents(solid.astype(np.uint8), connectivity=8)
+        touching = np.unique(labels[solid & mask])
+        solid = np.isin(labels, touching[touching > 0])
+        solids.append(solid)
+        prompts_ok = all(solid[y, x] for x, y in positive) and not any(solid[y, x] for x, y in negative)
+        disagree = int(((mask ^ solid) & area).sum()) / max(int((mask & area).sum()), 1)
+        foreign_inside = int((solid & scene.foreign_core).sum()) / max(int(scene.foreign_core.sum()), 1)
+        ok = prompts_ok and disagree <= SAM_MAX_DISAGREE and foreign_inside <= SAM_MAX_FOREIGN_INSIDE
+        candidates.append(
+            {
+                "iou": round(float(ious[k]), 3),
+                "disagree": round(disagree, 4),
+                "foreignInside": round(foreign_inside, 4),
+                "containsPrompts": prompts_ok,
+                "ok": ok,
+            }
+        )
+    diag["candidates"] = candidates
+    usable = [k for k, c in enumerate(candidates) if c["ok"]]
+    if not usable:
+        diag["reasons"] = ["no_candidate"]
+        return None, diag
+    chosen = max(usable, key=lambda k: float(ious[k]))
+    solid = solids[chosen]
+    iou = float(ious[chosen])
+    diag.update(chosen=chosen, iou=round(iou, 3), disagree=candidates[chosen]["disagree"])
+    cut = mask & ~solid & zone
+    # pieces the cut leaves inside the zone, cut off from the vehicle: part of the cut
+    rest = mask & ~cut
+    count, labels = cv2.connectedComponents(rest.astype(np.uint8), connectivity=8)
+    attached = np.unique(labels[rest & ~zone])
+    cut |= rest & ~np.isin(labels, attached[attached > 0])
+    rest = mask & ~cut
+    left = int((region & ~cut).sum()) / int(region.sum())
+    thin_radius = max(1, int(round(0.5 * SEMANTIC_MIN_THICKNESS * vehicle_w)))
+    thin = thin_parts(mask, thin_radius)
+    # the other object's core that lay inside our alpha – without thin parts of the mask (an antenna or
+    # mirror arm of OUR car in front of the neighbour, which the coarse instance claims as well; the
+    # thin guard below keeps them, and a thin remnant of the region itself counts in ``left``)
+    core_in_mask = scene.foreign_core & mask & ~thin
+    core_removed = int((cut & core_in_mask).sum()) / int(core_in_mask.sum()) if core_in_mask.any() else None
+    vehicle_cut = int((cut & scene.vehicle_core).sum())
+    margin = max(1, int(round(SEMANTIC_MARGIN * vehicle_w)))
+    vehicle_near = cv2.dilate(scene.vehicle.astype(np.uint8), _ellipse(margin)) > 0
+    beyond = rest & zone & ~vehicle_near
+    thick_left = 2.0 * float(cv2.distanceTransform(beyond.astype(np.uint8), cv2.DIST_L2, 5).max()) / max(vehicle_w, 1)
+    near_region = cv2.dilate(region.astype(np.uint8), _ellipse(max(1, int(round(scene.cell))))) > 0
+    thin_cut = int((cut & thin & ~near_region).sum())
+    confined = not (cut & ~zone).any()
+    # the other object continuing BEYOND the zone: what remains of the mask next to the zone, outside
+    # it, that reaches further beyond the tile's vehicle instance than its coarse outline can tell
+    # (SEMANTIC_MIN_REACH_CELLS) and is thick (SEMANTIC_MIN_THICKNESS) – its lower body, which no
+    # candidate covered (claimed by our instance in a grid tile, or unclaimed in the lower half) and
+    # which SAM may even take for our car's bumper. Nothing may cut it outside the zone, so the
+    # result would keep a piece of the object: no cut
+    spill = rest & ~zone & inside
+    joined = spill | zone
+    count, labels = cv2.connectedComponents(joined.astype(np.uint8), connectivity=8)
+    touching = np.unique(labels[zone])
+    spill &= np.isin(labels, touching[touching > 0]) & ~vehicle_near
+    spill_thick = 2.0 * float(cv2.distanceTransform(spill.astype(np.uint8), cv2.DIST_L2, 5).max()) / max(vehicle_w, 1)
+    outside_instance = cv2.distanceTransform((~scene.vehicle).astype(np.uint8), cv2.DIST_L2, 5)
+    spill_reach = float(outside_instance[spill].max()) / max(scene.cell, 1.0) if spill.any() else 0.0
+    # the new outline where the cut meets the vehicle, against the colour edges of the photo
+    line = rest & (cv2.dilate(cut.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0)
+    edges = colour_edges(rgb[y0:y1, x0:x1], ZOOM_EDGE_DE)
+    support = float(np.mean(edges[line])) if line.any() else 0.0
+    diag.update(
+        left=round(left, 3),
+        coreRemoved=None if core_removed is None else round(core_removed, 4),
+        vehicleCutPx=vehicle_cut,
+        thickLeft=round(thick_left, 4),
+        thinCut=thin_cut,
+        confined=confined,
+        spillPx=int(spill.sum()),
+        spillThick=round(spill_thick, 4),
+        spillReachCells=round(spill_reach, 2),
+        edgeSupport=round(support, 3),
+        cutPx=int(cut.sum()),
+        linePx=int(line.sum()),
+    )
+    reasons = []
+    if not cut.any():
+        reasons.append("nothing_cut")
+    if left > SAM_MAX_LEFT or thick_left >= SEMANTIC_MIN_THICKNESS:
+        reasons.append("region_left")
+    if spill_thick >= SEMANTIC_MIN_THICKNESS and spill_reach >= SEMANTIC_MIN_REACH_CELLS:
+        reasons.append("foreign_continues")
+    if core_removed is not None and core_removed < SAM_MIN_CORE_REMOVED:
+        reasons.append("foreign_core_left")
+    if vehicle_cut > SAM_MAX_VEHICLE_CUT_PX or thin_cut > SAM_MAX_THIN_CUT:
+        reasons.append("vehicle_cut")
+    if not confined:
+        reasons.append("outside_zone")
+    if support < SAM_MIN_EDGE_SUPPORT and iou < SAM_MIN_IOU:
+        reasons.append("no_colour_edge")
+    diag["reasons"] = reasons
+    if layers is not None:
+        layers.update(
+            mask=mask, region=region, zone=zone, vehicle=scene.vehicle, other=scene.other, vehicle_core=scene.vehicle_core,
+            foreign_core=scene.foreign_core, solid=solid, cut=cut, line=line, edges=edges, solids=solids, spill=spill,
+        )  # fmt: skip
+    if reasons:
+        return None, diag
+    return SamCut(window=scene.window, region=cut, soft=_sam_soft_edge(np.asarray(logits[chosen], np.float32)), zone=zone), diag
+
+
+def sam_cut(
+    binary: np.ndarray,
+    rgb: np.ndarray,
+    finding: SemanticFinding,
+    sam: PromptSegmenter,
+    *,
+    scale: float,
+    zone_px: float,
+    vehicle_w: int,
+    layers: dict | None = None,
+) -> tuple[SamCut | None, dict]:
+    """Cut a verified foreign region glued to the vehicle mask ``binary`` (bool, photo size) along
+    the line SAM 2.1 draws in the contested zone – or None when no guard-passing line exists (see
+    the SAM_* constants). Returns the cut and its diagnostics (metadata).
+
+    SAM 2.1 (``sam``) encodes the ORIGINAL pixels of the finding's verification tile and predicts
+    its three candidate masks for the prompts of ``sam_scene`` (our car: positive points in our
+    car's eroded instance core near the contact + our car's box; not that: negative points in the
+    other object's eroded core). ``sam_cut_on`` screens the candidates and guards the cut. A SAM
+    that cannot run (missing/foreign graphs, ``ModelUnavailableError``) is logged and the photo is
+    judged as without it. Alpha only: nothing is added to the vehicle, no pixel colour changes.
+    """
+    scene, reason = sam_scene(binary, finding, scale=scale, zone_px=zone_px)
+    if scene is None:
+        return None, {"reason": reason}
+    started = time.perf_counter()
+    try:
+        embedding = sam.encode(scene.window)
+        encoded = time.perf_counter()
+        logits, ious = sam.predict(embedding, scene.points, scene.box, multimask=True)
+    except (ModelUnavailableError, SegmentationError) as error:
+        log.warning("SAM 2.1 cannot run for the contested cut (%s) – the photo is judged as without it", error)
+        return None, {"reason": "sam_unavailable", "window": list(scene.window), **scene.prompt_dict()}
+    done = time.perf_counter()
+    diag: dict = {
+        "encodeMs": int(round((encoded - started) * 1000)),
+        "predictMs": int(round((done - encoded) * 1000)),
+        "ms": int(round((done - started) * 1000)),
+    }
+    logits = np.asarray(logits, np.float32)
+    if logits.ndim != 3 or logits.shape[1:] != scene.mask.shape or len(ious) != logits.shape[0]:
+        return None, {**diag, "reason": "sam_shape"}
+    cut, measured = sam_cut_on(scene, rgb, logits, np.asarray(ious, np.float32), vehicle_w=vehicle_w, layers=layers)
+    return cut, {**diag, **measured}
+
+
+def _apply_sam_cut(alpha: np.ndarray, cut: SamCut) -> np.ndarray:
+    """Alpha only, inside the contested zone only: the cut region goes; along the cut (SAM_EDGE_PX)
+    the alpha is SAM's own anti-aliased edge where that is lower – never higher."""
+    x0, y0, x1, y1 = cut.window
+    local = alpha[y0:y1, x0:x1].copy()
+    region = cut.region
+    reach = int(np.ceil(SAM_EDGE_PX)) + 1
+    band = (cv2.dilate(region.astype(np.uint8), _ellipse(reach)) > 0) & cut.zone
+    local = np.where(band, np.minimum(local, cut.soft), local)
+    rest = (local >= 0.5) & ~region
+    far = cv2.distanceTransform((~rest).astype(np.uint8), cv2.DIST_L2, 3) > SAM_EDGE_PX
+    local[region & far] = 0.0
+    out = alpha.copy()
+    out[y0:y1, x0:x1] = local
+    return out
+
+
 def _apply_semantic(
     keep_mask: np.ndarray,
     labels: np.ndarray,
@@ -989,13 +1421,15 @@ def _apply_semantic(
     *,
     rgb: np.ndarray | None = None,
     zoom_segment: ZoomSegment | None = None,
+    sam: PromptSegmenter | None = None,
     zone_px: float = 0.0,
-) -> tuple[np.ndarray, list[ZoomCut]]:
+) -> tuple[np.ndarray, list[ZoomCut | SamCut]]:
     """Foreign findings: a separate part of the mask is dropped (the removed pixels are
     returned, photo size; nothing of the car is touched); a region glued to the main body is cut
-    when a zoom pass (``zoom_segment``) gives a cut line every signal agrees on (``zoom_cut``; the
-    cuts are returned and ``keep_mask`` loses them), otherwise it is reported as suspected (its
-    cut line is not certain)."""
+    when a cut method gives a line every signal agrees on – the SAM cut (``sam``, ``sam_cut``) or
+    the zoom cut (``zoom_segment``, ``zoom_cut``), tried in the order of CUT_METHODS (the cuts are
+    returned and ``keep_mask`` loses them) –, otherwise it is reported as suspected (its cut line
+    is not certain)."""
     removed = np.zeros(keep_mask.shape, bool)
     glued: list[SemanticFinding] = []
     for finding in findings:
@@ -1023,25 +1457,39 @@ def _apply_semantic(
             info.foreign_removed.append(finding.box)
         else:
             glued.append(finding)
-    cuts: list[ZoomCut] = []
+    cuts: list[ZoomCut | SamCut] = []
     # only regions another detected object claims (a car behind, a sign, a table): a region nothing
     # claims may hold a part of the car the instance masks miss (the coupe's mirror in front of a
     # bollard) – it is never cut
-    trying = (
-        zoom_segment is not None
-        and rgb is not None
-        and len(glued) <= ZOOM_MAX_CUTS
-        and all(f.evidence == "other_object" for f in glued)
-    )
+    methods = [
+        method
+        for method in CUT_METHODS
+        if (method == "sam" and sam is not None and len(glued) <= SAM_MAX_CUTS)
+        or (method == "zoom" and zoom_segment is not None and len(glued) <= ZOOM_MAX_CUTS)
+    ]
+    trying = rgb is not None and bool(methods) and all(f.evidence == "other_object" for f in glued)
     ys, xs = np.nonzero(keep_mask)
     vehicle_w = int(xs.max() - xs.min() + 1) if len(xs) else 0
     for finding in glued:
-        cut = None
+        cut: ZoomCut | SamCut | None = None
         if trying:
-            cut, diag = zoom_cut(
-                keep_mask > 0, rgb, finding, zoom_segment, scale=scale, zone_px=zone_px, vehicle_w=vehicle_w
-            )
-            finding.check["zoomCut"] = diag
+            assert rgb is not None
+            for method in methods:
+                if method == "sam":
+                    assert sam is not None
+                    cut, diag = sam_cut(
+                        keep_mask > 0, rgb, finding, sam, scale=scale, zone_px=zone_px, vehicle_w=vehicle_w
+                    )
+                    finding.check["samCut"] = diag
+                else:
+                    assert zoom_segment is not None
+                    cut, diag = zoom_cut(
+                        keep_mask > 0, rgb, finding, zoom_segment, scale=scale, zone_px=zone_px, vehicle_w=vehicle_w
+                    )
+                    finding.check["zoomCut"] = diag
+                if cut is not None:
+                    finding.check["cutBy"] = method
+                    break
             trying = cut is not None  # one region that cannot be cut rejects the photo anyway
         if cut is None:
             finding.action = "suspected"
@@ -1092,6 +1540,7 @@ def clean_mask(
     detector: VehicleDetector | None = None,
     detections: list[Instance] | None = None,
     zoom_segment: ZoomSegment | None = None,
+    sam: PromptSegmenter | None = None,
     upper_fill_ratio: float = 0.62,
 ) -> tuple[np.ndarray, MaskInfo]:
     """Keep the vehicle in ``alpha``. ``rgb`` (the photo) lets a foreign spike be
@@ -1099,8 +1548,9 @@ def clean_mask(
     segmentation model's own alpha) is where ``model_fragments`` are counted
     (default: ``alpha``). With ``detector`` (and ``rgb``) the semantic check runs
     (step 3; ``detections``: the detector's full-frame instances, if already known); with
-    ``zoom_segment`` (BiRefNet on a window of ``rgb``) a foreign region glued to the outline is cut
-    where a zoom pass gives a certain cut line (``zoom_cut``)."""
+    ``sam`` (SAM 2.1 on a window of ``rgb``, ``sam_cut``) and/or ``zoom_segment`` (BiRefNet on a
+    window of ``rgb``, ``zoom_cut``) a foreign region glued to the outline is cut where one of them
+    gives a certain cut line (CUT_METHODS)."""
     info = MaskInfo()
     binary = (alpha >= 0.5).astype(np.uint8)
     count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
@@ -1184,7 +1634,7 @@ def clean_mask(
     # Semantic check: what the detector does not see as part of THE vehicle (on the mask as the
     # model cut it – a filled window is no foreign object) …
     semantic_removed = None
-    zoom_cuts: list[ZoomCut] = []
+    zoom_cuts: list[ZoomCut | SamCut] = []
     sem = None
     findings: list[SemanticFinding] = []
     if detector is not None and rgb is not None:
@@ -1197,8 +1647,9 @@ def clean_mask(
             int(xs.max() - xs.min() + 1) if len(xs) else 0
         )
         semantic_removed, zoom_cuts = _apply_semantic(
-            keep_mask, labels, main, findings, sem.scale, info, rgb=rgb, zoom_segment=zoom_segment, zone_px=zone_px
-        )
+            keep_mask, labels, main, findings, sem.scale, info, rgb=rgb, zoom_segment=zoom_segment, sam=sam,
+            zone_px=zone_px,
+        )  # fmt: skip
         info.semantic_scale = sem.scale
 
     filled = _fill_holes(keep_mask, upper_fill_ratio, info)
@@ -1227,8 +1678,8 @@ def clean_mask(
     result = np.maximum(result, filled.astype(np.float32))
     for cut in cuts:
         result = _apply_cut(result, cut)
-    for zoom in zoom_cuts:
-        result = _apply_zoom_cut(result, zoom)
+    for glued_cut in zoom_cuts:
+        result = _apply_sam_cut(result, glued_cut) if isinstance(glued_cut, SamCut) else _apply_zoom_cut(result, glued_cut)
     if semantic_removed is not None and semantic_removed.any():
         # a dropped part and its own soft fringe go, the body's fringe stays
         fringe = cv2.dilate(semantic_removed.astype(np.uint8), _ellipse(4)).astype(bool) & ~cv2.dilate(

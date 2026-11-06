@@ -220,6 +220,7 @@ def create_app(
             )
         model = getattr(segmenter, "spec", None)
         detector = getattr(segmenter, "detector", None)  # semantic vehicle check (detection.py)
+        sam2 = getattr(segmenter, "sam2", None)  # contested cut (sam2.py, mask.sam_cut) – optional
         try:
             preset = load_preset(settings, "autoexperten_standard")
             source = backgrounds.source(preset)
@@ -237,6 +238,11 @@ def create_app(
             "modelError": failed,
             "detector": getattr(getattr(detector, "spec", None), "name", None) if detector is not None else None,
             "detectorLoaded": bool(getattr(detector, "loaded", False)) if detector is not None else None,
+            # SAM 2.1 contested cut: the model when its graphs are there (loaded with the first
+            # contested region), null otherwise – sam2Error names graphs refused at warm-up
+            "sam2": getattr(getattr(sam2, "spec", None), "name", None) if sam2 is not None else None,
+            "sam2Loaded": bool(getattr(sam2, "loaded", False)) if sam2 is not None else None,
+            "sam2Error": getattr(segmenter, "sam2_error", None),
             "debug": settings.debug,
             "auth": bool(settings.api_key),
             "supabase": store is not None,
