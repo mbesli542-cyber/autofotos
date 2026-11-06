@@ -338,14 +338,22 @@ class DetailBackdropConfig:
 @dataclass(frozen=True)
 class GlassViewConfig:
     """Where the plate is seen through the glass for one view (app/pipeline/glass_backdrop.py):
-    forward (windscreen: the brand wall ahead) or side (side windows: the slat/plant side)."""
+    forward (windscreen: the brand wall ahead with the lettering), side (side windows: the slat
+    panel and the olive tree, zoomed in below the lettering) or rear (a rear window: the plain
+    panel below the lettering). Only the forward crop may contain the branding."""
 
-    #: Crop height as a fraction of the plate height (smaller = the wall closer / larger).
+    #: Crop height as a fraction of the plate height (smaller = closer / larger).
     crop_height: float
-    #: Crop centre as a fraction of the plate width (0.5 = the brand wall, ≈ 0.22 = slats and plant).
+    #: Crop centre as a fraction of the plate width (0.5 = the brand wall, 0 = slats and plant).
     center_x: float
-    #: Where the plate's horizon (eye level) lands, as a fraction of the photo height (from the top).
-    horizon: float
+    #: The crop's upper edge as a fraction of the plate height (0 = the ceiling spots; the shipped
+    #: plate's lettering ends at 0.2, so side/rear crops start at 0.22).
+    top: float
+    #: × the preset's blur for this view (> 1 = defocused more).
+    blur_scale: float
+    #: Panes in the right half of the photo (the car's right side when photographed from the left
+    #: door) get the crop mirrored horizontally, so the slats/LED read correctly.
+    mirror_right: bool
 
 
 @dataclass(frozen=True)
@@ -361,11 +369,13 @@ class GlassBackdropConfig:
     enabled: bool = False
     #: Interior shots that get the backdrop (subset of GLASS_BACKDROP_SHOTS).
     shots: tuple[str, ...] = ("cockpit", "front_interior", "driver_seat", "rear_seats")
-    #: The plate crop per view.
-    forward: GlassViewConfig = field(default_factory=lambda: GlassViewConfig(0.75, 0.5, 0.36))
-    side: GlassViewConfig = field(default_factory=lambda: GlassViewConfig(0.5, 0.15, 0.45))
-    #: Depth of field: Gaussian sigma of the wall as a fraction of the photo's long edge …
-    blur: float = 0.005
+    #: The plate crop per view (app/pipeline/glass_backdrop.py: view_for_pane).
+    forward: GlassViewConfig = field(default_factory=lambda: GlassViewConfig(0.75, 0.5, 0.0, 1.0, False))
+    side: GlassViewConfig = field(default_factory=lambda: GlassViewConfig(0.3, 0.0, 0.22, 1.0, True))
+    rear: GlassViewConfig = field(default_factory=lambda: GlassViewConfig(0.3, 0.5, 0.22, 1.5, False))
+    #: Depth of field: Gaussian sigma of the wall as a fraction of the photo's long edge (× the
+    #: view's blurScale) …
+    blur: float = 0.007
     #: … and of the floor at the bottom row (× blur; 1 = as far away as the wall).
     floor_blur: float = 1.0
     #: 0..1: the crop's mean colour/brightness moves this far towards the photo's own glass region
@@ -388,7 +398,11 @@ class GlassBackdropConfig:
     max_interior_structure: float = 0.04
 
     def view(self, name: str) -> GlassViewConfig:
-        return self.side if name == "side" else self.forward
+        if name == "side":
+            return self.side
+        if name == "rear":
+            return self.rear
+        return self.forward
 
 
 @dataclass(frozen=True)
@@ -804,9 +818,10 @@ _GLASS_RANGES = {
     "max_interior_structure": (0.0, 0.5),
 }
 _GLASS_VIEW_RANGES = {
-    "crop_height": (0.25, 1.0),
+    "crop_height": (0.1, 1.0),
     "center_x": (0.0, 1.0),
-    "horizon": (0.05, 0.95),
+    "top": (0.0, 0.9),
+    "blur_scale": (0.25, 3.0),
 }
 
 
@@ -822,7 +837,7 @@ def _require_every_field(owner: str, cls, data) -> None:
 
 def _parse_glass_view(owner: str, data) -> GlassViewConfig:
     _require_every_field(owner, GlassViewConfig, data)
-    config = _merge(GlassViewConfig(0.75, 0.5, 0.36), data, owner)
+    config = _merge(GlassViewConfig(0.75, 0.5, 0.0, 1.0, False), data, owner)
     for name, (low, high) in _GLASS_VIEW_RANGES.items():
         value = getattr(config, name)
         if not low <= value <= high:
@@ -837,7 +852,7 @@ def _parse_glass_backdrop(data) -> GlassBackdropConfig:
     _require_every_field(owner, GlassBackdropConfig, data)
     data = dict(data)
     shots = data.pop("shots")
-    views = {name: data.pop(name) for name in ("forward", "side")}
+    views = {name: data.pop(name) for name in ("forward", "side", "rear")}
     config = _build(GlassBackdropConfig, data, owner)
     if (
         not isinstance(shots, list)
@@ -853,6 +868,7 @@ def _parse_glass_backdrop(data) -> GlassBackdropConfig:
         shots=tuple(shots),
         forward=_parse_glass_view(f"{owner}.forward", views["forward"]),
         side=_parse_glass_view(f"{owner}.side", views["side"]),
+        rear=_parse_glass_view(f"{owner}.rear", views["rear"]),
     )
     for name, (low, high) in _GLASS_RANGES.items():
         value = getattr(config, name)

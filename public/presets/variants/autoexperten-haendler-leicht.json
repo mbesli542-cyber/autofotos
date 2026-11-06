@@ -170,14 +170,25 @@
     "forward": {
       "cropHeight": 0.75,
       "centerX": 0.5,
-      "horizon": 0.36
+      "top": 0.0,
+      "blurScale": 1.0,
+      "mirrorRight": false
     },
     "side": {
-      "cropHeight": 0.5,
-      "centerX": 0.15,
-      "horizon": 0.45
+      "cropHeight": 0.3,
+      "centerX": 0.0,
+      "top": 0.22,
+      "blurScale": 1.0,
+      "mirrorRight": true
     },
-    "blur": 0.005,
+    "rear": {
+      "cropHeight": 0.3,
+      "centerX": 0.5,
+      "top": 0.22,
+      "blurScale": 1.5,
+      "mirrorRight": false
+    },
+    "blur": 0.007,
     "floorBlur": 1.0,
     "lightMatch": 0.5,
     "grain": 1.0,
