@@ -257,6 +257,60 @@ Docker below).
 To add another backend implement `VehicleSegmenter` and register it in
 `create_segmenter()` (it also attaches the detector, `segmenter.detector`).
 
+**Prompted segmentation – SAM 2.1 (model plumbing only, nothing uses it yet).**
+Two planned features – separating OUR car from a car that touches it, and
+finding the window glass in cockpit photos – need a model that answers "which
+pixels belong to the object at this box / these points". That is Meta's
+Segment Anything 2.1, run like the other models with ONNX Runtime on the CPU
+(`app/pipeline/sam2.py`). Like the detector it only READS the photo: it never
+generates, moves or changes a pixel, and BiRefNet stays the matting model.
+
+| | |
+| --- | --- |
+| Model | **SAM 2.1 Hiera-Small** (Meta; image encoder Hiera-S + FPN neck, prompt encoder, two-way-transformer mask decoder; 1024 × 1024 input, 256 × 256 mask logits). Registered alternative `sam2.1-hiera-tiny` (`PROCESSOR_SAM2_MODEL=sam2.1-hiera-tiny`, `--build-arg SAM2_MODEL=sam2.1-hiera-tiny`): Hiera-T encoder, `facebook/sam2.1-hiera-tiny` commit `de431c4043854a71d8101e17995dfe596bf101a5`, `model.safetensors` SHA-256 `48c14467e5cf9e51870511feb72c89688e82dd74523142c0538b663e193ac2a7`; graphs `sam2.1-hiera-tiny-encoder.onnx` 109 108 264 bytes SHA-256 `0cbccc0beb933344b169935bc2708bfc6ef94d2b6cd9e12b0873861c03664c4c`, `sam2.1-hiera-tiny-decoder.onnx` 21 047 561 bytes SHA-256 `cc9662f5100490398b900783e2c88965c05ec7f3abde22f251cfaf73f454cdef` (the decoder has the same structure as Small's – same fingerprint –, other weights); encode ≈ 20 % faster than Small, same decoder time, peak RSS ≈ 0.1 GB lower; verified the same way |
+| Licence | **Apache-2.0** (checked 2026-11-06): code [facebookresearch/sam2](https://github.com/facebookresearch/sam2) (`LICENSE` Apache-2.0), weights [facebook/sam2.1-hiera-small](https://huggingface.co/facebook/sam2.1-hiera-small) (model card `license: apache-2.0`) |
+| Checkpoint | Hugging Face `facebook/sam2.1-hiera-small`, commit `ee5bba1d82bb8749febdf90f45e84b687142ba03`, `model.safetensors` 184 305 280 bytes, SHA-256 `0a4067b11ce1e23d5229203f11c718a823060d15a4b23fa2372a7d4b77cbbc60` (transformers format; the original `sam2.1_hiera_small.pt`, SHA-256 `6d1aa6f3…dc4d38`, is the same weights and is not downloaded) |
+| Files | Built, not downloaded (no official ONNX release exists): `sam2.1-hiera-small-encoder.onnx` 137 536 327 bytes, SHA-256 `bb4440eda4e18e65c953ad926a42a4bb814aeb73dcbed4b7aedfaef0fb4d6ac5`; `sam2.1-hiera-small-decoder.onnx` 21 047 561 bytes, SHA-256 `18c46fb4425a1dc60c36a6b17845485ac37d33b91bb4df869406930dbf1413f1` (`SAM2_REGISTRY` in `app/pipeline/sam2.py`, `PROCESSOR_SAM2_MODEL=sam2.1-hiera-small`). Verified against the pinned SHA-256 when loaded; `scripts/download_models.py sam2.1-hiera-small` verifies them too (it cannot download them) |
+| Export | `scripts/export_sam2.py` in a separate venv with the pinned stack torch 2.15.0+cpu (official CPU wheel index), transformers 5.22.1, onnx 1.23.2, onnxscript 0.7.2, onnxruntime 1.31.1, huggingface_hub 2.4.0 – the script refuses other versions, pins opset 18, fixes the seeds, strips doc strings/metadata (the export machine's paths) and exports twice: both runs must give identical bytes (they do; two further runs on this machine too). `--fingerprint` prints the structural fingerprint (opset, inputs/outputs, sorted initializer names + dtypes + shapes, op histogram: encoder `02ffcb4e…`, decoder `1c50a194…`) – the fallback pin should an export on another CPU differ in the last bits of folded constants; then the registry switches to it, not the other way round |
+| Graphs | encoder: `image` [1, 3, 1024, 1024] → `image_embed` [1, 256, 64, 64], `high_res_feats_0` [1, 32, 256, 256], `high_res_feats_1` [1, 64, 128, 128]; decoder: those three + `point_coords` [1, N, 2] float32 (model px) + `point_labels` [1, N] int64 (1 foreground, 0 background, 2/3 box corners) → `masks` [1, 4, 256, 256] low-res logits of ALL mask tokens (0 = single-mask token, 1 … 3 = multimask), `iou_predictions` [1, 4], `object_score_logits` [1, 1]. The prompt encoder pads the prompt itself (SAM's padding point) – a box is its two corners labelled 2/3, as the official `SAM2ImagePredictor` feeds it |
+| Runtime | `Sam2Segmenter.encode(rgb) → Sam2Embedding` (SAM 2.1's own preprocessing: resize to 1024 × 1024 without keeping the aspect ratio – Pillow bilinear, the official processor's antialiased uint8 resize up to ±1 on 0.1 % of the pixels –, /255, ImageNet mean/std); `predict(embedding, points=[(x, y, label 0/1), …], box=(x0, y0, x1, y1) or None, multimask=True) → (logits [K, H, W] float32 in photo px, > 0 = inside, sigmoid = probability; IoU predictions [K])`, K = 3 with `multimask` (SAM's three candidates), else 1: the single-mask token, or – when its stability score is below 0.98 – the best multimask output (`dynamic_multimask_via_stability`, ported to NumPy; `decode` returns the 256 × 256 logits and the object score without the resampling). Lazy loading of both sessions, `PROCESSOR_THREADS`, no memory arena, `release()` drops them |
+| Verified | `scripts/export_sam2.py --verify cases.json` (ONNX Runtime vs the PyTorch model, same tensor): mask IoU 1.0000 for every prompt (box, point, point + background point, box + point) on the four synthetic regression photos, max |Δlogit| ≤ 1e-4, IoU predictions equal; with the service's Pillow preprocessing IoU 0.996–1.000 (SAM's ambiguous third candidate moves most), IoU predictions within 0.0005. Real regression photos: `/opt/ae-regression/images` was not reachable on the export day (Wikimedia rate limit) – run it again on `side_left`, `front`, `suv_fr45` (see `tests/visual/`) |
+| Not used for | the cut line, pixels, the current pipeline. A later feature loads it on first use (`create_sam2(settings)`); until then a missing graph costs nothing |
+
+**Resources (measured 2026-11-06, 4 vCPUs, load average ≈ 1.5 from other
+work, `PROCESSOR_THREADS=0`, synthetic 3840 × 2880 / 4032 × 3024 / 2160 × 3840
+photos; one process per row, peak = `ru_maxrss`):**
+
+| Run | Load | Encode (per photo) | Decode per prompt | Peak RSS |
+| --- | --- | --- | --- | --- |
+| SAM 2.1 Small alone (both sessions) | 1.25 s (incl. checksums) | 1.65–2.1 s (any photo size – it is the 1024 × 1024 input); 3.6–5.0 s while other agents loaded the machine (load average 2–3) | 26 ms low-res (median, max 30 ms); 58 ms incl. the bilinear resampling of 3 masks to photo size (max 110 ms); 65–120 ms under that load | **1.5 GB** (0.32 GB resident after load) |
+| SAM 2.1 Tiny alone, same loaded minutes as Small's slow numbers | 1.05 s | 2.9–4.2 s (Small back-to-back: 3.6–5.0 s) | identical decoder | 1.1–1.3 GB |
+| BiRefNet (+ detector) alone, one segmentation | 4.7 s | 13.6 s | – | 6.9 GB (0.6–1.0 GB resident after the run) |
+| BiRefNet segmentation, then SAM 2.1 in the SAME process (BiRefNet session kept) | 5.0 s + 1.3 s | 1.8–2.4 s | 27 ms / 95 ms | **6.9 GB** – no higher than BiRefNet alone |
+| the same with the BiRefNet session dropped before SAM 2.1 | 5.2 s + 1.2 s | 2.0–2.6 s | 28 ms / 115 ms | 6.9 GB (0.6 GB resident before SAM 2.1) |
+
+So SAM 2.1 fits in the same process after BiRefNet without sequential loading:
+its peak (1.5 GB, during `encode`) lies far below BiRefNet's (≈ 7 GB, activations
+that ONNX Runtime returns after every run because the sessions have no memory
+arena), and the resident set between jobs is the weights only (BiRefNet 224 MB,
+detector 130 MB, SAM 2.1 159 MB, ≈ 1.4 GB with Python and the buffers). The
+dealer's Ryzen 5 7430U with 12 GB for WSL2 therefore holds BiRefNet + detector +
+SAM 2.1 in one process as long as no two models run at the same time
+(`PROCESSOR_CONCURRENCY=1`, as today); releasing sessions (`Sam2Segmenter.release()`
+exists) is not needed for memory. A SAM 2.1 pass per exterior photo costs ≈ 2 s
+plus ≈ 30–60 ms per prompt on 4 cores; expect ≈ 1.5–2× that on the 7430U's
+Zen 3 cores under WSL2.
+
+**Docker:** the graphs are built in a separate build stage (`sam2-export`:
+pinned torch + transformers, the pinned checkpoint, `scripts/export_sam2.py`)
+and only the two ONNX files are copied into the image – no torch in the service
+image. Opt-in while nothing uses it: `docker build … --build-arg
+SAM2_MODEL=sam2.1-hiera-small` (≈ 300 MB of downloads once, cached by BuildKit).
+The service stage verifies the built files against the pinned SHA-256 and fails
+the build on a mismatch (the alternative – committing 160 MB of binaries or
+publishing them as release assets – would ship files nobody can rebuild from
+source; rejected).
+
 ### Presets and assets
 
 The processing preset is `public/presets/autoexperten-standard.json` (shared
@@ -838,7 +892,12 @@ outside its contour, thin parts such as antenna masts keep the model alpha),
 colour guard and hard
 limits (navy stays navy), decoding (header budgets, animated images, reduced
 decoding of very large JPEGs, `image_too_large`), debug output (every listed
-debug file can be downloaded) and the Supabase store (HTTP mocked). Tests use small synthetic plate sets with exact geometry
+debug file can be downloaded), the SAM 2.1 plumbing (`tests/test_sam2.py`:
+preprocessing and the export script's, prompt/mask coordinate mapping, the
+single-mask stability fallback, registry pins that match the export script's
+checkpoint table, missing/foreign/other-layout graphs at load; one integration
+test segments the synthetic car with the built graphs and is skipped without
+them) and the Supabase store (HTTP mocked). Tests use small synthetic plate sets with exact geometry
 (`tests/plate_fixtures.py`), synthetic vehicles and a fake segmenter – no
 model download needed; one smoke test runs against the real plate set when it
 exists.

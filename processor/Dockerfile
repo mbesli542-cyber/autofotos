@@ -18,7 +18,39 @@
 #
 # The segmentation model and the vehicle detector are downloaded and SHA-256
 # verified at build time, so the container needs no internet access at runtime.
+#
+# SAM 2.1 (prompted segmentation, app/pipeline/sam2.py) has no official ONNX
+# release: its two graphs are BUILT in the separate stage below from the pinned
+# Hugging Face checkpoint with the pinned torch/transformers stack
+# (scripts/export_sam2.py) and only the ONNX files are copied into the image –
+# no torch in the final image. Opt-in while no pipeline feature uses it:
+#
+#   docker build -f processor/Dockerfile --build-arg SAM2_MODEL=sam2.1-hiera-small -t autoexperten-processor .
+#
+# The build verifies the built graphs against the SHA-256 pinned in
+# SAM2_REGISTRY (export is byte-deterministic with the pinned stack; a mismatch
+# fails the build with the fingerprint of what was built – see processor/README.md).
 
+ARG SAM2_MODEL=""
+
+# ---------------------------------------------------------------- SAM 2.1 export stage
+FROM python:3.13-slim AS sam2-export
+ARG SAM2_MODEL
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 HF_HUB_DISABLE_TELEMETRY=1
+WORKDIR /export
+COPY processor/scripts/export_sam2.py ./scripts/export_sam2.py
+# pins = PINNED_VERSIONS in scripts/export_sam2.py (the script refuses other versions);
+# the pip and checkpoint caches survive between builds. Empty SAM2_MODEL: nothing is built.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/huggingface \
+    mkdir -p /export/models && if [ -n "$SAM2_MODEL" ]; then \
+      pip install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0+cpu \
+      && pip install transformers==5.22.1 onnx==1.23.2 onnxscript==0.7.2 onnxruntime==1.31.1 \
+           huggingface_hub==2.4.0 numpy==2.5.4 pillow==13.0.0 \
+      && HF_HUB_CACHE=/root/.cache/huggingface python scripts/export_sam2.py --model "$SAM2_MODEL" --out /export/models \
+      && rm -f /export/models/*.export.json; fi
+
+# ---------------------------------------------------------------- service image
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -45,6 +77,15 @@ RUN --mount=type=cache,target=/root/.cache/ae-models \
     && mkdir -p /app/models \
     && cp "/root/.cache/ae-models/${SEGMENTATION_MODEL}.onnx" "/root/.cache/ae-models/${DETECTOR_MODEL}.onnx" /app/models/ \
     && chmod 0644 /app/models/*.onnx
+
+# SAM 2.1 graphs built above (none without --build-arg SAM2_MODEL), verified against
+# the pinned SHA-256 like the downloaded models (PROCESSOR_SAM2_MODEL selects them).
+ARG SAM2_MODEL
+COPY --from=sam2-export /export/models/ /app/models/
+RUN if [ -n "$SAM2_MODEL" ]; then \
+      chmod 0644 /app/models/*.onnx \
+      && PROCESSOR_MODELS_DIR=/app/models python scripts/download_models.py "$SAM2_MODEL"; fi
+ENV PROCESSOR_SAM2_MODEL=${SAM2_MODEL:-sam2.1-hiera-small}
 
 # Showroom preset + the dealer studio plate set (presets/autoexperten-haendler/) and the
 # official branding (replace the files in public/ and rebuild to update them,
