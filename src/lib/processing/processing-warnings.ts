@@ -8,7 +8,11 @@
  *             the other side (plate_mirrored) → "Foto neu aufnehmen"
  * - "check":  something was cut from or touches the vehicle outline, or the
  *             cut-out is uncertain → check the result
- * - "info":   the result is usable but upscaled or smaller than usual →
+ * - "info":   the result is usable but upscaled or smaller than usual, or an
+ *             interior/detail shot stayed the (valid) original because the
+ *             processor had no safe glass region / part mask to put the
+ *             showroom behind (glass_backdrop_skipped, detail_backdrop_skipped
+ *             – the processor's own German text says why) →
  *             shown subtly, not counted as "bitte prüfen"
  * Unknown codes count as "check" and show the processor's own text – a hint
  * that asks for a check is never hidden.
@@ -44,6 +48,13 @@ const WARNING_KINDS: ReadonlyMap<string, ProcessingWarningKind> = new Map([
   ["low_resolution", "info"],
   ["vehicle_reduced", "info"],
   ["vehicle_small", "info"],
+  // Interior shot: the showroom could not be put behind the glass (no glass found, the glass
+  // region too small or not safe, SAM 2.1 not available) – the saved result IS the original
+  // photo, a valid listing image (processor/app/pipeline/glass_backdrop.py, MESSAGES).
+  ["glass_backdrop_skipped", "info"],
+  // Detail shot: the experimental detail backdrop was skipped, the original stays
+  // (processor/app/pipeline/detail_backdrop.py).
+  ["detail_backdrop_skipped", "info"],
 ]);
 
 /** Longer messages are shortened to this many characters (the processor's texts are far shorter). */

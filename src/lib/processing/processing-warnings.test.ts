@@ -33,6 +33,29 @@ describe("processor hints on a result", () => {
     for (const code of ["low_resolution", "vehicle_reduced", "vehicle_small"]) expect(getWarningKind(code)).toBe("info");
   });
 
+  it("treats an interior/detail shot that stayed the original as information, never as a check", () => {
+    // processor/app/pipeline/glass_backdrop.py MESSAGES – the saved result is the valid original photo
+    const glass = {
+      code: "glass_backdrop_skipped",
+      message: "Innenraumfoto: Scheibenbereich zu klein – Außenansicht nicht ersetzt.",
+    };
+    const detail = { code: "detail_backdrop_skipped", message: "Detailfoto: Hintergrund nicht ersetzt." };
+    for (const hint of [glass, detail]) {
+      expect(getWarningKind(hint.code)).toBe("info");
+      expect(needsResultCheck([hint])).toBe(false);
+      expect(hasRetakeWarning([hint])).toBe(false);
+      expect(warningsToCheck([hint])).toEqual([]);
+      // the processor's own German text is what the employee sees
+      expect(infoWarnings([hint])).toEqual([hint]);
+      expect(parseProcessingWarnings([hint])).toEqual([hint]);
+    }
+    // next to a real check hint the information stays subtle and the check stays a check
+    const hints = [glass, warning("mask_uncertain")];
+    expect(needsResultCheck(hints)).toBe(true);
+    expect(warningsToCheck(hints).map((hint) => hint.code)).toEqual(["mask_uncertain"]);
+    expect(infoWarnings(hints)).toEqual([glass]);
+  });
+
   it("asks to check the shadow, never for a retake, when a saved result's tyre contacts were implausible", () => {
     const contacts = {
       code: "ground_contact_uncertain",
