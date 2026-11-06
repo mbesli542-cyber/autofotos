@@ -107,6 +107,7 @@ __all__ = [
     "assess_glass",
     "branding_in_crop",
     "compose_glass_backdrop",
+    "GlassMasksUnavailable",
     "file_glass_masks",
     "glass_backdrop_applies",
     "glass_mask_beside",
@@ -214,8 +215,14 @@ class GlassMask:
 
 
 #: ``(rgb uint8 H×W×3, shot_key) -> GlassMask | None`` – None: no glass found / nothing to say. Raises
-#: nothing for an unclear photo (that is the gate's job). The mask must have the photo's size.
+#: nothing for an unclear photo (that is the gate's job) – only ``GlassMasksUnavailable`` when it has
+#: no model to look with. The mask must have the photo's size.
 GlassMaskProvider = Callable[[np.ndarray, "str | None"], "GlassMask | None"]
+
+
+class GlassMasksUnavailable(Exception):
+    """The provider cannot look at the photo right now (SAM 2.1 off, its graphs missing or refused at
+    warm-up): the shot stays the original with the ``no_mask_provider`` hint – never a guess."""
 
 
 def glass_mask_beside(photo: Path) -> Path:
@@ -585,7 +592,11 @@ def run_glass(
     if glass_masks is None:
         return skip("no_mask_provider")
     progress(0.1, "glass-mask")
-    mask = glass_masks(rgb, shot_key)
+    try:
+        mask = glass_masks(rgb, shot_key)
+    except GlassMasksUnavailable as error:
+        log.info("Glass backdrop (%s) without glass masks: %s", shot_key, error)
+        return skip("no_mask_provider", maskSource=None, detail=str(error))
     mark("mask")
     if mask is None:
         return skip("no_glass", maskSource=None)

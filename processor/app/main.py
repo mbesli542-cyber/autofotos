@@ -245,8 +245,10 @@ def create_app(
             "sam2": getattr(getattr(sam2, "spec", None), "name", None) if sam2 is not None else None,
             "sam2Loaded": bool(getattr(sam2, "loaded", False)) if sam2 is not None else None,
             "sam2Error": getattr(segmenter, "sam2_error", None),
-            # glass masks of interior shots (preset glassBackdrop): the automatic SAM 2.1 provider or none
-            "glassMasks": settings.glass_masks if glass_masks is not None else None,
+            # glass masks of interior shots (preset glassBackdrop): "sam2" = the automatic provider on
+            # the same SAM 2.1 instance, "none" = switched off, null = waiting for a SAM 2.1 that is
+            # off, not built or refused (interior shots stay the original with a hint meanwhile)
+            "glassMasks": glass_masks_state(settings, segmenter, glass_masks),
             "debug": settings.debug,
             "auth": bool(settings.api_key),
             "supabase": store is not None,
@@ -416,17 +418,29 @@ CLEANUP_INTERVAL_SECONDS = 600
 
 
 def create_glass_masks(settings: Settings, segmenter) -> GlassMaskProvider | None:
-    """The glass-mask provider of the glass backdrop (interior shots): SAM 2.1 (``glass_masks="sam2"``,
-    its graphs load on the first interior photo that needs them – nothing is loaded here) with the
-    segmenter's vehicle detector for the cars seen outside, or none."""
+    """The glass-mask provider of the glass backdrop (interior shots): ``glass_masks="sam2"`` = the
+    automatic masks on the process's ONE SAM 2.1 segmenter – ``segmenter.sam2``, the instance
+    ``create_segmenter`` attached for the contested cut (PROCESSOR_SAM2_ENABLED governs both; its
+    graphs load on the first photo that needs them – nothing is loaded here) with the segmenter's
+    vehicle detector for the cars seen outside; while ``segmenter.sam2`` is None (off, graphs
+    missing, refused at warm-up) interior shots stay the original with a hint. ``"none"`` = no
+    provider at all."""
     if settings.glass_masks == "none":
         return None
     if settings.glass_masks != "sam2":
         raise RuntimeError(f"PROCESSOR_GLASS_MASKS must be 'sam2' or 'none', got {settings.glass_masks!r}")
-    from .pipeline.glass_mask import sam_glass_masks
-    from .pipeline.sam2 import create_sam2
+    from .pipeline.glass_mask import shared_glass_masks
 
-    return sam_glass_masks(create_sam2(settings), detector=getattr(segmenter, "detector", None))
+    return shared_glass_masks(segmenter)
+
+
+def glass_masks_state(settings: Settings, segmenter, glass_masks) -> str | None:
+    """``/health`` ``glassMasks``: "sam2" while the automatic masks can run (provider wired and
+    ``segmenter.sam2`` there), "none" with PROCESSOR_GLASS_MASKS=none, null while the provider waits
+    for a SAM 2.1 that is off, not built or refused (``sam2`` null, ``sam2Error``)."""
+    if glass_masks is None:
+        return "none"
+    return settings.glass_masks if getattr(segmenter, "sam2", None) is not None else None
 
 
 def _cleanup_loop(manager: JobManager, stop: threading.Event) -> None:

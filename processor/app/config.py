@@ -81,18 +81,20 @@ class Settings:
     #: registry in app/pipeline/detection.py. Required like the segmentation model.
     detector_model: str = "rf-detr-seg-medium"
     #: Prompted segmentation model (SAM 2.1) from the registry in app/pipeline/sam2.py. Its two
-    #: ONNX graphs are BUILT by scripts/export_sam2.py (no download source); optional: used by the
-    #: contested cut (see sam2_enabled), loaded on first use – a job without a contested region
-    #: never loads them.
+    #: ONNX graphs are BUILT by scripts/export_sam2.py (no download source; the Docker build builds
+    #: them). ONE instance per process (`segmenter.sam2`), loaded on first use, shared by the
+    #: contested cut and the automatic glass masks – a job that needs neither never loads them.
     sam2_model: str = "sam2.1-hiera-small"
-    #: SAM 2.1 for the contested cut (mask.sam_cut: a detector-verified foreign object glued to the
-    #: outline). PROCESSOR_SAM2_ENABLED: None (default) = on when both built graphs exist in
-    #: models_dir, off with a logged note otherwise; true = on, a missing graph logs a WARNING and
-    #: jobs behave as without it (rejection as before); false = off.
+    #: SAM 2.1 as a whole – the contested cut (mask.sam_cut: a detector-verified foreign object glued
+    #: to the outline) AND the automatic glass masks of interior shots. PROCESSOR_SAM2_ENABLED: None
+    #: (default) = on when both built graphs exist in models_dir, off with a logged note otherwise;
+    #: true = on, a missing graph logs a WARNING and jobs behave as without it (rejection as before,
+    #: interior shots stay the original with a hint); false = off.
     sam2_enabled: bool | None = None
-    #: Glass masks of interior shots (preset glassBackdrop): "sam2" = the automatic SAM 2.1 provider
-    #: (app/pipeline/glass_mask.py; the graphs load on the first interior photo that needs them),
-    #: "none" = no provider (those shots stay the original with a hint while the backdrop is enabled).
+    #: Glass masks of interior shots (preset glassBackdrop): "sam2" = the automatic provider
+    #: (app/pipeline/glass_mask.py) on the SAM 2.1 instance above – it needs sam2_enabled not false and
+    #: the graphs; "none" = no provider (those shots stay the original with a hint while the backdrop
+    #: is enabled). Governs the glass provider only.
     glass_masks: str = "sam2"
     #: Download missing model weights on first use (verified by SHA-256). Does not apply to the
     #: built SAM 2.1 graphs – a missing one is always a ModelUnavailableError naming the export script.

@@ -60,12 +60,19 @@ import cv2
 import numpy as np
 
 from .detection import VehicleDetector
-from .glass_backdrop import GlassMask, GlassMaskProvider, GlassPane
+from .glass_backdrop import GlassMask, GlassMaskProvider, GlassMasksUnavailable, GlassPane
 from .sam2 import Sam2Embedding, Sam2Segmenter
 
 log = logging.getLogger(__name__)
 
-__all__ = ["GlassMaskConfig", "GlassMaskResult", "find_glass", "looks_like_mirror", "sam_glass_masks"]
+__all__ = [
+    "GlassMaskConfig",
+    "GlassMaskResult",
+    "find_glass",
+    "looks_like_mirror",
+    "sam_glass_masks",
+    "shared_glass_masks",
+]
 
 SOURCE = "sam2"
 #: Seeds whose small masks always form the interior region I; a dark object (wheel, display, trim – but
@@ -731,11 +738,36 @@ def find_glass(
 def sam_glass_masks(
     segmenter: Sam2Segmenter, cfg: GlassMaskConfig | None = None, detector: VehicleDetector | None = None
 ) -> GlassMaskProvider:
-    """The provider for ``run_glass`` / ``JobManager(glass_masks=)``: SAM loads on the first interior
-    photo, never earlier. ``detector``: the vehicle detector for the cars seen outside (optional)."""
+    """The provider for ``run_glass`` / ``JobManager(glass_masks=)`` on a given SAM 2.1 segmenter
+    (tests, tools): SAM loads on the first interior photo, never earlier. ``detector``: the vehicle
+    detector for the cars seen outside (optional). The service uses ``shared_glass_masks``."""
+    config = cfg or GlassMaskConfig()
+    return _provider(lambda: (segmenter, detector), config)
+
+
+def shared_glass_masks(vehicle_segmenter, cfg: GlassMaskConfig | None = None) -> GlassMaskProvider:
+    """The provider on the process's ONE SAM 2.1 segmenter: ``vehicle_segmenter.sam2`` (attached by
+    ``segmentation.create_segmenter`` – the same instance the contested cut uses, so the graphs are
+    loaded once and shared) and its ``detector``, read on EVERY call: while SAM 2.1 is off
+    (PROCESSOR_SAM2_ENABLED=false), its graphs are missing or were refused at warm-up (``sam2`` is
+    None then) the call raises ``GlassMasksUnavailable`` and the shot stays the original with the
+    ``no_mask_provider`` hint. Nothing is loaded before the first interior photo that needs it."""
     config = cfg or GlassMaskConfig()
 
+    def models():
+        sam2 = getattr(vehicle_segmenter, "sam2", None)
+        if sam2 is None:
+            raise GlassMasksUnavailable(
+                "SAM 2.1 is not available (off, graphs not built or refused at warm-up – see /health sam2, sam2Error)"
+            )
+        return sam2, getattr(vehicle_segmenter, "detector", None)
+
+    return _provider(models, config)
+
+
+def _provider(models, config: GlassMaskConfig) -> GlassMaskProvider:
     def provide(rgb: np.ndarray, shot_key: str | None) -> GlassMask | None:
+        segmenter, detector = models()
         result = find_glass(segmenter, rgb, shot_key, config, detector)
         log.info(
             "Glass mask (%s): %s pane(s), %d prompts, %s",

@@ -60,6 +60,12 @@ each call under the same lock. ``--no-detector`` runs the pipeline without it
 semantic check rejects); ``--whole-frame`` segments portrait/square photos on
 the whole frame like before the window pass (comparison runs).
 
+SAM 2.1 (app/pipeline/sam2.py): ONE ``LockedSam2`` per run – the contested cut
+(``segmenter.sam2``) and the glass-mask provider of interior cases
+(``shared_glass_masks(segmenter)``) share it, every encode/predict/decode under
+the same lock. ``--no-sam2`` runs without it (zoom cut only, no automatic glass
+masks – the earlier behaviour, comparison runs).
+
 Portrait cases: ``scripts/make_portrait_cases.py`` derives upright frames from
 the regression photos and writes a manifest for ``--manifest``/``--cache-dir``.
 
@@ -465,8 +471,10 @@ class LockedDetector:
 
 
 class LockedSam2:
-    """The real SAM 2.1 segmenter (in-process, ``app.pipeline.sam2``), every encode/predict under
-    the shared model lock; None-like when its graphs are not built (``create_sam2_if_available``)."""
+    """The real SAM 2.1 segmenter (in-process, ``app.pipeline.sam2``), every encode/predict/decode
+    under the shared model lock – the ONE instance of the run: the contested cut (``segmenter.sam2``)
+    and the glass-mask provider of interior cases (``shared_glass_masks(segmenter)``) share it, so
+    neither ever runs SAM unlocked. Absent when its graphs are not built (``create_sam2_if_available``)."""
 
     def __init__(self, real, lock_path: Path):
         self._real = real
@@ -498,6 +506,16 @@ class LockedSam2:
         with exclusive_lock(self._lock_path) as waited:
             started = time.perf_counter()
             result = self._real.predict(embedding, points, box, multimask=multimask)
+        self.predicts += 1
+        self.seconds += time.perf_counter() - started
+        self.lock_wait += waited
+        return result
+
+    def decode(self, embedding, points, box, *, multimask):
+        # the glass-mask provider's call (low-res logits) – the same lock discipline as predict
+        with exclusive_lock(self._lock_path) as waited:
+            started = time.perf_counter()
+            result = self._real.decode(embedding, points, box, multimask=multimask)
         self.predicts += 1
         self.seconds += time.perf_counter() - started
         self.lock_wait += waited
@@ -721,6 +739,7 @@ class RunContext:
     segmenter: CachedSegmenter
     process_photo: object
     code_digest: str
+    glass_masks: object = None
 
 
 def run_case(case: Case, ctx: RunContext) -> dict:
@@ -764,6 +783,8 @@ def run_case(case: Case, ctx: RunContext) -> dict:
         "shot_key": case.shot_key,
         "debug": debug,
         "require_master_showroom": True,
+        # interior cases: the glass masks on the run's one (locked) SAM 2.1 – none with --no-sam2
+        "glass_masks": ctx.glass_masks,
     }
     kwargs, _ = pipeline_kwargs(ctx.process_photo, wanted)
     metadata: dict = {}
@@ -867,12 +888,16 @@ def run_cases(args, cases: list[Case], out: Path, label: str, set_name: str) -> 
     )
     if not args.no_detector:
         segmenter.detector = LockedDetector(settings, args.lock_file)
+    glass_masks = None
     if not args.no_sam2:
+        from app.pipeline.glass_mask import shared_glass_masks
         from app.pipeline.sam2 import create_sam2_if_available
 
         real_sam2 = create_sam2_if_available(settings)
         if real_sam2 is not None:
             segmenter.sam2 = LockedSam2(real_sam2, args.lock_file)
+            # interior cases (preset glassBackdrop): the same locked instance, read per call
+            glass_masks = shared_glass_masks(segmenter)
     if args.whole_frame:
         # comparison runs: BiRefNet on the whole frame also for portrait/square photos
         def whole_frame(rgb, segmenter, vehicle_box=None):
@@ -882,7 +907,7 @@ def run_cases(args, cases: list[Case], out: Path, label: str, set_name: str) -> 
     process_photo = pipeline_module.process_photo
     _, dropped = pipeline_kwargs(process_photo, {"require_master_showroom": True})
     digest_before = assets_digest(settings)
-    ctx = RunContext(out, settings, preset, backgrounds, segmenter, process_photo, code_digest())
+    ctx = RunContext(out, settings, preset, backgrounds, segmenter, process_photo, code_digest(), glass_masks)
 
     out.mkdir(parents=True, exist_ok=True)
     run_path = out / "run.json"
@@ -1430,7 +1455,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-sam2",
         action="store_true",
-        help="comparison: without the SAM 2.1 contested cut (only the zoom cut of glued foreign objects)",
+        help="comparison: without SAM 2.1 (only the zoom cut of glued foreign objects, no automatic glass masks)",
     )
     parser.add_argument(
         "--whole-frame",

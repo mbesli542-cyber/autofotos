@@ -414,13 +414,15 @@ def graphs_present(settings: Settings) -> bool:
 
 
 def create_sam2_if_available(settings: Settings) -> Sam2Segmenter | None:
-    """The SAM 2.1 segmenter for the contested cut, or None when it is off or its graphs are not
-    there (``Settings.sam2_enabled``): the pipeline then behaves as without it – a glued foreign
-    object whose cut line no other signal gives keeps rejecting the photo. A missing graph is
-    logged (a WARNING when PROCESSOR_SAM2_ENABLED=true asked for it); an unknown model name is
+    """The process's ONE SAM 2.1 segmenter (``segmenter.sam2``: the contested cut and the automatic
+    glass masks of interior shots share it), or None when it is off or its graphs are not there
+    (``Settings.sam2_enabled``): the pipeline then behaves as without it – a glued foreign object
+    whose cut line no other signal gives keeps rejecting the photo, interior shots stay the
+    original with a hint. Nothing is loaded here (the sessions load on first use). A missing graph
+    is logged (a WARNING when PROCESSOR_SAM2_ENABLED=true asked for it); an unknown model name is
     a configuration error like an unknown detector."""
     if settings.sam2_enabled is False:
-        log.info("SAM 2.1 contested cut is off (PROCESSOR_SAM2_ENABLED=false)")
+        log.info("SAM 2.1 is off (PROCESSOR_SAM2_ENABLED=false): no contested cut, no automatic glass masks")
         return None
     if not graphs_present(settings):
         spec = SAM2_REGISTRY.get(settings.sam2_model)
@@ -429,9 +431,9 @@ def create_sam2_if_available(settings: Settings) -> Sam2Segmenter | None:
                 f"Unknown SAM 2 model '{settings.sam2_model}'. Available: {', '.join(sorted(SAM2_REGISTRY))}"
             )
         message = (
-            "SAM 2.1 graphs %s/%s not found in %s – the contested cut is off, a foreign object glued to the "
-            "vehicle outline rejects the photo as before (build them with scripts/export_sam2.py or the Docker "
-            "build-arg SAM2_MODEL)"
+            "SAM 2.1 graphs %s/%s not found in %s – the contested cut and the automatic glass masks are off: a "
+            "foreign object glued to the vehicle outline rejects the photo as before, interior shots stay the "
+            "original with a hint (build them with scripts/export_sam2.py; the Docker build does, unless SAM2=off)"
         )
         args = (spec.encoder_filename, spec.decoder_filename, settings.models_dir)
         if settings.sam2_enabled:
