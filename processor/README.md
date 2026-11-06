@@ -59,14 +59,20 @@ out when the section is set): `app/pipeline/glass_backdrop.py`. The glass alpha
 (1 = see-through glass) comes from a **pluggable mask provider** the caller
 injects – `process_photo(..., glass_masks=)`, `JobManager(glass_masks=)`: a
 callable `(rgb, shot_key) -> GlassMask | None` (`GlassMask.alpha` H×W float32,
-optional `panes` with their own view); shipped: `file_glass_masks(path)` – a
+optional `panes` with their own view; without panes the mask's connected
+components are the panes); shipped: `file_glass_masks(path)` – a
 grey PNG next to the photo (CLI `--glass-mask`, default `<photo>-glass.png`) –,
 a prompted segmentation model is the next provider. Without a provider those
-shots stay the original with the hint. Per pane: a crop of the branded plate
-(`forward` for the windscreen: the brand wall ahead, the plate's horizon at
-`horizon` of the photo height, `cropHeight` of the plate, centred on
-`centerX`; `side` for side windows: the slat/plant side; the official logo
-appears when in view), Gaussian depth of field (`blur` × the long edge,
+shots stay the original with the hint. Each pane gets a plate view by shot and
+position (`view_for_pane`): `forward` (cockpit/front_interior: the brand wall
+ahead, the official logo in view – the only view that may show the
+lettering), `side` (driver_seat/rear_seats side windows: the slat panel and
+the olive tree zoomed in below the lettering; panes in the right half of the
+photo get the crop mirrored, `mirrorRight`), `rear` (a rear_seats pane in the
+middle third of the upper half = the rear window: the plain panel below the
+lettering, `blurScale` 1.5). Per view: `cropHeight` of the plate at the
+photo's aspect, centred on `centerX`, upper edge at `top` of the plate height;
+then Gaussian depth of field (`blur` × `blurScale` × the long edge,
 `floorBlur` × it at the bottom row), mean colour moved towards the photo's own
 glass region (`lightMatch`, ±1 EV, ±12 % per channel), the photo's measured
 sensor noise (`grain`), then `out = original · (1 − α·k) + backdrop · α·k` with
@@ -84,7 +90,9 @@ region's core darker than 0.15 sRGB above `maxInteriorStructure`: through the
 glass the outside is bright in daylight, black steering wheels, pillars, the
 mirror and trim are not – measured on the dealer's ID.5 photos: correct masks
 ≤ 0.035, the mask with the mirror 0.05, with the steering wheel 0.1; a night
-photo is rejected too, rightly), `no_mask_provider`, `mask_invalid`,
+photo is rejected too, rightly), `branding_in_view` (`assess_crop`: a side/rear
+crop grown by 3 blur sigmas would overlap a branding box of the plate –
+letter fragments never appear by accident), `no_mask_provider`, `mask_invalid`,
 `showroom_unavailable`. Not switched on: the mask source decides what is glass
 – hand-made masks so far. Metadata: `shotKind` `interior_glass_backdrop` /
 `interior_passthrough`, `glassBackdrop` (gate, maskSource, panes with crop /
@@ -324,8 +332,8 @@ for the band under the car where the plate's own reflection is removed),
 `vehicleAdjustments`, `quality`, `detailBackdrop` (experimental, off), `glassBackdrop`
 (off; when set, every field: `blur` 0–0.03, `floorBlur` 0–1, `lightMatch` 0–1, `grain` 0–2,
 `glassKeep` 0–0.6, `minGlassFraction` 0.001–0.5, `maxUndecided` 0–0.05, `maxBorderSides` 0–4,
-`maxBottomTouch` 0–1, `maxInteriorStructure` 0–0.5, per view `cropHeight` 0.25–1, `centerX` 0–1,
-`horizon` 0.05–0.95). Unknown keys, wrong types, NaN/Infinity and
+`maxBottomTouch` 0–1, `maxInteriorStructure` 0–0.5, per view (`forward`, `side`, `rear`) `cropHeight`
+0.1–1, `centerX` 0–1, `top` 0–0.9, `blurScale` 0.25–3, `mirrorRight` true/false). Unknown keys, wrong types, NaN/Infinity and
 out-of-range values are rejected (`PresetConfigError`), never replaced by
 defaults – `/health` reports them as `presetError` and jobs fail with
 `configuration`. Ranges besides the ones above (`app/presets.py`):
