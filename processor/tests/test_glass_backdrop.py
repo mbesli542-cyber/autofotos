@@ -123,18 +123,30 @@ def _synthetic_plate(width: int = 1200, height: int = 900) -> gb.PlateContext:
 # --------------------------------------------------------------------------- config
 
 
-def test_glass_backdrop_is_off_in_the_shipped_preset_with_every_field_written_out():
-    """The dealer can switch it on in the JSON; the shipped values are the code defaults (one
-    place to change them), nothing hides behind a default."""
+def test_glass_backdrop_is_on_in_the_shipped_preset_with_every_field_written_out():
+    """Dealer decision (2026-11-06): the shipped preset and every variant enable the showroom seen
+    through the glass for all interior shots the module supports; the gate's minGlassFraction is
+    0.1 (a narrow windscreen strip of 6.9 % of the frame leaked onto a light-grey dash strip in his
+    photos and now stays the original). Every other value is the code default (one place to change
+    them), nothing hides behind a default; the module default itself stays off (a preset without
+    the section is unchanged)."""
     data = _preset_data()
-    assert data["glassBackdrop"]["enabled"] is False
-    assert set(data["glassBackdrop"]) >= {"forward", "side", "rear", "blur", "glassKeep"}
+    section = data["glassBackdrop"]
+    assert section["enabled"] is True
+    assert sorted(section["shots"]) == sorted(GLASS_BACKDROP_SHOTS)
+    assert section["minGlassFraction"] == 0.1
+    assert set(section) >= {"forward", "side", "rear", "blur", "glassKeep"}
     preset = parse_preset(data)
-    assert preset.glass_backdrop == GlassBackdropConfig()
-    assert not glass_backdrop_applies(preset.glass_backdrop, "cockpit")
+    assert preset.glass_backdrop == replace(
+        GlassBackdropConfig(), enabled=True, shots=tuple(section["shots"]), min_glass_fraction=0.1
+    )
+    assert GlassBackdropConfig().enabled is False
+    for shot in GLASS_BACKDROP_SHOTS:
+        assert glass_backdrop_applies(preset.glass_backdrop, shot)
+    assert not glass_backdrop_applies(preset.glass_backdrop, "door_controls")  # not a glass shot
     for name in ("autoexperten-haendler", "autoexperten-haendler-leicht", "autoexperten-haendler-kraeftig"):
         variant = json.loads((REPO_ROOT / "public/presets/variants" / f"{name}.json").read_text(encoding="utf-8"))
-        assert variant["glassBackdrop"] == data["glassBackdrop"], name
+        assert variant["glassBackdrop"] == section, name
 
 
 def test_the_shipped_views_keep_the_lettering_out_of_side_and_rear_crops():
@@ -448,8 +460,14 @@ def _provider(alpha, **kw):
     return lambda _rgb, _shot: gb.GlassMask(alpha=alpha, source="test", **kw)
 
 
+def _disabled_data() -> dict:
+    data = _preset_data()
+    data["glassBackdrop"]["enabled"] = False
+    return data
+
+
 def test_disabled_interior_shots_stay_the_plain_passthrough(run, cockpit):
-    result = run(provider=_provider(cockpit[1]))
+    result = run(_disabled_data(), provider=_provider(cockpit[1]))
     assert result.metadata["shotKind"] == "interior_passthrough" and result.warnings == []
     assert "glassBackdrop" not in result.metadata
 

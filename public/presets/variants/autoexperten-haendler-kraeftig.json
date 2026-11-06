@@ -160,7 +160,7 @@
     "highViewAspectFactor": 0.88
   },
   "glassBackdrop": {
-    "enabled": false,
+    "enabled": true,
     "shots": [
       "cockpit",
       "front_interior",
@@ -193,7 +193,7 @@
     "lightMatch": 0.5,
     "grain": 1.0,
     "glassKeep": 0.05,
-    "minGlassFraction": 0.02,
+    "minGlassFraction": 0.1,
     "maxUndecided": 0.008,
     "maxBorderSides": 3,
     "maxBottomTouch": 0.02,
