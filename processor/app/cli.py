@@ -8,9 +8,12 @@ front_left_45), --debug-dir (writes mask/geometry/cut-out/plate/... images),
 --no-detector (skip the vehicle detector: no semantic check of the mask – neither
 foreign objects nor missing vehicle parts – and the window of portrait photos
 comes from a whole-frame pass; for comparisons only, the service always uses
-the detector), --glass-mask (interior shots with the preset's glassBackdrop
-enabled: a grey PNG, 255 = see-through glass; default <photo>-glass.png next
-to the photo when it exists). A photo rejected by the quality
+the detector), --no-sam2 (no SAM 2.1: neither the cut of a foreign object glued
+to the outline – only the zoom cut, as before the dealer's decision of
+2026-11-06 – nor automatic glass masks; comparisons only), --glass-mask
+(interior shots with the preset's glassBackdrop enabled: a grey PNG, 255 =
+see-through glass; default <photo>-glass.png next to the photo when it exists).
+A photo rejected by the quality
 gate prints the German message and the gate details and exits with code 2.
 """
 
@@ -41,6 +44,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--debug-dir", type=Path, default=None)
     parser.add_argument("--no-detector", action="store_true", help="comparison only: without the vehicle detector")
     parser.add_argument(
+        "--no-sam2", action="store_true", help="comparison only: without SAM 2.1 (contested cut, automatic glass masks)"
+    )
+    parser.add_argument(
         "--glass-mask",
         type=Path,
         default=None,
@@ -54,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     segmenter = create_segmenter(settings)
     if args.no_detector:
         segmenter.detector = None
+    if args.no_sam2:
+        segmenter.sam2 = None
     backgrounds = BackgroundProvider(settings)
     debug = DebugSink(args.debug_dir) if args.debug_dir else NULL_DEBUG
     glass_masks = file_glass_masks(glass_mask) if glass_mask.is_file() else create_glass_masks(settings, segmenter)

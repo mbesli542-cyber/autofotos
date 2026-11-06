@@ -30,7 +30,7 @@ quality gate with a German retake hint.
 | --- | --- |
 | 1 Decode JPEG/PNG/WebP/HEIC (Pillow ≥ 13), EXIF orientation, ICC → sRGB (also PNG/WebP with alpha or a palette). The raw headers are read before Pillow parses anything: declared size (decompression bombs), animated PNG/WebP (refused), chunk/segment floods (limits under Security) → `decode`. JPEGs of 80–320 MP with one sequential scan (108/200 MP phone modes) are decoded at 1/2 by DCT scaling (`metadata.source` shows the reduced size); any other image above 80 MP fails with `image_too_large`, a side under 64 px with `source_resolution_too_low`. MPO uses its first image, HEIF its primary image. Then the resolution gate | `app/pipeline/decode.py`, `quality.py` |
 | 2 Vehicle detector (RF-DETR-Seg, COCO instance segmentation) on the full frame; vehicle segmentation (`VehicleSegmenter` → alpha mask, BiRefNet) – portrait/square photos on the ORIGINAL pixels of a window around the detected vehicle | `app/pipeline/detection.py`, `segmentation.py` |
-| 3 Alpha: the model alpha (up-sampled, mild choke) snapped onto real colour edges by a colour guided filter on the edge band – it may tighten the cut-out but never grow it beyond the model's own contour, and thin parts of the model's mask (antenna masts, mirror arms) keep at least the model alpha; edge confidence goes to the metadata only. Clean-up: the vehicle plus parts close to it (mirror heads, antenna pieces), foreign "spikes" (a traffic cone or post standing behind the car, merged into its outline below the roofline) cut from the outline (alpha only, anti-aliased cut edge, warning) – a spike whose cut line is not certain is left uncut and the job is rejected; **semantic check**: outline regions the detector does not see as part of THE vehicle (another car's wheel or rear, a hubcap, a sign, a bollard) are dropped when they are a separate part of the mask, otherwise the job is rejected; window holes filled; then a vehicle part the filled cut-out lacks (e.g. a dark mirror) rejects the job too, unless a whole-frame pass after a window pass has it – a smaller, partly lost piece (e.g. a mirror base) only gets a hint (Segmentation, step 5); bbox | `app/pipeline/matting.py`, `mask.py`, `detection.py` |
+| 3 Alpha: the model alpha (up-sampled, mild choke) snapped onto real colour edges by a colour guided filter on the edge band – it may tighten the cut-out but never grow it beyond the model's own contour, and thin parts of the model's mask (antenna masts, mirror arms) keep at least the model alpha; edge confidence goes to the metadata only. Clean-up: the vehicle plus parts close to it (mirror heads, antenna pieces), foreign "spikes" (a traffic cone or post standing behind the car, merged into its outline below the roofline) cut from the outline (alpha only, anti-aliased cut edge, warning) – a spike whose cut line is not certain is left uncut and the job is rejected; **semantic check**: outline regions the detector does not see as part of THE vehicle (another car's wheel or rear, a hubcap, a sign, a bollard) are dropped when they are a separate part of the mask; glued to the outline they are cut inside their contested zone only where SAM 2.1 (the dealer's decision of 2026-11-06, `mask.sam_cut`) or a zoom pass of BiRefNet gives a line every guard accepts, otherwise the job is rejected; window holes filled; then a vehicle part the filled cut-out lacks (e.g. a dark mirror) rejects the job too, unless a whole-frame pass after a window pass has it – a smaller, partly lost piece (e.g. a mirror base) only gets a hint (Segmentation, step 5); bbox | `app/pipeline/matting.py`, `mask.py`, `detection.py` |
 | 4 Vehicle geometry: tyre contacts (lower hull + narrow tyre "foot" + dark neutral rubber above it in the source photo – a lower, body-coloured bumper is no tyre; width and near/far side per tyre), near end (3/4), contact rise, aspect | `app/pipeline/vehicle_geometry.py` |
 | 5 Plate selection: the shot's plate; a 3/4 photo of the other side gets the mirrored plate of its front/rear group (`plateUsed` + warning) | `app/pipeline/pipeline.py` (`select_plate`) |
 | 6 Placement v2: plate target width, centred, lowest tyre contact on the plate's ground line; limited by height, margins, branding headroom, floor | `app/pipeline/placement.py` |
@@ -254,26 +254,90 @@ roof boxes. A second, small model gives the semantic signal:
    at 14 % cover – kept). Antenna masts, mirror arms, wipers, roof rails and the
    cowl are below the thickness limit;
 4. a foreign region that is a separate part of the mask is dropped (warning
-   `background_object_removed`). One glued to the outline is cut only when the
-   cut line is certain (`mask.zoom_cut`, at most 2 regions per photo): BiRefNet
-   runs a second time on the ORIGINAL pixels of the region's verification tile
-   (≈ 4× the region – the contact zone at 3–8× the resolution of the
-   whole-frame pass, where touching objects separate), and the cut – what that
-   pass leaves out of the mask, only within ≈ 3 mask cells of the region – must
-   satisfy every signal: the pass agrees with the mask outside that zone
-   (≤ 3 % of its pixels differ – a pass that merges more of the neighbour or
-   loses part of the car is no reference), the cut leaves ≤ 10 % of the region
-   and nothing thick beyond the vehicle instance, touches neither the core of
-   the tile's vehicle instance nor a thin part of the mask, and ≥ 60 % of the
-   new outline lies on a colour edge of the photo (ΔE ≥ 12). Alpha only (the
-   pass's own anti-aliased edge where it is lower, never higher); warning
-   `background_object_removed`. Only regions another detected object claims
-   are cut: a region nothing claims may contain a part of the car the instance
-   masks miss (the coupe's mirror in front of a bollard). Otherwise the job is
-   rejected (`mask_low_confidence`, check `foreign`, see the gate below); the
-   diagnostics are in `mask.semantic.findings[].verify.zoomCut`, the passes in
-   `segmentation.zoomPasses` (one BiRefNet run each, about as long as the main
-   pass);
+   `background_object_removed`). One glued to the outline is cut only inside its
+   **contested zone** – the verified region grown by 3 mask cells of the semantic
+   grid (the coarse band where the true boundary lies) plus 0.4 % of the vehicle
+   width, inside the BiRefNet alpha –, alpha only, nothing added, and only when a
+   cut method gives a line every guard accepts (`CUT_METHODS`, at most 2 glued
+   regions per photo; one that cannot be cut rejects the photo). Only regions
+   another detected object claims are cut: a region nothing claims may contain
+   a part of the car the instance masks miss (the coupe's mirror in front of a
+   bollard).
+   - **SAM cut** (`mask.sam_cut`, first; the dealer's decision of 2026-11-06 –
+     before it the dealer's own lot photos with a car, van or post behind the
+     car were rejected). SAM 2.1 (`sam2.py`, below) encodes the ORIGINAL pixels
+     of the region's verification tile (≈ 4× the region, 0.2–0.45 × the vehicle)
+     once (measured 2026-11-06 on 4 vCPUs: 1.6–2.1 s alone, 3.3–3.7 s inside a
+     job after BiRefNet, 5.5–5.8 s with other work on the machine; load 1.1–1.3 s
+     on the first contested region of the process) and predicts its three
+     candidate masks for ONE prompt (32–52 ms alone, 47–160 ms inside a job):
+     "our car" = up to 3 positive points in
+     the core of the tile's vehicle instance (eroded by 3 mask cells – the band
+     in which the coarse instance outline cannot tell the car's own edge from
+     the object behind it; at 1.5 cells the instance of a grey car still
+     reached 1–2 px past its tail into the grey car behind – plus one cell of
+     SAM's 256-cell logits, 3–5 px, its own edge quantisation –, inside our
+     alpha, outside the region) – the most interior one within 3 cells of the
+     zone first, then the most interior one of the tile – plus our car's box
+     (the vehicle instance and our alpha outside the zone); "not that" = up to 3
+     negative points in the core of the other object's instance (eroded the
+     same way, and never inside our alpha outside the verified region – the
+     other instance is as coarse as ours: in the dealer's front-left photo the
+     black car's instance also claimed a strip of OUR bonnet, two "not that"
+     points landed on it, SAM excluded the bonnet and every candidate failed
+     the agreement screen): inside the glued part, next to the contact outside
+     our alpha, then anywhere in the tile. Screening of the candidates (SAM's three
+     granularities): it must contain every positive and no negative point,
+     agree with the BiRefNet alpha outside the zone (≤ 3 % of the alpha's pixels
+     there differ, away from the tile border; measured 0.06–2.1 % for the right
+     candidate, 67–96 % for a part-level one) and contain ≤ 2 % of the foreign
+     core; the highest predicted IoU wins. The cut is what that mask leaves out
+     of our alpha inside the zone (plus pieces it cuts off there). Guards, all of
+     them: ≤ 10 % of the region left and nothing thick (≥ 0.9 % of the vehicle
+     width) left beyond the vehicle instance; nothing of the mask adjoining the
+     zone and continuing BEYOND it that is thick and reaches more than 3 mask
+     cells beyond the tile's vehicle instance (`foreign_continues` – the lower
+     front of a grey car behind the tail: no candidate and no zone covered it
+     (claimed by our instance in a grid tile, unclaimed in the lower half), and
+     SAM took it for our bumper; a cut would have kept it in the result:
+     measured 2.8 % of the width, ≈ 17 cells beyond the instance); ≥ 98 % of the foreign core that
+     lay inside our alpha removed (thin parts of the mask excepted – an antenna
+     of OUR car in front of the neighbour, which the coarse instance claims as
+     well); **0 px removed inside our car's core** and 0 px of a thin part of
+     the mask (antenna, mirror arm, wiper – thinner than 0.9 % of the width,
+     outside the region grown by one cell); confined to the zone (by
+     construction, checked); ≥ 50 % of the new cut line within 1 px of a colour
+     edge (ΔE ≥ 12 – two grey cars give 0.52–0.54) OR SAM's predicted IoU
+     ≥ 0.9. The edge along the cut is SAM's own, anti-aliased over 2 px from its
+     logits (signed distance = logit / |∇logit|), taken only where it is lower
+     than the alpha – the cut never adds alpha and never thins a thin part below
+     the model alpha; outside the zone nothing changes. The detector still never
+     draws the line, BiRefNet stays the matting model everywhere else;
+     diagnostics in `mask.semantic.findings[].verify.samCut` (prompts, every
+     candidate with `iou`/`disagree`/`foreignInside`, the guards' numbers,
+     `reasons`), the encodes in `segmentation.samPasses`, `verify.cutBy` = `sam`.
+   - **zoom cut** (`mask.zoom_cut`, when the SAM cut gives no line or SAM is
+     not there): BiRefNet runs a second time on the ORIGINAL pixels of the same
+     tile (the contact zone at 3–8× the resolution of the whole-frame pass,
+     where touching objects separate; one BiRefNet run, about as long as the
+     main pass), and the cut – what that pass leaves out of the mask, inside
+     the zone – must satisfy every signal: the pass agrees with the mask outside
+     the zone (≤ 3 % of its pixels differ – a pass that merges more of the
+     neighbour or loses part of the car is no reference), the cut leaves ≤ 10 %
+     of the region and nothing thick beyond the vehicle instance, touches
+     neither the core of the tile's vehicle instance nor a thin part of the
+     mask, and ≥ 60 % of the new outline lies on a colour edge of the photo
+     (ΔE ≥ 12). Alpha only (the pass's own anti-aliased edge where it is lower,
+     never higher); diagnostics in `verify.zoomCut`, the passes in
+     `segmentation.zoomPasses`, `verify.cutBy` = `zoom`.
+
+   Either cut gives the warning `background_object_removed`. Otherwise the job
+   is rejected (`mask_low_confidence`, check `foreign`, see the gate below) –
+   exactly as before the SAM cut. SAM first because it is ≈ 5–10× cheaper than
+   a BiRefNet pass and, on the evaluated contacts, finds the line where the zoom
+   pass does not (the zoom pass tends to keep the whole neighbour: `left`
+   ≈ 1.0); the zoom cut stays as the second opinion and as the only cut
+   without the SAM graphs;
 5. **missing parts** – the other direction, checked on the cut-out as it will
    be: after the window-hole fill (a see-through window or glass roof that the
    fill closes is no lost part) and together with the separate foreign parts
@@ -380,13 +444,22 @@ Docker below).
 To add another backend implement `VehicleSegmenter` and register it in
 `create_segmenter()` (it also attaches the detector, `segmenter.detector`).
 
-**Prompted segmentation – SAM 2.1 (model plumbing only, nothing uses it yet).**
-Two planned features – separating OUR car from a car that touches it, and
-finding the window glass in cockpit photos – need a model that answers "which
-pixels belong to the object at this box / these points". That is Meta's
-Segment Anything 2.1, run like the other models with ONNX Runtime on the CPU
-(`app/pipeline/sam2.py`). Like the detector it only READS the photo: it never
-generates, moves or changes a pixel, and BiRefNet stays the matting model.
+**Prompted segmentation – SAM 2.1 (the contested cut).** Separating OUR car
+from a car, van or post that touches it (step 4 above, `mask.sam_cut` – the
+dealer's decision of 2026-11-06) needs a model that answers "which pixels belong
+to the object at this box / these points"; a second planned use is the window
+glass of cockpit photos. That is Meta's Segment Anything 2.1, run like the
+other models with ONNX Runtime on the CPU (`app/pipeline/sam2.py`). Like the
+detector it only READS the photo: it never generates, moves or changes a pixel,
+BiRefNet stays the matting model everywhere outside the contested zone, and the
+cut only ever lowers alpha. It is optional: `create_segmenter` attaches it
+(`segmenter.sam2`) when both built graphs exist in the models folder
+(`PROCESSOR_SAM2_ENABLED`: unset = on when they exist, `true` = on and a
+missing graph logs a WARNING, `false` = off); without it a glued foreign object
+rejects the photo as before. The warm-up only verifies the checksums (a foreign
+file is refused loudly, `/health` `sam2Error`, and the cut is off); the
+sessions load with the first contested region – a job without one never loads
+them (`/health` `sam2`, `sam2Loaded`).
 
 | | |
 | --- | --- |
@@ -398,7 +471,8 @@ generates, moves or changes a pixel, and BiRefNet stays the matting model.
 | Graphs | encoder: `image` [1, 3, 1024, 1024] → `image_embed` [1, 256, 64, 64], `high_res_feats_0` [1, 32, 256, 256], `high_res_feats_1` [1, 64, 128, 128]; decoder: those three + `point_coords` [1, N, 2] float32 (model px) + `point_labels` [1, N] int64 (1 foreground, 0 background, 2/3 box corners) → `masks` [1, 4, 256, 256] low-res logits of ALL mask tokens (0 = single-mask token, 1 … 3 = multimask), `iou_predictions` [1, 4], `object_score_logits` [1, 1]. The prompt encoder pads the prompt itself (SAM's padding point) – a box is its two corners labelled 2/3, as the official `SAM2ImagePredictor` feeds it |
 | Runtime | `Sam2Segmenter.encode(rgb) → Sam2Embedding` (SAM 2.1's own preprocessing: resize to 1024 × 1024 without keeping the aspect ratio – Pillow bilinear, the official processor's antialiased uint8 resize up to ±1 on 0.1 % of the pixels –, /255, ImageNet mean/std); `predict(embedding, points=[(x, y, label 0/1), …], box=(x0, y0, x1, y1) or None, multimask=True) → (logits [K, H, W] float32 in photo px, > 0 = inside, sigmoid = probability; IoU predictions [K])`, K = 3 with `multimask` (SAM's three candidates), else 1: the single-mask token, or – when its stability score is below 0.98 – the best multimask output (`dynamic_multimask_via_stability`, ported to NumPy; `decode` returns the 256 × 256 logits and the object score without the resampling). Lazy loading of both sessions, `PROCESSOR_THREADS`, no memory arena, `release()` drops them |
 | Verified | `scripts/export_sam2.py --verify cases.json` (ONNX Runtime vs the PyTorch model, same tensor): mask IoU 1.0000 for every prompt (box, point, point + background point, box + point) on the four synthetic regression photos, max |Δlogit| ≤ 1e-4, IoU predictions equal; with the service's Pillow preprocessing IoU 0.996–1.000 (SAM's ambiguous third candidate moves most), IoU predictions within 0.0005. Real regression photos: `/opt/ae-regression/images` was not reachable on the export day (Wikimedia rate limit) – run it again on `side_left`, `front`, `suv_fr45` (see `tests/visual/`) |
-| Used for | the automatic glass masks of interior shots (`app/pipeline/glass_mask.py`, above – loaded on the first interior photo whose preset enables `glassBackdrop`, never earlier; a missing graph costs nothing until then and is a `ModelUnavailableError` then). Never for the cut line or any pixel |
+| Used for | (1) the cut line INSIDE the contested zone around a detector-verified foreign object glued to the outline (step 4, `mask.sam_cut`): prompts from the detector's instance cores, candidates screened against the BiRefNet alpha, the cut guarded; `metadata.sam2` names it. (2) The automatic glass masks of interior shots (`app/pipeline/glass_mask.py`, above – loaded on the first interior photo whose preset enables `glassBackdrop`, never earlier; a missing graph costs nothing until then and is a `ModelUnavailableError` then). One `Sam2Segmenter` per process (`segmenter.sam2`) serves both. CLI: `--no-sam2` runs without it (comparisons) |
+| Not used for | pixels, the vehicle outline anywhere else (BiRefNet), the interior itself, anything generative. The detector never draws the line either |
 
 **Resources (measured 2026-11-06, 4 vCPUs, load average ≈ 1.5 from other
 work, `PROCESSOR_THREADS=0`, synthetic 3840 × 2880 / 4032 × 3024 / 2160 × 3840
@@ -411,6 +485,7 @@ photos; one process per row, peak = `ru_maxrss`):**
 | BiRefNet (+ detector) alone, one segmentation | 4.7 s | 13.6 s | – | 6.9 GB (0.6–1.0 GB resident after the run) |
 | BiRefNet segmentation, then SAM 2.1 in the SAME process (BiRefNet session kept) | 5.0 s + 1.3 s | 1.8–2.4 s | 27 ms / 95 ms | **6.9 GB** – no higher than BiRefNet alone |
 | the same with the BiRefNet session dropped before SAM 2.1 | 5.2 s + 1.2 s | 2.0–2.6 s | 28 ms / 115 ms | 6.9 GB (0.6 GB resident before SAM 2.1) |
+| the contested cut inside an exterior job (two grey VW cut-outs touching, 2400 × 1800, one region, verification tile 883–935 px; measured 2026-11-06) | 1.1–1.3 s | 3.3–3.7 s (1.6–2.1 s for the same tile alone; 5.5–5.8 s with other work on the machine) | 47–160 ms incl. the resampling of 3 masks to the tile | **6.75–7.3 GB** – BiRefNet's peak, no higher; the job 36.7 s in all (BiRefNet 17.8 s, mask step 8.2 s incl. SAM 3.4 s and the detector's verification, light 3.0 s, grounding 3.0 s) |
 
 So SAM 2.1 fits in the same process after BiRefNet without sequential loading:
 its peak (1.5 GB, during `encode`) lies far below BiRefNet's (≈ 7 GB, activations
@@ -427,8 +502,10 @@ Zen 3 cores under WSL2.
 **Docker:** the graphs are built in a separate build stage (`sam2-export`:
 pinned torch + transformers, the pinned checkpoint, `scripts/export_sam2.py`)
 and only the two ONNX files are copied into the image – no torch in the service
-image. Opt-in while nothing uses it: `docker build … --build-arg
-SAM2_MODEL=sam2.1-hiera-small` (≈ 300 MB of downloads once, cached by BuildKit).
+image. Build with `docker build … --build-arg SAM2_MODEL=sam2.1-hiera-small`
+(≈ 300 MB of downloads once, cached by BuildKit) for the contested cut; an image
+built without it runs, logs that the cut is off and rejects glued foreign
+objects as before.
 The service stage verifies the built files against the pinned SHA-256 and fails
 the build on a mismatch (the alternative – committing 160 MB of binaries or
 publishing them as release assets – would ship files nobody can rebuild from
@@ -1026,7 +1103,18 @@ preprocessing and the export script's, prompt/mask coordinate mapping, the
 single-mask stability fallback, registry pins that match the export script's
 checkpoint table, missing/foreign/other-layout graphs at load; one integration
 test segments the synthetic car with the built graphs and is skipped without
-them) and the Supabase store (HTTP mocked). Tests use small synthetic plate sets with exact geometry
+them), the SAM cut (`tests/test_sam_cut.py`, against the fake detector and a
+fake SAM that knows the car with planted mistakes: the glued wheel is cut by
+SAM before any zoom pass with the car whole and an anti-aliased edge; a
+candidate that keeps the wheel, takes the neighbour or misses the prompts is
+no cut; a bite into the car's core, a thinned rod, a line without a colour edge
+and an unconfident SAM are refused; the best usable IoU wins; the zoom cut is
+tried when SAM fails and the methods run in the configured order; a SAM that
+cannot run is logged and the photo judged as without it; the wiring: graphs
+present/absent/foreign, `PROCESSOR_SAM2_ENABLED`, warm-up, `/health`, the
+per-window embedding cache; one integration test cuts a second synthetic car
+with the built graphs and is skipped without them) and the Supabase store (HTTP
+mocked). Tests use small synthetic plate sets with exact geometry
 (`tests/plate_fixtures.py`), synthetic vehicles and a fake segmenter – no
 model download needed; one smoke test runs against the real plate set when it
 exists.
@@ -1059,19 +1147,17 @@ exists.
   Everything else the vehicle detector does not see as part of the vehicle
   (another car's wheel, hubcap or rear, a sign behind the roof, a side table, a
   bollard behind a mirror) is removed when it is a separate part of the
-  mask; glued to the outline it is cut only where a zoom pass of BiRefNet, the
-  detector and a colour edge agree on the cut line (step 4 above) – otherwise
-  the job is rejected with the "freier Hintergrund" message. On the regression
-  set the zoom cut separates the second white car glued to `white_car`'s rear;
-  the other glued objects stay rejected because a signal disagrees (the zoom
-  pass keeps a snow cap, merges the blue car or the bollard, or the cut would
-  touch the vehicle instance). With cars parked close together (a dealer lot) this
-  asks for a retake more often: of the 21 normally framed real photos of the
-  regression and audit sets (mostly snowy dealer lots), 6 are now rejected for
-  this – each has a real object glued to the outline (checked by eye) –, 1
-  (`front`) for a mirror the cut-out lost (below), 1 (`white_car`) is accepted
-  with the glued car behind cut by the zoom cut, and the other 13 are
-  accepted as before (`old_hardlight` now with a hint, below). Not detected:
+  mask; glued to the outline it is cut only inside its contested zone, where
+  SAM 2.1 (prompted with our car and the other object, screened against the
+  BiRefNet alpha, every guard passed – the dealer's decision of 2026-11-06) or
+  a zoom pass of BiRefNet gives the cut line (step 4 above) – otherwise the job
+  is rejected with the "freier Hintergrund" message, as before. The guards
+  refuse a cut that would take one pixel of our car's certain core, thin a thin
+  part, leave a piece of the other object or run across a flat area without a
+  colour edge unless SAM is confident; such a photo stays rejected rather than
+  cut wrong. Still rejected: a neighbour the detector merges into the same
+  "car" instance as the photographed car (two grey cars nose to tail – no
+  region is verified as another object, so neither cut runs). Not detected:
   objects the detector neither assigns to another class nor leaves outside its
   vehicle mask (e.g. a grey post exactly behind the car's own silhouette, or a
   car parked right behind that the detector merges into the same "car"

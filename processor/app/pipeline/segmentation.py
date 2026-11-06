@@ -11,7 +11,11 @@ The segmenter created by `create_segmenter` also carries the semantic vehicle
 detector (`segmenter.detector`, an instance-segmentation model, see
 `detection.py`): BiRefNet cuts the outline, the detector says which part of it
 is the vehicle. Both are loaded by `warm_up` and reported by `loaded`; a
-missing or broken file of either is a `ModelUnavailableError`.
+missing or broken file of either is a `ModelUnavailableError`. It also carries
+SAM 2.1 for the contested cut (`segmenter.sam2`, see `sam2.py` and
+`mask.sam_cut`) when its built graphs exist – optional: `warm_up` only verifies
+their checksums, the sessions load with the first contested region; without
+the graphs `sam2` is None and a glued foreign object rejects the photo as before.
 
 `segment_vehicle` decides what BiRefNet sees: the whole frame, or – for tall
 (portrait or square) frames, where the car is only a thin band of the
@@ -42,6 +46,7 @@ from ..config import Settings
 
 if TYPE_CHECKING:  # pragma: no cover
     from .detection import VehicleDetector
+    from .sam2 import Sam2Segmenter
 
 log = logging.getLogger(__name__)
 
@@ -182,11 +187,16 @@ class OnnxSegmenter:
         auto_download: bool,
         threads: int = 0,
         detector: VehicleDetector | None = None,
+        sam2: Sam2Segmenter | None = None,
     ):
         self.spec = spec
         self.name = f"onnx:{spec.name}"
         #: Semantic vehicle detector used next to this model (see detection.py).
         self.detector = detector
+        #: SAM 2.1 for the contested cut (mask.sam_cut), None when its graphs are not there.
+        self.sam2 = sam2
+        #: Why the SAM 2.1 graphs were refused at warm-up (checksum), if they were; then `sam2` is None.
+        self.sam2_error: str | None = None
         self._models_dir = models_dir
         self._auto_download = auto_download
         self._threads = threads
@@ -229,6 +239,15 @@ class OnnxSegmenter:
         self._get_session()
         if self.detector is not None and hasattr(self.detector, "warm_up"):
             self.detector.warm_up()
+        if self.sam2 is not None and hasattr(self.sam2, "verify"):
+            try:
+                self.sam2.verify()  # checksums only (≈ 0.5 s); the sessions load with the first contested region
+            except ModelUnavailableError as error:
+                # an optional model: jobs run as without it (a glued foreign object rejects the photo as
+                # before) – loudly, and visible in /health (sam2Error)
+                self.sam2_error = str(error)
+                self.sam2 = None
+                log.error("SAM 2.1 graphs refused – the contested cut is off: %s", error)
 
     def segment(self, rgb: np.ndarray) -> np.ndarray:
         if rgb.ndim != 3 or rgb.shape[2] != 3:
@@ -263,6 +282,7 @@ def create_segmenter(settings: Settings) -> VehicleSegmenter:
             f"Available: {', '.join(sorted(MODEL_REGISTRY))}"
         )
     from .detection import create_detector
+    from .sam2 import create_sam2_if_available
 
     return OnnxSegmenter(
         spec,
@@ -270,6 +290,7 @@ def create_segmenter(settings: Settings) -> VehicleSegmenter:
         auto_download=settings.auto_download_models,
         threads=settings.threads,
         detector=create_detector(settings),
+        sam2=create_sam2_if_available(settings),
     )
 
 

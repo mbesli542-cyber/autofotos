@@ -535,6 +535,10 @@ class RegionCheck:
     #: cells per tile side – where the zoom cut (``mask.zoom_cut``) may not cut.
     vehicle_mask: np.ndarray | None = field(default=None, compare=False, repr=False)
     mask_cells: int = 0
+    #: The other detected objects of the tile (bool, VERIFY_PX × VERIFY_PX over ``window``: pixels
+    #: whose highest mask logit belongs to an instance other than the vehicle) – the object glued to
+    #: the outline, where the SAM cut (``mask.sam_cut``) puts its "not that" prompts.
+    other_mask: np.ndarray | None = field(default=None, compare=False, repr=False)
 
     def as_dict(self) -> dict:
         return {
@@ -581,8 +585,8 @@ def verify_region(
     if index is None:
         return RegionCheck(window, 0.0, 0.0, (), False)
     stack = np.stack(logits)
-    best = stack.argmax(axis=0)[py, px]
-    top = stack.max(axis=0)[py, px]
+    best_map, top_map = stack.argmax(axis=0), stack.max(axis=0)
+    best, top = best_map[py, px], top_map[py, px]
     # a pixel belongs to the instance with the highest mask logit (where masks overlap)
     vehicle_cover = float(np.mean((top > 0) & (best == index)))
     other = (top > 0) & (best != index)
@@ -599,4 +603,5 @@ def verify_region(
         reach,
         vehicle_mask=logits[index] > 0,
         mask_cells=cells,
+        other_mask=(top_map > 0) & (best_map != index),
     )

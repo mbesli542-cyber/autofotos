@@ -49,6 +49,11 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
+def _env_optional_bool(name: str) -> bool | None:
+    value = _env(name)
+    return None if value is None else value.lower() in {"1", "true", "yes", "on"}
+
+
 def _env_int(name: str, default: int) -> int:
     value = _env(name)
     return int(value) if value is not None else default
@@ -76,9 +81,15 @@ class Settings:
     #: registry in app/pipeline/detection.py. Required like the segmentation model.
     detector_model: str = "rf-detr-seg-medium"
     #: Prompted segmentation model (SAM 2.1) from the registry in app/pipeline/sam2.py. Its two
-    #: ONNX graphs are BUILT by scripts/export_sam2.py (no download source), optional: nothing
-    #: in the pipeline needs them yet; a feature that does loads them on first use.
+    #: ONNX graphs are BUILT by scripts/export_sam2.py (no download source); optional: used by the
+    #: contested cut (see sam2_enabled), loaded on first use – a job without a contested region
+    #: never loads them.
     sam2_model: str = "sam2.1-hiera-small"
+    #: SAM 2.1 for the contested cut (mask.sam_cut: a detector-verified foreign object glued to the
+    #: outline). PROCESSOR_SAM2_ENABLED: None (default) = on when both built graphs exist in
+    #: models_dir, off with a logged note otherwise; true = on, a missing graph logs a WARNING and
+    #: jobs behave as without it (rejection as before); false = off.
+    sam2_enabled: bool | None = None
     #: Glass masks of interior shots (preset glassBackdrop): "sam2" = the automatic SAM 2.1 provider
     #: (app/pipeline/glass_mask.py; the graphs load on the first interior photo that needs them),
     #: "none" = no provider (those shots stay the original with a hint while the backdrop is enabled).
@@ -129,6 +140,7 @@ class Settings:
             or "birefnet-general-lite",
             detector_model=_env("PROCESSOR_DETECTOR_MODEL", "rf-detr-seg-medium") or "rf-detr-seg-medium",
             sam2_model=_env("PROCESSOR_SAM2_MODEL", "sam2.1-hiera-small") or "sam2.1-hiera-small",
+            sam2_enabled=_env_optional_bool("PROCESSOR_SAM2_ENABLED"),
             glass_masks=(_env("PROCESSOR_GLASS_MASKS", "sam2") or "sam2").lower(),
             auto_download_models=_env_bool("PROCESSOR_AUTO_DOWNLOAD_MODELS", True),
             debug=_env_bool("PROCESSOR_DEBUG", False),

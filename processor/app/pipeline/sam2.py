@@ -1,10 +1,15 @@
 """Prompted segmentation with Segment Anything 2.1 (SAM 2.1) through ONNX Runtime (CPU).
 
-Model plumbing only – nothing in the pipeline uses it yet. Two later features will:
-separating OUR car from a car touching it, and finding the window glass in cockpit
-photos. Like the detector (``detection.py``) SAM 2.1 only READS the photo: it
-answers "which pixels belong to the object at this box / these points"; it never
-generates, moves or changes a pixel. BiRefNet stays the matting model.
+Used by the contested cut (``mask.sam_cut``, the dealer's decision of 2026-11-06):
+inside the contested zone around a detector-verified foreign object glued to the
+outline, SAM 2.1 – prompted with "our car" and "not that" – draws the cut line that
+BiRefNet and the detector cannot. A second planned use is the window glass of
+cockpit photos. Like the detector (``detection.py``) SAM 2.1 only READS the photo:
+it answers "which pixels belong to the object at this box / these points"; it never
+generates, moves or changes a pixel. BiRefNet stays the matting model everywhere
+else, and the cut only ever lowers alpha. The segmenter is created by
+``create_sam2_if_available`` (``segmenter.sam2``) and loads its sessions on first
+use – a job without a contested region never loads them.
 
 **Model.** Meta's SAM 2.1 ``facebook/sam2.1-hiera-small`` (code and weights
 Apache-2.0, see ``SAM2_REGISTRY``), exported to two ONNX graphs by
@@ -324,6 +329,15 @@ class Sam2Segmenter:
     def warm_up(self) -> None:
         self._get_sessions()
 
+    def verify(self) -> None:
+        """Check both graph files against the pinned SHA-256 without loading them (≈ 0.5 s at the
+        service warm-up; a missing or foreign file is a ``ModelUnavailableError``)."""
+        for filename, sha256 in (
+            (self.spec.encoder_filename, self.spec.encoder_sha256),
+            (self.spec.decoder_filename, self.spec.decoder_sha256),
+        ):
+            ensure_built_model(filename, sha256, self._models_dir, name=self.spec.name)
+
     def release(self) -> None:
         """Drop both sessions (their weights and arenas); the next call loads them again."""
         with self._lock:
@@ -391,3 +405,38 @@ def create_sam2(settings: Settings) -> Sam2Segmenter:
             f"Unknown SAM 2 model '{settings.sam2_model}'. Available: {', '.join(sorted(SAM2_REGISTRY))}"
         )
     return Sam2Segmenter(spec, settings.models_dir, threads=settings.threads)
+
+
+def graphs_present(settings: Settings) -> bool:
+    """Both built graphs of the configured model exist in ``models_dir`` (not yet verified)."""
+    spec = SAM2_REGISTRY.get(settings.sam2_model)
+    return spec is not None and all((settings.models_dir / name).is_file() for name in spec.filenames)
+
+
+def create_sam2_if_available(settings: Settings) -> Sam2Segmenter | None:
+    """The SAM 2.1 segmenter for the contested cut, or None when it is off or its graphs are not
+    there (``Settings.sam2_enabled``): the pipeline then behaves as without it – a glued foreign
+    object whose cut line no other signal gives keeps rejecting the photo. A missing graph is
+    logged (a WARNING when PROCESSOR_SAM2_ENABLED=true asked for it); an unknown model name is
+    a configuration error like an unknown detector."""
+    if settings.sam2_enabled is False:
+        log.info("SAM 2.1 contested cut is off (PROCESSOR_SAM2_ENABLED=false)")
+        return None
+    if not graphs_present(settings):
+        spec = SAM2_REGISTRY.get(settings.sam2_model)
+        if spec is None:
+            raise SegmentationError(
+                f"Unknown SAM 2 model '{settings.sam2_model}'. Available: {', '.join(sorted(SAM2_REGISTRY))}"
+            )
+        message = (
+            "SAM 2.1 graphs %s/%s not found in %s – the contested cut is off, a foreign object glued to the "
+            "vehicle outline rejects the photo as before (build them with scripts/export_sam2.py or the Docker "
+            "build-arg SAM2_MODEL)"
+        )
+        args = (spec.encoder_filename, spec.decoder_filename, settings.models_dir)
+        if settings.sam2_enabled:
+            log.warning(message, *args)
+        else:
+            log.info(message, *args)
+        return None
+    return create_sam2(settings)

@@ -355,6 +355,8 @@ class CachedSegmenter:
         self.name = segmenter_name(settings)
         #: The vehicle detector the pipeline uses next to the segmenter (``LockedDetector`` or None).
         self.detector = None
+        #: SAM 2.1 for the contested cut (``LockedSam2`` or None – never the real one unlocked).
+        self.sam2 = None
         self._settings = settings
         self._cache_dir = cache_dir
         self._lock_path = lock_path
@@ -459,6 +461,56 @@ class LockedDetector:
     def reset(self) -> dict:
         stats = {"calls": self.calls, "seconds": round(self.seconds, 2), "lockWaitSeconds": round(self.lock_wait, 1)}
         self.calls, self.seconds, self.lock_wait = 0, 0.0, 0.0
+        return stats
+
+
+class LockedSam2:
+    """The real SAM 2.1 segmenter (in-process, ``app.pipeline.sam2``), every encode/predict under
+    the shared model lock; None-like when its graphs are not built (``create_sam2_if_available``)."""
+
+    def __init__(self, real, lock_path: Path):
+        self._real = real
+        self.name = real.name
+        self.spec = real.spec
+        self._lock_path = lock_path
+        self.encodes = 0
+        self.predicts = 0
+        self.seconds = 0.0
+        self.lock_wait = 0.0
+
+    @property
+    def loaded(self) -> bool:
+        return self._real.loaded
+
+    def verify(self) -> None:
+        self._real.verify()
+
+    def encode(self, rgb):
+        with exclusive_lock(self._lock_path) as waited:
+            started = time.perf_counter()
+            result = self._real.encode(rgb)
+        self.encodes += 1
+        self.seconds += time.perf_counter() - started
+        self.lock_wait += waited
+        return result
+
+    def predict(self, embedding, points, box=None, multimask=True):
+        with exclusive_lock(self._lock_path) as waited:
+            started = time.perf_counter()
+            result = self._real.predict(embedding, points, box, multimask=multimask)
+        self.predicts += 1
+        self.seconds += time.perf_counter() - started
+        self.lock_wait += waited
+        return result
+
+    def reset(self) -> dict:
+        stats = {
+            "encodes": self.encodes,
+            "predicts": self.predicts,
+            "seconds": round(self.seconds, 2),
+            "lockWaitSeconds": round(self.lock_wait, 1),
+        }
+        self.encodes, self.predicts, self.seconds, self.lock_wait = 0, 0, 0.0, 0.0
         return stats
 
 
@@ -703,6 +755,8 @@ def run_case(case: Case, ctx: RunContext) -> dict:
     ctx.segmenter.calls.clear()
     if ctx.segmenter.detector is not None:
         ctx.segmenter.detector.reset()
+    if ctx.segmenter.sam2 is not None:
+        ctx.segmenter.sam2.reset()
     wanted = {
         "preset": ctx.preset,
         "segmenter": ctx.segmenter,
@@ -741,6 +795,7 @@ def run_case(case: Case, ctx: RunContext) -> dict:
     logging.getLogger().removeHandler(collector)
     debug_dir = case_dir / "debug"
     detection = ctx.segmenter.detector.reset() if ctx.segmenter.detector is not None else None
+    sam2 = ctx.segmenter.sam2.reset() if ctx.segmenter.sam2 is not None else None
     passed = verdict(case.expected, status, code)
     parts = check_required_parts(case.required_parts, debug_dir / "mask.png") if status == "accepted" else []
     if parts:
@@ -766,11 +821,13 @@ def run_case(case: Case, ctx: RunContext) -> dict:
         pipelineSeconds=round(
             seconds
             - sum((c.get("seconds") or 0.0) + (c.get("lockWaitSeconds") or 0.0) for c in ctx.segmenter.calls)
-            - ((detection or {}).get("lockWaitSeconds") or 0.0),
+            - ((detection or {}).get("lockWaitSeconds") or 0.0)
+            - ((sam2 or {}).get("lockWaitSeconds") or 0.0),
             2,
         ),
         segmentation=list(ctx.segmenter.calls),
         detection=detection,
+        sam2=sam2,
         metrics=extract_metrics(metadata, details, source_size, warnings),
         warnings=warnings,
         logWarnings=collector.records,
@@ -810,6 +867,12 @@ def run_cases(args, cases: list[Case], out: Path, label: str, set_name: str) -> 
     )
     if not args.no_detector:
         segmenter.detector = LockedDetector(settings, args.lock_file)
+    if not args.no_sam2:
+        from app.pipeline.sam2 import create_sam2_if_available
+
+        real_sam2 = create_sam2_if_available(settings)
+        if real_sam2 is not None:
+            segmenter.sam2 = LockedSam2(real_sam2, args.lock_file)
     if args.whole_frame:
         # comparison runs: BiRefNet on the whole frame also for portrait/square photos
         def whole_frame(rgb, segmenter, vehicle_box=None):
@@ -1363,6 +1426,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--refresh-masks", action="store_true", help="recompute every mask and overwrite the cache")
     parser.add_argument(
         "--no-detector", action="store_true", help="run without the vehicle detector (no semantic mask check)"
+    )
+    parser.add_argument(
+        "--no-sam2",
+        action="store_true",
+        help="comparison: without the SAM 2.1 contested cut (only the zoom cut of glued foreign objects)",
     )
     parser.add_argument(
         "--whole-frame",
