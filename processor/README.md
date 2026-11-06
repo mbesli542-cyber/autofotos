@@ -495,7 +495,7 @@ refused, "none" when switched off).
 | Licence | **Apache-2.0** (checked 2026-11-06): code [facebookresearch/sam2](https://github.com/facebookresearch/sam2) (`LICENSE` Apache-2.0), weights [facebook/sam2.1-hiera-small](https://huggingface.co/facebook/sam2.1-hiera-small) (model card `license: apache-2.0`) |
 | Checkpoint | Hugging Face `facebook/sam2.1-hiera-small`, commit `ee5bba1d82bb8749febdf90f45e84b687142ba03`, `model.safetensors` 184 305 280 bytes, SHA-256 `0a4067b11ce1e23d5229203f11c718a823060d15a4b23fa2372a7d4b77cbbc60` (transformers format; the original `sam2.1_hiera_small.pt`, SHA-256 `6d1aa6f3…dc4d38`, is the same weights and is not downloaded) |
 | Files | Built, not downloaded (no official ONNX release exists): `sam2.1-hiera-small-encoder.onnx` 137 536 327 bytes, SHA-256 `bb4440eda4e18e65c953ad926a42a4bb814aeb73dcbed4b7aedfaef0fb4d6ac5`; `sam2.1-hiera-small-decoder.onnx` 21 047 561 bytes, SHA-256 `18c46fb4425a1dc60c36a6b17845485ac37d33b91bb4df869406930dbf1413f1` (`SAM2_REGISTRY` in `app/pipeline/sam2.py`, `PROCESSOR_SAM2_MODEL=sam2.1-hiera-small`). Verified against the pinned SHA-256 when loaded; `scripts/download_models.py sam2.1-hiera-small` verifies them too (it cannot download them) |
-| Export | `scripts/export_sam2.py` in a separate venv with the pinned stack torch 2.15.0+cpu (official CPU wheel index), transformers 5.22.1, onnx 1.23.2, onnxscript 0.7.2, onnxruntime 1.31.1, huggingface_hub 2.4.0 – the script refuses other versions, pins opset 18, fixes the seeds, strips doc strings/metadata (the export machine's paths) and exports twice: both runs must give identical bytes (they do; two further runs on this machine too). `--fingerprint` prints the structural fingerprint (opset, inputs/outputs, sorted initializer names + dtypes + shapes, op histogram: encoder `02ffcb4e…`, decoder `1c50a194…`) – the fallback pin should an export on another CPU differ in the last bits of folded constants; then the registry switches to it, not the other way round |
+| Export | `scripts/export_sam2.py` in a separate venv with the pinned stack torch 2.15.0+cpu (official CPU wheel index), transformers 5.22.1, onnx 1.23.2, onnxscript 0.7.2, onnx_ir 1.1.0 (the IR the dynamo exporter serialises with), onnxruntime 1.31.1, huggingface_hub 2.4.0 – the script refuses other versions – and EVERY transitive package frozen in `scripts/export-constraints.txt` (the `pip freeze` of the venv that built the registered graphs, Python 3.13: ml_dtypes, protobuf, safetensors, tokenizers, sympy, networkx …; the Docker stage and the venv install with `pip install -c` on it, so a later release of any of them cannot change the bytes – a fresh venv under the constraints reproduced the registry checksums, 2026-11-06). The script pins opset 18, fixes the seeds, strips doc strings/metadata (the export machine's paths) and exports twice: both runs must give identical bytes (they do; two further runs on this machine too). A new stack = new checksums: re-export, then update `SAM2_REGISTRY` and the constraints file together. `--fingerprint` prints the structural fingerprint (opset, inputs/outputs, sorted initializer names + dtypes + shapes, op histogram: encoder `02ffcb4e…`, decoder `1c50a194…`) – the fallback pin should an export on another CPU differ in the last bits of folded constants; then the registry switches to it, not the other way round |
 | Graphs | encoder: `image` [1, 3, 1024, 1024] → `image_embed` [1, 256, 64, 64], `high_res_feats_0` [1, 32, 256, 256], `high_res_feats_1` [1, 64, 128, 128]; decoder: those three + `point_coords` [1, N, 2] float32 (model px) + `point_labels` [1, N] int64 (1 foreground, 0 background, 2/3 box corners) → `masks` [1, 4, 256, 256] low-res logits of ALL mask tokens (0 = single-mask token, 1 … 3 = multimask), `iou_predictions` [1, 4], `object_score_logits` [1, 1]. The prompt encoder pads the prompt itself (SAM's padding point) – a box is its two corners labelled 2/3, as the official `SAM2ImagePredictor` feeds it |
 | Runtime | `Sam2Segmenter.encode(rgb) → Sam2Embedding` (SAM 2.1's own preprocessing: resize to 1024 × 1024 without keeping the aspect ratio – Pillow bilinear, the official processor's antialiased uint8 resize up to ±1 on 0.1 % of the pixels –, /255, ImageNet mean/std); `predict(embedding, points=[(x, y, label 0/1), …], box=(x0, y0, x1, y1) or None, multimask=True) → (logits [K, H, W] float32 in photo px, > 0 = inside, sigmoid = probability; IoU predictions [K])`, K = 3 with `multimask` (SAM's three candidates), else 1: the single-mask token, or – when its stability score is below 0.98 – the best multimask output (`dynamic_multimask_via_stability`, ported to NumPy; `decode` returns the 256 × 256 logits and the object score without the resampling). Lazy loading of both sessions, `PROCESSOR_THREADS`, no memory arena, `release()` drops them |
 | Verified | `scripts/export_sam2.py --verify cases.json` (ONNX Runtime vs the PyTorch model, same tensor): mask IoU 1.0000 for every prompt (box, point, point + background point, box + point) on the four synthetic regression photos, max |Δlogit| ≤ 1e-4, IoU predictions equal; with the service's Pillow preprocessing IoU 0.996–1.000 (SAM's ambiguous third candidate moves most), IoU predictions within 0.0005. Real regression photos: `/opt/ae-regression/images` was not reachable on the export day (Wikimedia rate limit) – run it again on `side_left`, `front`, `suv_fr45` (see `tests/visual/`) |
@@ -1085,11 +1085,26 @@ Hugging Face checkpoint `facebook/sam2.1-hiera-small` (`model.safetensors`
 packages. The export itself takes ≈ 1 min of CPU (encoder ≈ 10 s and decoder
 ≈ 3 s, each exported twice to prove the bytes identical, plus the model load and
 the checksum); the whole first build is ≈ 5–10 min more than before on a
-50 Mbit/s line, mostly the downloads. BuildKit keeps the pip wheels and the
+50 Mbit/s line, mostly the downloads. **BuildKit is required** (the default
+builder of Docker ≥ 23 and of `docker compose build`): the legacy builder fails
+on the stage's cache mounts with `unknown flag: --mount` – on an older Docker
+run the build with `DOCKER_BUILDKIT=1`. BuildKit keeps the pip wheels and the
 checkpoint in its caches (`--mount=type=cache`), so later builds re-export only
-when `scripts/export_sam2.py` changes and never download them again (`docker
-builder prune` drops the caches, the next build downloads them once more). The
-final image carries the two ONNX graphs (≈ 160 MB) and no torch. The build needs
+when `scripts/export_sam2.py` or `scripts/export-constraints.txt` changes and
+never download them again (`docker builder prune` drops the caches, the next
+build downloads them once more). The export stack is frozen to the package set
+that built the registered graphs (`scripts/export-constraints.txt`, pip
+constraints), so a new release of a transitive package cannot change the bytes.
+Should the stage still end with **`Checksum mismatch for sam2.1-hiera-small`**
+(the built graph is not the registered export – another CPU folding constants
+differently, a changed package), the build STOPS there: build with
+`--build-arg SAM2=off` to get the service running (the two features off, as
+below) and report the SHA-256 the message names together with the fingerprint
+the export stage printed (`encoder: … sha256 … fingerprint …` in the build log)
+– a different fingerprint means a different graph, the same fingerprint with
+other bytes means the registry can switch to the fingerprint pin (see "SAM 2.1"
+above). The final
+image carries the two ONNX graphs (≈ 160 MB) and no torch. The build needs
 to reach `download.pytorch.org`, `pypi.org`/`files.pythonhosted.org` and
 `huggingface.co` (plus `cas-bridge.xethub.hf.co` for the checkpoint); a server
 without that access builds with `--build-arg SAM2=off` (no contested cut, no

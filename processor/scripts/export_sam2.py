@@ -18,27 +18,39 @@ export stack – the service itself needs only onnxruntime:
   ``SAM2ImagePredictor``). The output selection (multimask / single mask with the
   stability fallback) is NOT in the graph: the runtime does it on the four raw masks.
 
-Run it in the separate export venv (never in the service venv – torch is not a
-runtime dependency)::
+Run it in a separate export venv (never in the service venv – torch is not a
+runtime dependency), installed under the frozen constraints of
+``scripts/export-constraints.txt`` (Python 3.13)::
 
-    python3 -m venv /opt/ae-v14/torch-venv
-    /opt/ae-v14/torch-venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0+cpu
-    /opt/ae-v14/torch-venv/bin/pip install transformers==5.22.1 onnx==1.23.2 onnxscript==0.7.2 \
-        onnxruntime==1.31.1 huggingface_hub==2.4.0 pillow
-    /opt/ae-v14/torch-venv/bin/python scripts/export_sam2.py --out models/              # sam2.1-hiera-small
-    /opt/ae-v14/torch-venv/bin/python scripts/export_sam2.py --model sam2.1-hiera-tiny --out /tmp/tiny
-    /opt/ae-v14/torch-venv/bin/python scripts/export_sam2.py --out models/ --verify cases.json   # vs PyTorch
-    /opt/ae-v14/torch-venv/bin/python scripts/export_sam2.py --fingerprint models/sam2.1-hiera-small-encoder.onnx
+    python3 -m venv .venv-export
+    .venv-export/bin/pip install -c scripts/export-constraints.txt \
+        --index-url https://download.pytorch.org/whl/cpu torch==2.15.0+cpu
+    .venv-export/bin/pip install -c scripts/export-constraints.txt transformers==5.22.1 onnx==1.23.2 \
+        onnxscript==0.7.2 onnxruntime==1.31.1 huggingface_hub==2.4.0 numpy==2.5.4 pillow==13.0.0
+    .venv-export/bin/python scripts/export_sam2.py --out models/              # sam2.1-hiera-small
+    .venv-export/bin/python scripts/export_sam2.py --model sam2.1-hiera-tiny --out /tmp/tiny
+    .venv-export/bin/python scripts/export_sam2.py --out models/ --verify cases.json   # vs PyTorch
+    .venv-export/bin/python scripts/export_sam2.py --fingerprint models/sam2.1-hiera-small-encoder.onnx
+
+The checkpoint goes to huggingface_hub's own cache (``HF_HUB_CACHE`` / ``~/.cache/huggingface``;
+``--hf-cache`` for another folder).
 
 Determinism: the versions above are PINNED (``PINNED_VERSIONS`` – the script refuses
-others), the opset is pinned (``OPSET``), seeds are fixed, the graphs carry no
-doc strings, stack traces or metadata (``strip_metadata`` – they would hold the
+others; ``onnx_ir`` is among them: it is the IR the dynamo exporter serialises with, so a new
+release changes the graph bytes) and so is EVERY transitive package of the export stack
+(``scripts/export-constraints.txt`` – the ``pip freeze`` of the venv that built the registered
+graphs: ml_dtypes, protobuf, safetensors, tokenizers, sympy, networkx … – the Docker stage and
+the venv above install with ``-c`` on it, so a later release of any of them cannot change the
+bytes and fail the image's checksum). The opset is pinned (``OPSET``), seeds are fixed, the
+graphs carry no doc strings, stack traces or metadata (``strip_metadata`` – they would hold the
 export machine's file paths) and the export runs twice in a row and must give the
 same bytes (``--once`` skips that). The checksum printed at the end is what
 ``SAM2_REGISTRY`` pins; ``--fingerprint`` prints the structural fingerprint (opset,
 inputs/outputs, sorted initializer names + dtypes + shapes, op histogram), the
 fallback pin should an export on another machine differ in bytes (constant folding
-of transcendental ops may differ in the last bits between CPUs).
+of transcendental ops may differ in the last bits between CPUs). A new stack (or a
+regenerated constraints file) means new checksums: re-export, then update ``SAM2_REGISTRY``
+and the constraints together.
 
 ``--verify cases.json`` compares the ONNX graphs (onnxruntime) against the PyTorch
 model on photos: ``[{"image": "…jpg", "box": [x0, y0, x1, y1]}, …]`` (photo px) –
@@ -75,8 +87,17 @@ MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 STD = np.array([0.229, 0.224, 0.225], np.float32)
 #: ONNX opset of both graphs.
 OPSET = 18
-#: The export stack. Another version = another graph (and another checksum): refused.
-PINNED_VERSIONS = {"torch": "2.15.0+cpu", "transformers": "5.22.1", "onnx": "1.23.2", "onnxscript": "0.7.2"}
+#: The export stack. Another version = another graph (and another checksum): refused. onnx_ir is the
+#: graph IR the dynamo exporter serialises with (a dependency of onnxscript); the rest of the stack is
+#: frozen in scripts/export-constraints.txt.
+PINNED_VERSIONS = {
+    "torch": "2.15.0+cpu",
+    "transformers": "5.22.1",
+    "onnx": "1.23.2",
+    "onnxscript": "0.7.2",
+    "onnx_ir": "1.1.0",
+}
+CONSTRAINTS_FILE = "scripts/export-constraints.txt"
 #: Graph names and the dynamic axis of the decoder prompt.
 ENCODER_INPUTS = ["image"]
 ENCODER_OUTPUTS = ["image_embed", "high_res_feats_0", "high_res_feats_1"]
@@ -145,6 +166,7 @@ def preprocess_official(rgb: np.ndarray) -> np.ndarray:
 
 def check_versions() -> None:
     import onnx
+    import onnx_ir
     import onnxscript
     import torch
     import transformers
@@ -154,20 +176,25 @@ def check_versions() -> None:
         "transformers": transformers.__version__,
         "onnx": onnx.__version__,
         "onnxscript": onnxscript.__version__,
+        "onnx_ir": onnx_ir.__version__,
     }
     wrong = {k: v for k, v in actual.items() if v != PINNED_VERSIONS[k]}
     if wrong:
         raise SystemExit(f"export stack differs from the pinned versions {PINNED_VERSIONS}: {wrong}")
 
 
-def fetch_checkpoint(name: str, cache_dir: Path) -> Path:
-    """Download (or reuse) the pinned checkpoint files and verify ``model.safetensors``."""
+def fetch_checkpoint(name: str, cache_dir: Path | None) -> Path:
+    """Download (or reuse) the pinned checkpoint files and verify ``model.safetensors``. ``cache_dir``
+    None = huggingface_hub's own cache (``HF_HUB_CACHE``)."""
     from huggingface_hub import snapshot_download
 
     spec = CHECKPOINTS[name]
     path = Path(
         snapshot_download(
-            spec["repo"], revision=spec["revision"], allow_patterns=CHECKPOINT_FILES, cache_dir=str(cache_dir)
+            spec["repo"],
+            revision=spec["revision"],
+            allow_patterns=CHECKPOINT_FILES,
+            cache_dir=None if cache_dir is None else str(cache_dir),
         )
     )
     actual = sha256_file(path / "model.safetensors")
@@ -348,7 +375,7 @@ def export_graph(module, args, path: Path, *, input_names, output_names, dynamic
     onnx.save_model(model, str(path))
 
 
-def export(name: str, out_dir: Path, cache_dir: Path, *, suffix: str = "") -> dict[str, Path]:
+def export(name: str, out_dir: Path, cache_dir: Path | None, *, suffix: str = "") -> dict[str, Path]:
     import torch
 
     check_versions()
@@ -445,7 +472,7 @@ def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.count_nonzero(a & b)) / union if union else 1.0
 
 
-def verify(name: str, paths: dict[str, Path], cases_file: Path, cache_dir: Path) -> bool:
+def verify(name: str, paths: dict[str, Path], cases_file: Path, cache_dir: Path | None) -> bool:
     import onnxruntime as ort
 
     model = load_model(fetch_checkpoint(name, cache_dir))
@@ -497,7 +524,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", default="sam2.1-hiera-small", choices=sorted(CHECKPOINTS))
     parser.add_argument("--out", type=Path, default=Path("models"), help="output directory (default: models/)")
-    parser.add_argument("--hf-cache", type=Path, default=Path(os.environ.get("HF_HUB_CACHE") or "/opt/ae-v14/hf-cache"))
+    parser.add_argument(
+        "--hf-cache",
+        type=Path,
+        default=None,
+        help="checkpoint cache folder (default: huggingface_hub's own cache, HF_HUB_CACHE / ~/.cache/huggingface/hub)",
+    )
     parser.add_argument("--once", action="store_true", help="export once (skip the determinism check)")
     parser.add_argument("--verify", type=Path, metavar="CASES_JSON", help="compare the graphs against PyTorch on photos")
     parser.add_argument("--fingerprint", type=Path, nargs="+", metavar="ONNX", help="print SHA-256 + structural fingerprint of files")

@@ -1,0 +1,47 @@
+# Frozen export environment of scripts/export_sam2.py (pip freeze of the venv that built the
+# registered SAM 2.1 graphs, Python 3.13, 2026-11-06). Used as pip constraints (-c) by the Docker
+# sam2-export stage and the export venv: every transitive package is pinned, so a new release
+# of onnx_ir, ml_dtypes, protobuf, safetensors, tokenizers, sympy, networkx ... cannot change the
+# exported bytes (SAM2_REGISTRY pins their SHA-256). Regenerate only together with the registry.
+annotated-doc==0.0.5
+anyio==4.16.0
+click==8.5.0
+filelock==4.2.4
+flatbuffers==25.12.19
+fsspec==2026.9.0
+h11==0.16.0
+hf-xet==1.8.0
+httpcore2==2.16.0
+httpx2==2.16.0
+huggingface_hub==2.4.0
+idna==3.20
+Jinja2==3.1.6
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+ml_dtypes==0.6.0
+mpmath==1.3.0
+networkx==3.7
+numpy==2.5.4
+onnx==1.23.2
+onnx-ir==1.1.0
+onnxruntime==1.31.1
+onnxscript==0.7.2
+packaging==26.3
+pillow==13.0.0
+protobuf==7.36.2
+Pygments==2.21.0
+PyYAML==6.0.3
+regex==2026.9.29
+rich==15.0.0
+safetensors==0.8.0
+setuptools==78.1.0
+shellingham==1.5.4
+sympy==1.14.0
+tokenizers==0.23.3
+torch==2.15.0+cpu
+tqdm==4.70.1
+transformers==5.22.1
+truststore==0.10.5
+typer==0.28.0
+typing_extensions==4.16.0

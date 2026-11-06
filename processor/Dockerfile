@@ -50,17 +50,22 @@ ARG SAM2
 ARG SAM2_MODEL
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 HF_HUB_DISABLE_TELEMETRY=1
 WORKDIR /export
-COPY processor/scripts/export_sam2.py ./scripts/export_sam2.py
-# pins = PINNED_VERSIONS in scripts/export_sam2.py (the script refuses other versions);
-# the pip and checkpoint caches survive between builds. SAM2=off: nothing is built
-# (the empty models folder is still copied below, so the stage order never changes).
+COPY processor/scripts/export_sam2.py processor/scripts/export-constraints.txt ./scripts/
+# pins = PINNED_VERSIONS in scripts/export_sam2.py (the script refuses other versions) and
+# the frozen export environment scripts/export-constraints.txt (pip constraints: EVERY
+# transitive package – onnx_ir, ml_dtypes, protobuf, safetensors, tokenizers, sympy,
+# networkx … – so a future release cannot change the exported bytes and fail the checksum
+# below); the pip and checkpoint caches survive between builds. SAM2=off: nothing is
+# built (the empty models folder is still copied below, so the stage order never changes).
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/huggingface \
     mkdir -p /export/models \
     && case "$SAM2" in on|off) ;; *) echo "SAM2 must be 'on' or 'off', got '$SAM2'" >&2; exit 1;; esac \
     && if [ "$SAM2" = "on" ]; then \
-      pip install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0+cpu \
-      && pip install transformers==5.22.1 onnx==1.23.2 onnxscript==0.7.2 onnxruntime==1.31.1 \
+      pip install -c scripts/export-constraints.txt \
+           --index-url https://download.pytorch.org/whl/cpu torch==2.15.0+cpu \
+      && pip install -c scripts/export-constraints.txt \
+           transformers==5.22.1 onnx==1.23.2 onnxscript==0.7.2 onnxruntime==1.31.1 \
            huggingface_hub==2.4.0 numpy==2.5.4 pillow==13.0.0 \
       && HF_HUB_CACHE=/root/.cache/huggingface python scripts/export_sam2.py --model "$SAM2_MODEL" --out /export/models \
       && rm -f /export/models/*.export.json; fi
