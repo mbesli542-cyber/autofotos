@@ -22,6 +22,7 @@ from pathlib import Path
 from ..config import Settings
 from ..pipeline.debug import DEBUG_FILE_NAMES, NULL_DEBUG, DebugSink
 from ..pipeline.decode import DecodeError
+from ..pipeline.glass_backdrop import GlassMaskProvider
 from ..pipeline.pipeline import process_photo
 from ..pipeline.placement import PlacementError
 from ..pipeline.quality import MESSAGES as QUALITY_MESSAGES
@@ -141,11 +142,15 @@ class JobManager:
         segmenter: VehicleSegmenter,
         backgrounds: BackgroundProvider,
         store: PhotoStore | None = None,
+        glass_masks: GlassMaskProvider | None = None,
     ):
         self.settings = settings
         self.segmenter = segmenter
         self.backgrounds = backgrounds
         self.store = store
+        #: Glass-alpha provider of the glass backdrop (interior shots); None = those shots stay the
+        #: original with a hint while the preset enables the backdrop.
+        self.glass_masks = glass_masks
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
@@ -309,6 +314,7 @@ class JobManager:
                 shot_key=shot_key,
                 debug=debug,
                 progress=lambda value, _step: self._update(job, progress=min(0.99, max(job.progress, value))),
+                glass_masks=self.glass_masks,
             )
             (job.directory / "result.jpg").write_bytes(outcome.jpeg)
             if job.kind == "contract":

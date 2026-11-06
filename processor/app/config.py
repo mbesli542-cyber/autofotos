@@ -79,6 +79,10 @@ class Settings:
     #: ONNX graphs are BUILT by scripts/export_sam2.py (no download source), optional: nothing
     #: in the pipeline needs them yet; a feature that does loads them on first use.
     sam2_model: str = "sam2.1-hiera-small"
+    #: Glass masks of interior shots (preset glassBackdrop): "sam2" = the automatic SAM 2.1 provider
+    #: (app/pipeline/glass_mask.py; the graphs load on the first interior photo that needs them),
+    #: "none" = no provider (those shots stay the original with a hint while the backdrop is enabled).
+    glass_masks: str = "sam2"
     #: Download missing model weights on first use (verified by SHA-256). Does not apply to the
     #: built SAM 2.1 graphs – a missing one is always a ModelUnavailableError naming the export script.
     auto_download_models: bool = True
@@ -125,6 +129,7 @@ class Settings:
             or "birefnet-general-lite",
             detector_model=_env("PROCESSOR_DETECTOR_MODEL", "rf-detr-seg-medium") or "rf-detr-seg-medium",
             sam2_model=_env("PROCESSOR_SAM2_MODEL", "sam2.1-hiera-small") or "sam2.1-hiera-small",
+            glass_masks=(_env("PROCESSOR_GLASS_MASKS", "sam2") or "sam2").lower(),
             auto_download_models=_env_bool("PROCESSOR_AUTO_DOWNLOAD_MODELS", True),
             debug=_env_bool("PROCESSOR_DEBUG", False),
             concurrency=max(1, _env_int("PROCESSOR_CONCURRENCY", 1)),

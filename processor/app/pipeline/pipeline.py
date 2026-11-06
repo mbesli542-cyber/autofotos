@@ -20,6 +20,11 @@ Exterior shots:
 
 Interior/detail shots are not composited (a showroom behind a cockpit makes
 no sense); they are exported unchanged except for orientation/size.
+Off by default: interior shots listed in the preset's ``glassBackdrop`` keep
+the interior exactly as photographed and show the showroom ONLY through the
+see-through glass (glass_backdrop.py; the glass alpha comes from the caller's
+``glass_masks`` provider) – or stay the original with a hint when the glass
+region is not safe.
 EXPERIMENTAL, off by default: detail shots listed in the preset's
 ``detailBackdrop`` get a defocused showroom crop behind the original part
 (detail_backdrop.py) – or stay the original with a hint when the part mask is
@@ -35,7 +40,14 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from ..presets import EXTERIOR_SHOTS, SHOWROOM_PLATES, BackgroundProvider, Preset, PresetConfigError
+from ..presets import (
+    EXTERIOR_SHOTS,
+    SHOWROOM_PLATES,
+    BackgroundProvider,
+    Preset,
+    PresetConfigError,
+    glass_backdrop_applies,
+)
 from ..showroom.plates import MIRROR_PLATES, PlateSet
 from .color import linear_to_u8, srgb_to_linear
 from .composite import extract_vehicle, feather_layer, over, place_layer, resample_layer
@@ -44,6 +56,7 @@ from .decode import decode_image
 from .detail_backdrop import detail_backdrop_applies, run_detail
 from .detection import vehicle_box
 from .export import encode_jpeg
+from .glass_backdrop import GlassMaskProvider, run_glass
 from .grounding import (
     apply_grounding,
     build_ground_model,
@@ -155,9 +168,12 @@ def process_photo(
     shot_key: str | None = None,
     debug: DebugSink = NULL_DEBUG,
     progress: ProgressFn = _noop,
+    glass_masks: GlassMaskProvider | None = None,
 ) -> ProcessResult:
     """Raises QualityGateError (app/pipeline/quality.py) for photos that would give a
-    bad listing image and ShowroomUnavailableError while the plate set is unusable."""
+    bad listing image and ShowroomUnavailableError while the plate set is unusable.
+    ``glass_masks``: the glass-alpha provider of the glass backdrop (interior shots, preset
+    ``glassBackdrop``); without one those shots stay the original with a hint."""
     timer = _Timer()
     progress(0.02, "decode")
     decoded = decode_image(data)
@@ -178,6 +194,31 @@ def process_photo(
     }
 
     if shot_key is not None and shot_key not in EXTERIOR_SHOTS:
+        if glass_backdrop_applies(preset.glass_backdrop, shot_key):
+            # the interior as photographed, the showroom only through the see-through glass – or
+            # the original with a hint when the glass region is not safe (glass_backdrop.py)
+            glass = run_glass(
+                decoded.rgb,
+                preset=preset,
+                backgrounds=backgrounds,
+                glass_masks=glass_masks,
+                shot_key=shot_key,
+                debug=debug,
+                progress=progress,
+            )
+            timer.mark("glass")
+            meta = {**base_meta, "glassBackdrop": glass.meta}
+            return _passthrough(
+                glass.rgb,
+                preset,
+                debug,
+                timer,
+                meta,
+                progress,
+                warnings=glass.warnings,
+                shot_kind=glass.shot_kind,
+                progress_at=0.9,
+            )
         if detail_backdrop_applies(preset.detail_backdrop, shot_key):
             # EXPERIMENTAL, opt-in (preset detailBackdrop): the original part in front of a defocused
             # plate crop – or the original with a hint when the part mask is unclear

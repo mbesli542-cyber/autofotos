@@ -61,6 +61,7 @@ from .jobs.manager import (
 )
 from .pipeline.export import encode_jpeg
 from .pipeline.pipeline import PIPELINE_VERSION
+from .pipeline.glass_backdrop import GlassMaskProvider
 from .pipeline.segmentation import VehicleSegmenter, create_segmenter
 from .presets import (
     EXTERIOR_SHOTS,
@@ -121,7 +122,8 @@ def create_app(
 
         store = SupabasePhotoStore(settings.supabase_url or "", settings.supabase_service_role_key or "")
     backgrounds = BackgroundProvider(settings)
-    manager = JobManager(settings, segmenter, backgrounds, store)
+    glass_masks = create_glass_masks(settings, segmenter)
+    manager = JobManager(settings, segmenter, backgrounds, store, glass_masks=glass_masks)
     model_state = {"error": False}
 
     @asynccontextmanager
@@ -237,6 +239,8 @@ def create_app(
             "modelError": failed,
             "detector": getattr(getattr(detector, "spec", None), "name", None) if detector is not None else None,
             "detectorLoaded": bool(getattr(detector, "loaded", False)) if detector is not None else None,
+            # glass masks of interior shots (preset glassBackdrop): the automatic SAM 2.1 provider or none
+            "glassMasks": settings.glass_masks if glass_masks is not None else None,
             "debug": settings.debug,
             "auth": bool(settings.api_key),
             "supabase": store is not None,
@@ -403,6 +407,20 @@ def _not_stored(error: JobStorageError) -> JSONResponse:
 
 #: Expired jobs (and their photos) are deleted at least this often.
 CLEANUP_INTERVAL_SECONDS = 600
+
+
+def create_glass_masks(settings: Settings, segmenter) -> GlassMaskProvider | None:
+    """The glass-mask provider of the glass backdrop (interior shots): SAM 2.1 (``glass_masks="sam2"``,
+    its graphs load on the first interior photo that needs them – nothing is loaded here) with the
+    segmenter's vehicle detector for the cars seen outside, or none."""
+    if settings.glass_masks == "none":
+        return None
+    if settings.glass_masks != "sam2":
+        raise RuntimeError(f"PROCESSOR_GLASS_MASKS must be 'sam2' or 'none', got {settings.glass_masks!r}")
+    from .pipeline.glass_mask import sam_glass_masks
+    from .pipeline.sam2 import create_sam2
+
+    return sam_glass_masks(create_sam2(settings), detector=getattr(segmenter, "detector", None))
 
 
 def _cleanup_loop(manager: JobManager, stop: threading.Event) -> None:

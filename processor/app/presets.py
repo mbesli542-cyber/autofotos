@@ -336,6 +336,76 @@ class DetailBackdropConfig:
 
 
 @dataclass(frozen=True)
+class GlassViewConfig:
+    """Where the plate is seen through the glass for one view (app/pipeline/glass_backdrop.py):
+    forward (windscreen: the brand wall ahead with the lettering), side (side windows: the slat
+    panel and the olive tree, zoomed in below the lettering) or rear (a rear window: the plain
+    panel below the lettering). Only the forward crop may contain the branding."""
+
+    #: Crop height as a fraction of the plate height (smaller = closer / larger).
+    crop_height: float
+    #: Crop centre as a fraction of the plate width (0.5 = the brand wall, 0 = slats and plant).
+    center_x: float
+    #: The crop's upper edge as a fraction of the plate height (0 = the ceiling spots; the shipped
+    #: plate's lettering ends at 0.2, so side/rear crops start at 0.22).
+    top: float
+    #: × the preset's blur for this view (> 1 = defocused more).
+    blur_scale: float
+    #: Panes in the right half of the photo (the car's right side when photographed from the left
+    #: door) get the crop mirrored horizontally, so the slats/LED read correctly.
+    mirror_right: bool
+
+
+@dataclass(frozen=True)
+class GlassBackdropConfig:
+    """The showroom seen THROUGH the glass of interior shots (app/pipeline/glass_backdrop.py).
+
+    Off by default: interior shots stay the unchanged original, as before. When enabled, ONLY the
+    see-through glass area (the caller's glass mask) shows a defocused crop of the plate; the
+    interior stays as photographed. A photo whose glass region is unclear stays the original
+    with a hint (gate thresholds below). A preset that sets the section writes EVERY field out.
+    """
+
+    enabled: bool = False
+    #: Interior shots that get the backdrop (subset of GLASS_BACKDROP_SHOTS).
+    shots: tuple[str, ...] = ("cockpit", "front_interior", "driver_seat", "rear_seats")
+    #: The plate crop per view (app/pipeline/glass_backdrop.py: view_for_pane).
+    forward: GlassViewConfig = field(default_factory=lambda: GlassViewConfig(0.75, 0.5, 0.0, 1.0, False))
+    side: GlassViewConfig = field(default_factory=lambda: GlassViewConfig(0.3, 0.0, 0.22, 1.0, True))
+    rear: GlassViewConfig = field(default_factory=lambda: GlassViewConfig(0.3, 0.5, 0.22, 1.5, False))
+    #: Depth of field: Gaussian sigma of the wall as a fraction of the photo's long edge (× the
+    #: view's blurScale) …
+    blur: float = 0.007
+    #: … and of the floor at the bottom row (× blur; 1 = as far away as the wall).
+    floor_blur: float = 1.0
+    #: 0..1: the crop's mean colour/brightness moves this far towards the photo's own glass region
+    #: (luminance ±1 EV, colour ±12 % per channel at most).
+    light_match: float = 0.5
+    #: × the sensor noise measured in the photo's glass region, added to the clean plate (0 = none).
+    grain: float = 1.0
+    #: Share of the ORIGINAL glass pixels kept in the composite (tint, noise, strong reflections; more
+    #: than ≈ 0.1 shows the outside scene as a ghost image – evaluated on the dealer's photos).
+    glass_keep: float = 0.05
+    #: Gate: the glass region must cover at least this share of the photo.
+    min_glass_fraction: float = 0.02
+    #: Gate: soft alpha band (0.05 < alpha < 0.95) per outline pixel, as a share of the long edge.
+    max_undecided: float = 0.008
+    #: Gate: the region may touch at most this many photo borders …
+    max_border_sides: int = 3
+    #: … and the bottom border over at most this share of the width (else the mask leaked).
+    max_bottom_touch: float = 0.02
+    #: Gate: share of the region's core that is dark structure (interior, not the outside).
+    max_interior_structure: float = 0.04
+
+    def view(self, name: str) -> GlassViewConfig:
+        if name == "side":
+            return self.side
+        if name == "rear":
+            return self.rear
+        return self.forward
+
+
+@dataclass(frozen=True)
 class Preset:
     id: str
     name: str
@@ -350,6 +420,7 @@ class Preset:
     adjustments: VehicleAdjustments = field(default_factory=VehicleAdjustments)
     quality: QualityConfig = field(default_factory=QualityConfig)
     detail_backdrop: DetailBackdropConfig = field(default_factory=DetailBackdropConfig)
+    glass_backdrop: GlassBackdropConfig = field(default_factory=GlassBackdropConfig)
 
     def placement_for(self, shot_key: str | None) -> Placement:
         if shot_key and shot_key in self.shot_placement:
@@ -379,6 +450,9 @@ EXTERIOR_SHOTS = frozenset(
 #: "extra" stands for every extra_NN photo). Interior shots never do (cockpit, seats).
 DETAIL_BACKDROP_SHOTS = frozenset({"wheel_detail", "special_detail", "extra"})
 EXTRA_SHOT_PREFIX = "extra_"
+
+#: Interior shots that MAY get the showroom seen through their glass (GlassBackdropConfig.shots).
+GLASS_BACKDROP_SHOTS = frozenset({"cockpit", "front_interior", "driver_seat", "rear_seats"})
 
 
 def _snake_to_camel(name: str) -> str:
@@ -411,7 +485,7 @@ _HEX_COLOUR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _TOP_LEVEL_KEYS = {
     "id", "name", "description", "background", "branding", "output",
     "placement", "shotPlacement", "shadow", "reflection", "vehicleAdjustments", "quality",
-    "detailBackdrop",
+    "detailBackdrop", "glassBackdrop",
 }  # fmt: skip
 _BACKGROUND_KEYS = {"plates", "notes"}
 
@@ -731,6 +805,83 @@ def detail_backdrop_applies(config: DetailBackdropConfig, shot_key: str | None) 
     return shot_key in config.shots
 
 
+#: glassBackdrop ranges: (min, max) per field.
+_GLASS_RANGES = {
+    "blur": (0.0, 0.03),
+    "floor_blur": (0.0, 1.0),
+    "grain": (0.0, 2.0),
+    "glass_keep": (0.0, 0.6),
+    "min_glass_fraction": (0.001, 0.5),
+    "max_undecided": (0.0, 0.05),
+    "max_border_sides": (0, 4),
+    "max_bottom_touch": (0.0, 1.0),
+    "max_interior_structure": (0.0, 0.5),
+}
+_GLASS_VIEW_RANGES = {
+    "crop_height": (0.1, 1.0),
+    "center_x": (0.0, 1.0),
+    "top": (0.0, 0.9),
+    "blur_scale": (0.25, 3.0),
+}
+
+
+def _require_every_field(owner: str, cls, data) -> None:
+    """A section that is set writes every field out – nothing hides behind a default."""
+    if not isinstance(data, dict):
+        raise PresetConfigError(f"{owner} must be an object")
+    required = {_snake_to_camel(f.name) for f in fields(cls)}
+    missing = sorted(required - set(data))
+    if missing:
+        raise PresetConfigError(f"{owner} needs every field, missing: {', '.join(missing)}")
+
+
+def _parse_glass_view(owner: str, data) -> GlassViewConfig:
+    _require_every_field(owner, GlassViewConfig, data)
+    config = _merge(GlassViewConfig(0.75, 0.5, 0.0, 1.0, False), data, owner)
+    for name, (low, high) in _GLASS_VIEW_RANGES.items():
+        value = getattr(config, name)
+        if not low <= value <= high:
+            raise PresetConfigError(f"{owner}.{_snake_to_camel(name)} must be {low}..{high}, got {value}")
+    return config
+
+
+def _parse_glass_backdrop(data) -> GlassBackdropConfig:
+    if data is None:
+        return GlassBackdropConfig()
+    owner = "glassBackdrop"
+    _require_every_field(owner, GlassBackdropConfig, data)
+    data = dict(data)
+    shots = data.pop("shots")
+    views = {name: data.pop(name) for name in ("forward", "side", "rear")}
+    config = _build(GlassBackdropConfig, data, owner)
+    if (
+        not isinstance(shots, list)
+        or not all(isinstance(s, str) for s in shots)
+        or not set(shots) <= GLASS_BACKDROP_SHOTS
+        or len(set(shots)) != len(shots)
+    ):
+        raise PresetConfigError(
+            f"{owner}.shots must be a list of distinct interior shot keys from: {', '.join(sorted(GLASS_BACKDROP_SHOTS))}"
+        )
+    config = replace(
+        config,
+        shots=tuple(shots),
+        forward=_parse_glass_view(f"{owner}.forward", views["forward"]),
+        side=_parse_glass_view(f"{owner}.side", views["side"]),
+        rear=_parse_glass_view(f"{owner}.rear", views["rear"]),
+    )
+    for name, (low, high) in _GLASS_RANGES.items():
+        value = getattr(config, name)
+        if not low <= value <= high:
+            raise PresetConfigError(f"{owner}.{_snake_to_camel(name)} must be {low}..{high}, got {value}")
+    return config
+
+
+def glass_backdrop_applies(config: GlassBackdropConfig, shot_key: str | None) -> bool:
+    """The interior shot gets the showroom through its glass (enabled and listed)."""
+    return bool(config.enabled and shot_key and shot_key in config.shots)
+
+
 def _parse_reflection(data) -> ReflectionConfig:
     reflection = _build(ReflectionConfig, data, "reflection")
     if reflection.strength > 1.5:
@@ -799,7 +950,7 @@ def parse_preset(data: dict) -> Preset:
 
     for section in (
         "branding", "output", "placement", "shotPlacement", "shadow", "reflection", "vehicleAdjustments", "quality",
-        "detailBackdrop",
+        "detailBackdrop", "glassBackdrop",
     ):  # fmt: skip
         if section in data and not isinstance(data[section], dict):
             raise PresetConfigError(f"{section} must be an object")
@@ -852,6 +1003,7 @@ def parse_preset(data: dict) -> Preset:
         adjustments=_parse_vehicle_adjustments(data.get("vehicleAdjustments")),
         quality=_parse_quality(data.get("quality")),
         detail_backdrop=_parse_detail_backdrop(data.get("detailBackdrop")),
+        glass_backdrop=_parse_glass_backdrop(data.get("glassBackdrop")),
     )
 
 
