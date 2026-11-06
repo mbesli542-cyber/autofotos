@@ -75,7 +75,12 @@ class Settings:
     #: Vehicle detector (instance segmentation, semantic check of the mask) from the
     #: registry in app/pipeline/detection.py. Required like the segmentation model.
     detector_model: str = "rf-detr-seg-medium"
-    #: Download missing model weights on first use (verified by SHA-256).
+    #: Prompted segmentation model (SAM 2.1) from the registry in app/pipeline/sam2.py. Its two
+    #: ONNX graphs are BUILT by scripts/export_sam2.py (no download source), optional: nothing
+    #: in the pipeline needs them yet; a feature that does loads them on first use.
+    sam2_model: str = "sam2.1-hiera-small"
+    #: Download missing model weights on first use (verified by SHA-256). Does not apply to the
+    #: built SAM 2.1 graphs – a missing one is always a ModelUnavailableError naming the export script.
     auto_download_models: bool = True
     #: Write intermediate images (mask, cutout, …) per job. Never enable on public instances.
     debug: bool = False
@@ -119,6 +124,7 @@ class Settings:
             segmentation_model=_env("PROCESSOR_SEGMENTATION_MODEL", "birefnet-general-lite")
             or "birefnet-general-lite",
             detector_model=_env("PROCESSOR_DETECTOR_MODEL", "rf-detr-seg-medium") or "rf-detr-seg-medium",
+            sam2_model=_env("PROCESSOR_SAM2_MODEL", "sam2.1-hiera-small") or "sam2.1-hiera-small",
             auto_download_models=_env_bool("PROCESSOR_AUTO_DOWNLOAD_MODELS", True),
             debug=_env_bool("PROCESSOR_DEBUG", False),
             concurrency=max(1, _env_int("PROCESSOR_CONCURRENCY", 1)),
