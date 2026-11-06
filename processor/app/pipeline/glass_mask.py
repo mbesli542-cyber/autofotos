@@ -38,12 +38,22 @@ therefore built from evidence (all on the photo's own pixels, nothing is drawn):
    upper band) is cut out and never filled. Blobs inside a detected car are parts of that
    car, never a mirror. Exterior mirror glass sits in its own dark housing below or beside
    a pane; its seed mask is a compact convex blob the view does not contain.
+5. **Panes.** Each connected region of the result that lies in the upper part of the photo
+   and is bright (``maxPaneCentroid``, ``paneBottom``, ``minPaneLum``) is one ``GlassPane``;
+   its plate view is decided by shot and position in ``glass_backdrop.view_for_pane`` (the
+   provider says nothing about views). A pane that holds a detected car only in part
+   (``detectorCoverage``, measured on the detector's instance mask – the visible car – against
+   the pane itself, hole-filled and grown by 1 % for the coarse mask cells; the box when the
+   instance has no mask) is *incomplete*: half a car in the showroom and half in the car park
+   is never a result.
+6. **Veto.** An incomplete pane (the window continues beyond it), or a bright region of the
+   seed rows that is no pane – touching the top border (a second window the search did not
+   resolve), or next to an accepted pane without interior evidence (the rest of a
+   windscreen beyond a pane that ended early) – makes the photo unsure: no mask at all
+   rather than one window in the showroom and the next in the car park.
 
-Each connected region of the result that lies in the upper part of the photo and is
-bright (``maxPaneCentroid``, ``paneBottom``, ``minPaneLum``) is one ``GlassPane``; its
-plate view is decided by shot and position in ``glass_backdrop.view_for_pane`` (the
-provider says nothing about views). The alpha is the binary region feathered by
-``featherPx`` (≤ 3 px), so the gate's ``maxUndecided`` passes for a clean outline.
+The alpha is the binary region feathered by ``featherPx`` (≤ 3 px), so the gate's
+``maxUndecided`` passes for a clean outline.
 
 Cost per photo (CPU): one encoder pass (≈ 1.7 s on four cores), the detector (≈ 1 s) and
 one decoder pass per seed (≈ 80 ms each; ``seedGrid`` 8 × 6 with ``seedRows`` 0.5 = at
@@ -133,9 +143,13 @@ class GlassMaskConfig:
     #: glass above it) are trimmed back to that baseline.
     bump_depth: float = 0.03
     bump_window: float = 0.25
-    #: A pane (hole-filled, grown by 2 % of the long edge – detector boxes are loose) must cover at least
-    #: this share of every detected car box it overlaps, else it is incomplete (half a windscreen).
-    detector_coverage: float = 0.6
+    #: A pane must cover at least this share of every detected car whose centre lies in its hull (the
+    #: hole-filled pane grown by 2 % of the long edge), else it is incomplete (half a windscreen, a car cut
+    #: at the pane's lower edge). Measured on the detector's instance mask (the visible car) against the
+    #: hole-filled pane grown by 1 % of the long edge (one cell of the coarse mask) – the box when the
+    #: instance has no mask. Dealer photos: complete panes ≥ 0.99 (a car half-hidden behind the exterior
+    #: mirror housing included), a pane that cuts a car at its lower edge 0.77, an upper half 0.67.
+    detector_coverage: float = 0.85
     #: Closing radius (share of the long edge) and the largest enclosed hole (share of the photo) filled.
     close_radius: float = 0.004
     max_hole: float = 0.012
@@ -176,6 +190,13 @@ class GlassMaskConfig:
     #: the next in the car park. Mode "not_interior" instead ignores regions the interior seeds cover.
     unassigned_veto: float = 0.02
     unassigned_mode: str = "top_touching"
+    #: Veto too: such a region of at least adjacentVeto of the frame next to an accepted pane (inside its
+    #: hull or within adjacentRing × the long edge of it) that the interior seeds cover by less than
+    #: adjacentInterior – the rest of a windscreen beyond a pane that ended early (a light dash top below
+    #: the pane is interior and never vetoes). 0 switches it off.
+    adjacent_veto: float = 0.01
+    adjacent_ring: float = 0.04
+    adjacent_interior: float = 0.5
     #: Feather (Gaussian sigma, photo px) of the binary region.
     feather_px: float = 2.0
 
@@ -194,8 +215,14 @@ class GlassMaskResult:
     detector_seeds: list[tuple[int, int]] = field(default_factory=list)
     views: list[dict] = field(default_factory=list)
     panes: list[dict] = field(default_factory=list)
-    #: Bright regions neither pane nor interior (share of the frame each); one ≥ unassignedVeto vetoes.
+    #: Bright regions that are no pane (share of the frame each; see ``unassigned_blobs`` for what each
+    #: one is) – the vetoing one is in ``veto``.
     unassigned: list[float] = field(default_factory=list)
+    unassigned_blobs: list[dict] = field(default_factory=list)
+    #: Why the photo got no mask although panes were found: "incomplete" (a pane cuts a detected car),
+    #: "top" (a bright region at the top border that is no pane), "adjacent" (one next to a pane, not
+    #: interior); None otherwise.
+    veto: str | None = None
     work: dict[str, np.ndarray] = field(default_factory=dict)
 
 
@@ -354,13 +381,37 @@ def _grid(work: _Work) -> list[tuple[int, int]]:
     return points
 
 
-def _detector_seeds(work: _Work, rgb: np.ndarray, detector: VehicleDetector | None) -> tuple[list[tuple[int, int]], list]:
-    """Centres (working scale) of vehicles seen in the upper part of the photo (cars outside) and their
-    boxes at the working scale."""
+@dataclass
+class _Car:
+    """A vehicle the detector sees outside, at the working scale: its box and – when the instance has
+    one – its mask (the visible car, coarse cells stretched over the frame)."""
+
+    box: tuple[int, int, int, int]
+    mask: np.ndarray | None = None
+
+    @property
+    def centre(self) -> tuple[int, int]:
+        if self.mask is not None:
+            ys, xs = np.nonzero(self.mask)
+            return int(xs.mean()), int(ys.mean())
+        x0, y0, x1, y1 = self.box
+        return (x0 + x1) // 2, (y0 + y1) // 2
+
+    def covered_by(self, region: np.ndarray) -> float:
+        """Share of the car (its mask, else its box) that lies in ``region``."""
+        if self.mask is not None:
+            return float(np.count_nonzero(self.mask & region)) / float(max(np.count_nonzero(self.mask), 1))
+        x0, y0, x1, y1 = self.box
+        return float(region[y0:y1, x0:x1].sum()) / float(max((x1 - x0) * (y1 - y0), 1))
+
+
+def _detector_seeds(work: _Work, rgb: np.ndarray, detector: VehicleDetector | None) -> tuple[list[tuple[int, int]], list[_Car]]:
+    """Centres (working scale) of vehicles seen in the upper part of the photo (cars outside) and the
+    cars themselves (boxes and masks at the working scale)."""
     if detector is None:
         return [], []
     cfg = work.cfg
-    points, boxes = [], []
+    points, cars = [], []
     for instance in detector.detect(rgb):
         if not instance.is_vehicle or instance.score < cfg.detector_score:
             continue
@@ -372,8 +423,10 @@ def _detector_seeds(work: _Work, rgb: np.ndarray, detector: VehicleDetector | No
         if cy > cfg.seed_rows * work.size[1]:
             continue
         points.append((int(np.clip(cx, 0, work.size[0] - 1)), int(np.clip(cy, 0, work.size[1] - 1))))
-        boxes.append(tuple(int(round(v * work.scale)) for v in (x0, y0, x1, y1)))
-    return points, boxes
+        box = tuple(int(round(v * work.scale)) for v in (x0, y0, x1, y1))
+        mask = instance.logits(work.size[0], work.size[1]) > 0 if np.asarray(instance.mask).size else None
+        cars.append(_Car(box, mask if mask is not None and mask.any() else None))
+    return points, cars
 
 
 def _unreached_bright(work: _Work, seeds: list[_Seed]) -> list[tuple[int, int]]:
@@ -625,7 +678,8 @@ def find_glass(
     result = GlassMaskResult(None, work.width, work.height, times)
     work.encode(rgb)
     mark("encode")
-    extra, car_boxes = _detector_seeds(work, rgb, detector)
+    extra, cars = _detector_seeds(work, rgb, detector)
+    car_boxes = [car.box for car in cars]
     result.detector_seeds = extra
     mark("detector")
 
@@ -682,14 +736,19 @@ def find_glass(
             verdict = "unframed"
         elif not at_border and shape["area"] < cfg.min_inner_pane * work.pixels:
             verdict = "inner"
-        else:
-            hull = _dilate(_fill_holes(pane, work.pixels), work.radius(0.02))
-            for bx0, by0, bx1, by1 in car_boxes:
-                box_area = max((bx1 - bx0) * (by1 - by0), 1)
-                covered = int(hull[by0:by1, bx0:bx1].sum()) / float(box_area)
-                if 0.1 < covered < cfg.detector_coverage:
-                    verdict = "incomplete"  # the pane holds only part of a car seen through it
-                    break
+        car_coverage = None
+        if verdict == "ok":
+            filled = _fill_holes(pane, work.pixels)
+            hull = _dilate(filled, work.radius(0.02))  # detector boxes are loose: the centre test only
+            grown = _dilate(filled, work.radius(0.01))  # one cell of the coarse instance mask
+            for car in cars:
+                cx, cy = car.centre
+                if not hull[cy, cx]:
+                    continue  # a car elsewhere (another window, behind the mirror housing)
+                covered = car.covered_by(grown)
+                car_coverage = covered if car_coverage is None else min(car_coverage, covered)
+            if car_coverage is not None and car_coverage < cfg.detector_coverage:
+                verdict = "incomplete"  # the pane holds only part of a car seen through it
         result.panes.append(
             {
                 "area": round(shape["area"] / work.pixels, 4),
@@ -697,11 +756,18 @@ def find_glass(
                 "lum": round(lum, 3),
                 "ring": round(ring_lum, 3),
                 "atBorder": at_border,
+                "carCoverage": None if car_coverage is None else round(car_coverage, 3),
                 "verdict": verdict,
             }
         )
         if verdict == "ok":
             panes.append(pane)
+    if any(p["verdict"] == "incomplete" for p in result.panes):
+        # the window continues beyond that pane (the car does): one window half done and the next
+        # complete would be a bad result – the photo is unsure
+        result.veto = "incomplete"
+        mark("panes")
+        return result
     if not panes:
         return result
     accepted = np.zeros(work.lum.shape, bool)
@@ -710,15 +776,28 @@ def find_glass(
     bright = work.lum_median >= cfg.bright_lum
     bright[int(cfg.seed_rows * work.size[1]) :, :] = False
     bright &= ~_dilate(accepted, work.radius(0.02))
+    interior_near = _dilate(interior, work.radius(0.01))
     if cfg.unassigned_mode == "not_interior":
-        bright &= ~_dilate(interior, work.radius(0.01))
+        bright &= ~interior_near
     bright = cv2.morphologyEx(bright.astype(np.uint8), cv2.MORPH_OPEN, _disk(work.radius(0.008))) > 0
-    blobs = _components(bright, int(0.005 * work.pixels))
-    if cfg.unassigned_mode == "top_touching":
-        blobs = [b for b in blobs if b[0].any()]
-    result.unassigned = [round(float(blob.mean()), 4) for blob in blobs]
+    hull_all = _dilate(_fill_holes(accepted, work.pixels), work.radius(0.02))
+    near = _dilate(accepted, work.radius(cfg.adjacent_ring))
+    for blob in _components(bright, int(0.005 * work.pixels)):
+        share = float(blob.mean())
+        top = bool(blob[0].any())
+        adjacent = bool(np.any(blob & (hull_all | near)))
+        inside = float(np.count_nonzero(blob & interior_near)) / float(max(np.count_nonzero(blob), 1))
+        record = {"share": round(share, 4), "top": top, "adjacent": adjacent, "interior": round(inside, 2), "veto": None}
+        if (cfg.unassigned_mode != "top_touching" or top) and share >= cfg.unassigned_veto:
+            record["veto"] = "top"
+        elif cfg.adjacent_veto > 0 and adjacent and inside < cfg.adjacent_interior and share >= cfg.adjacent_veto:
+            record["veto"] = "adjacent"
+        result.unassigned_blobs.append(record)
+        if record["veto"] and result.veto is None:
+            result.veto = record["veto"]
+    result.unassigned = [b["share"] for b in result.unassigned_blobs if b["veto"] or cfg.unassigned_mode != "top_touching" or b["top"]]
     result.work["unassigned"] = bright
-    if any(share >= cfg.unassigned_veto for share in result.unassigned):
+    if result.veto is not None:
         mark("panes")
         return result
     full_size = (work.width, work.height)

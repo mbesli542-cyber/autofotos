@@ -225,6 +225,53 @@ def test_a_pane_that_covers_only_part_of_a_car_is_incomplete():
     assert any(p["verdict"] == "incomplete" for p in result.panes)
 
 
+def test_a_pane_that_cuts_a_detected_car_at_its_lower_edge_is_incomplete_and_vetoes():
+    """The windscreen pane ends above the lower body of a car seen through it (SAM's objects stop at
+    a row through the car) while the detector's INSTANCE MASK shows the whole visible car: the pane
+    covers it only in part – measured on the mask, not on the loose box – so the pane is incomplete
+    and the photo gets no mask at all (the window continues beyond the pane)."""
+    rgb, objects, _ = make_scene()
+    cut_row = (CAR[1] + CAR[3]) // 2
+    cut = np.zeros((H, W), bool)
+    cut[:cut_row, :] = True
+    objects = {name: (mask & cut if name in ("sky", "ground", "car", "view") else mask) for name, mask in objects.items()}
+    car_logits = np.where(_rect(CAR), 8.0, -8.0).astype(np.float32)
+    detector = FakeDetector([Instance("car", 0.9, tuple(float(v) for v in CAR), car_logits)])
+    result = gm.find_glass(FakeSam(objects), rgb, "cockpit", gm.GlassMaskConfig(), detector)
+    assert result.mask is None and result.veto == "incomplete"
+    incomplete = [p for p in result.panes if p["verdict"] == "incomplete"]
+    assert incomplete and incomplete[0]["carCoverage"] < gm.GlassMaskConfig().detector_coverage
+    # the whole car in the pane passes with the same detector
+    rgb, objects, truth = make_scene()
+    result = gm.find_glass(FakeSam(objects), rgb, "cockpit", gm.GlassMaskConfig(), detector)
+    assert result.mask is not None and result.panes[0]["carCoverage"] == 1.0
+    assert _iou(result.mask.alpha >= 0.5, truth) > 0.9
+
+
+def test_a_bright_region_next_to_a_pane_that_is_not_interior_vetoes_the_photo():
+    """The pane ends early (SAM's objects stop at a column) and the rest of the windscreen stays
+    bright beside it without any interior evidence: the photo is unsure – no mask. The same bright
+    region covered by an interior seed's mask (a light panel reaching far down) never vetoes."""
+    rgb, objects, _ = make_scene()
+    cut_col = 1100
+    cut = np.zeros((H, W), bool)
+    cut[:, :cut_col] = True
+    partial = {name: (mask & cut if name in ("sky", "ground", "car", "view") else mask) for name, mask in objects.items()}
+    result = gm.find_glass(FakeSam(partial), rgb, "cockpit", gm.GlassMaskConfig())
+    assert result.mask is None and result.veto == "adjacent"
+    blob = next(b for b in result.unassigned_blobs if b["veto"] == "adjacent")
+    assert blob["adjacent"] and not blob["top"] and blob["interior"] < 0.5 and blob["share"] >= gm.GlassMaskConfig().adjacent_veto
+    # the rest of the windscreen is light interior (a seed's mask reaching far down) – the pane stands
+    partial["panel_right"] = _rect((cut_col, VIEW[1], VIEW[2], 800))
+    result = gm.find_glass(FakeSam(partial), rgb, "cockpit", gm.GlassMaskConfig())
+    assert result.mask is not None and result.veto is None and len(result.mask.panes) == 1
+    assert all(b["veto"] is None for b in result.unassigned_blobs)
+    # switched off: the early pane alone is returned
+    del partial["panel_right"]
+    result = gm.find_glass(FakeSam(partial), rgb, "cockpit", gm.GlassMaskConfig(adjacent_veto=0.0))
+    assert result.mask is not None and result.veto is None
+
+
 def test_a_second_bright_window_the_search_cannot_resolve_vetoes_the_photo():
     """One window in the showroom and the next still in the car park would be a bad result: a bright
     region at the top that is no pane makes the provider return nothing."""

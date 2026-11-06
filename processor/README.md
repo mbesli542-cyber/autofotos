@@ -145,16 +145,27 @@ band (`looks_like_mirror`) is cut out with the dark blobs attached to it (its
 mount); blobs inside a detected car are never a mirror. Panes = connected
 regions with centroid ≤ 0.45 of the height, bottom ≤ 0.7, median luminance
 ≥ 0.35; a pane touching no border must cover ≥ 4 % (a white bag, exterior
-mirror glass in its housing: no); a pane covering less than 60 % of a detected
-car's box is *incomplete* (half a windscreen) and dropped; a pane whose box
+mirror glass in its housing: no); a pane that covers less than 85 % of a
+detected car whose centre lies in it is *incomplete* (half a windscreen, a car
+cut at the pane's lower edge) – measured on the detector's INSTANCE MASK (the
+visible car) against the pane itself, hole-filled and grown by 1 % of the long
+edge for the coarse mask cells (the box when the instance has no mask; never
+against the pane's 2 % hull, which hid a cut car at 0.89: complete panes measure
+≥ 0.99, the cut car 0.77, an upper half 0.67) – and an incomplete pane vetoes the
+whole photo (the window continues beyond it); a pane whose box
 matches a detected car's box with a bright ring around it is just that car
 (a crop around a car, no window); a pane with a ring brighter than 0.65 has no
 frame; columns hanging more than 3 % of the height below the pane's local
 bottom baseline are trimmed (a strip of dash top SAM grouped with the glass).
 Bright regions in the seed rows that no outside seed reached get an extra
 seed. Veto: a bright region at the top border that is no pane (≥ 2 % of the
-frame – a window the search did not resolve) makes the whole photo unsure:
-nothing rather than one window in the showroom and the next in the car park.
+frame – a window the search did not resolve), or one of ≥ 1 % next to an
+accepted pane (inside its hull or within 4 % of it) that the interior seeds
+cover by less than half (the rest of a windscreen beyond a pane that ended
+early – a light dash top below the pane is interior and never vetoes), makes
+the whole photo unsure: nothing rather than one window in the showroom and
+the next in the car park (`GlassMaskResult.veto`: `incomplete`, `top`,
+`adjacent`).
 Alpha = the binary region feathered 2 px; views come from `view_for_pane`. Cost (4 cores): encoder
 ≈ 1.7 s + detector ≈ 0.4–1.3 s + ≈ 80 ms per prompt (≈ 15–30 prompts) ≈ 4–6 s
 per interior photo, peak RSS ≈ 1.5 GB on top of the service (the detector is
@@ -171,8 +182,12 @@ pane is not (SAM groups window and light-grey door panel into one object →
 the passenger pane is found, the windscreen only in its upper part (the lower
 part is a reflection of the dash and reads like it; "incomplete" by the
 detected car) and vetoes the photo; door + seat (no glass): `None`. Probes:
-the flipped cockpit passes with the fence at one edge missing (seed
-placement), the flipped driver's seat, a crop that cuts the windscreen away
+the flipped cockpit gives `None` – its windscreen pane ends above the lower
+body of the white car outside (seed placement; the pane covers 0.77 of the
+car's instance mask, "incomplete", and the windscreen's bright rest beyond the
+pane is an adjacent non-interior region of 1.9 %), where the earlier hull
+measure (0.89 ≥ 0.6) had let it through with the car's lower half left in
+the car park; the flipped driver's seat, a crop that cuts the windscreen away
 around a car ("just a car") and darkened "night" copies (no bright seed) give
 `None`. With the shipped gate (`minGlassFraction` 0.1) one of the four glass
 photos gets the showroom (the cockpit, glass 22 % of the frame – checked at
