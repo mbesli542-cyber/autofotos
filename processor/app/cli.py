@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 from .config import Settings
+from .main import create_glass_masks
 from .pipeline.debug import NULL_DEBUG, DebugSink
 from .pipeline.glass_backdrop import file_glass_masks, glass_mask_beside
 from .pipeline.pipeline import process_photo
@@ -40,7 +41,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--debug-dir", type=Path, default=None)
     parser.add_argument("--no-detector", action="store_true", help="comparison only: without the vehicle detector")
     parser.add_argument(
-        "--glass-mask", type=Path, default=None, help="glass mask PNG of an interior shot (default: <photo>-glass.png)"
+        "--glass-mask",
+        type=Path,
+        default=None,
+        help="glass mask PNG of an interior shot (default: <photo>-glass.png; without one the automatic SAM 2.1 mask, PROCESSOR_GLASS_MASKS)",
     )
     args = parser.parse_args(argv)
     glass_mask = args.glass_mask or glass_mask_beside(args.input)
@@ -52,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
         segmenter.detector = None
     backgrounds = BackgroundProvider(settings)
     debug = DebugSink(args.debug_dir) if args.debug_dir else NULL_DEBUG
+    glass_masks = file_glass_masks(glass_mask) if glass_mask.is_file() else create_glass_masks(settings, segmenter)
 
     started = time.perf_counter()
     try:
@@ -63,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
             shot_key=args.shot,
             debug=debug,
             progress=lambda p, step: print(f"  {int(p * 100):3d}% {step}", file=sys.stderr),
-            glass_masks=file_glass_masks(glass_mask) if glass_mask.is_file() else None,
+            glass_masks=glass_masks,
         )
     except QualityGateError as error:
         print(

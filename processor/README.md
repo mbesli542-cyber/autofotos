@@ -93,12 +93,73 @@ mirror and trim are not – measured on the dealer's ID.5 photos: correct masks
 photo is rejected too, rightly), `branding_in_view` (`assess_crop`: a side/rear
 crop grown by 3 blur sigmas would overlap a branding box of the plate –
 letter fragments never appear by accident), `no_mask_provider`, `mask_invalid`,
-`showroom_unavailable`. Not switched on: the mask source decides what is glass
-– hand-made masks so far. Metadata: `shotKind` `interior_glass_backdrop` /
+`showroom_unavailable`. Switched on by the preset only (shipped `enabled:
+false`); the mask comes from the automatic SAM 2.1 provider (next paragraph,
+`PROCESSOR_GLASS_MASKS=sam2`, the default) or a hand-made PNG beside the photo
+(CLI). Metadata: `shotKind` `interior_glass_backdrop` /
 `interior_passthrough`, `glassBackdrop` (gate, maskSource, panes with crop /
 light / grain, timings); debug `mask.png` (glass alpha), `geometry.jpg`
 (region + gate), `background.jpg` (the backdrop), `final.jpg`. Tests:
 `tests/test_glass_backdrop.py`.
+
+**Automatic glass masks – SAM 2.1 (`app/pipeline/glass_mask.py`,
+`PROCESSOR_GLASS_MASKS=sam2`, default; `none` = no provider).** The
+`GlassMaskProvider` of the glass backdrop; `create_app` / the CLI (without a
+mask PNG) wire it with the segmenter's vehicle detector. Lazy: the SAM 2.1
+graphs load on the first interior photo whose preset enables the backdrop,
+never earlier. SAM 2.1 does not know "the view through the windscreen" as one
+object (a point gives the car / sky / building behind the glass, a box a patchy
+background without them), so the mask is built from evidence, nothing is drawn:
+(1) **seeds** – a grid over the upper half (8 × 6, rows ≤ 0.5 of the height) and
+the centres of the cars the detector sees outside (0.4–50 % of the frame: the
+photographed car itself and a car reflected in the mirror are ignored) each
+prompt SAM once (three nested masks); a seed is *interior* when its middle mask
+is dark (trim, wheel, display), a mask touches the bottom border or reaches
+below 55 % of the height (dash, seats, door panels), the largest mask covers
+> 35 % of the frame or is a thin band (A-pillar); a point inside a detected car
+is outside whatever its largest mask groups; (2) **view** – the outside seeds of
+a cluster form one many-point prompt, SAM's single mask is the view (the pane
+plus bright interior it took along); (3) **objects** – the outside seeds' masks
+that lie ≥ 90 % inside the hole-filled view join the union (a pillar or the
+dash top continue beyond it and drop out), minus the interior seeds' small
+masks (`I`; a dark object joins `I` only outside every view – a dark car behind
+the glass does not), plus the view's dark parts / a 3 % rim that are not
+interior, closed, small enclosed holes filled; (4) **mirrors** – uncovered or
+dark compact blobs in the upper middle of the view are prompted once more; an
+object that is compact, convex, 0.1–3 % of the frame and hangs in the upper
+band (`looks_like_mirror`) is cut out with the dark blobs attached to it (its
+mount); blobs inside a detected car are never a mirror. Panes = connected
+regions with centroid ≤ 0.45 of the height, bottom ≤ 0.7, median luminance
+≥ 0.35; a pane touching no border must cover ≥ 4 % (a white bag, exterior
+mirror glass in its housing: no); a pane covering less than 60 % of a detected
+car's box is *incomplete* (half a windscreen) and dropped; columns hanging more
+than 3 % of the height below the pane's local bottom baseline are trimmed (a
+strip of dash top SAM grouped with the glass). Alpha = the binary region
+feathered 2 px; views come from `view_for_pane`. Cost (4 cores): encoder
+≈ 1.7 s + detector ≈ 0.4–1.3 s + ≈ 80 ms per prompt (≈ 15–30 prompts) ≈ 4–6 s
+per interior photo, peak RSS ≈ 1.5 GB on top of the service (the detector is
+already loaded). **Measured on the dealer's five VW ID.5 interior photos
+against hand-drawn masks (2026-11-06):** cockpit IoU 0.86 – 3 % of the drawn
+glass area wrongly covers interior (a few px of dash edge, the sticker on the
+glass), mirror + housing cut out, the left side window found, the exterior
+mirror glass excluded; front interior (windscreen strip) IoU 0.78 – 11 % wrong:
+a strip of light-grey dash top left of the display that SAM groups with the
+glass (visible, the known weak spot), the sticker; rear seats: only the door
+window (IoU 0.83 for that pane, 112 wrong px), the right-hand pane is lost
+because SAM groups window and light-grey door panel into one object → "low";
+driver's seat through the open door: the passenger pane and the upper
+windscreen only (the lower windscreen is a reflection of the dash and reads
+like it; the open door's own window at the top left is taken, the hand mask
+left it out) – partial; door + seat (no glass): `None`. Probes: flipped copies
+behave like the originals, a crop that cuts the windscreen keeps a pane along
+the cut (allowed), darkened "night" copies give `None` (no bright seed). Limits
+to know: light-grey interior next to the glass (dash top, door panel, A-pillar
+lit by the window) is the one thing neither SAM nor the gate separates from
+daylight through glass – the gate's `interiorStructure` only sees dark
+interior; a pane may be partial (the dealer checks the result like any other
+"check" hint). Tests: `tests/test_glass_mask.py` (synthetic cockpit with a fake
+prompted segmenter, mirror rule, bump trim, detector seeds, wiring; the real
+graphs when built).
 
 **EXPERIMENTAL – detail backdrop (off by default).** Preset section
 `detailBackdrop` (`enabled: false`; `shots` ⊆ `wheel_detail`,
@@ -328,7 +389,7 @@ generates, moves or changes a pixel, and BiRefNet stays the matting model.
 | Graphs | encoder: `image` [1, 3, 1024, 1024] → `image_embed` [1, 256, 64, 64], `high_res_feats_0` [1, 32, 256, 256], `high_res_feats_1` [1, 64, 128, 128]; decoder: those three + `point_coords` [1, N, 2] float32 (model px) + `point_labels` [1, N] int64 (1 foreground, 0 background, 2/3 box corners) → `masks` [1, 4, 256, 256] low-res logits of ALL mask tokens (0 = single-mask token, 1 … 3 = multimask), `iou_predictions` [1, 4], `object_score_logits` [1, 1]. The prompt encoder pads the prompt itself (SAM's padding point) – a box is its two corners labelled 2/3, as the official `SAM2ImagePredictor` feeds it |
 | Runtime | `Sam2Segmenter.encode(rgb) → Sam2Embedding` (SAM 2.1's own preprocessing: resize to 1024 × 1024 without keeping the aspect ratio – Pillow bilinear, the official processor's antialiased uint8 resize up to ±1 on 0.1 % of the pixels –, /255, ImageNet mean/std); `predict(embedding, points=[(x, y, label 0/1), …], box=(x0, y0, x1, y1) or None, multimask=True) → (logits [K, H, W] float32 in photo px, > 0 = inside, sigmoid = probability; IoU predictions [K])`, K = 3 with `multimask` (SAM's three candidates), else 1: the single-mask token, or – when its stability score is below 0.98 – the best multimask output (`dynamic_multimask_via_stability`, ported to NumPy; `decode` returns the 256 × 256 logits and the object score without the resampling). Lazy loading of both sessions, `PROCESSOR_THREADS`, no memory arena, `release()` drops them |
 | Verified | `scripts/export_sam2.py --verify cases.json` (ONNX Runtime vs the PyTorch model, same tensor): mask IoU 1.0000 for every prompt (box, point, point + background point, box + point) on the four synthetic regression photos, max |Δlogit| ≤ 1e-4, IoU predictions equal; with the service's Pillow preprocessing IoU 0.996–1.000 (SAM's ambiguous third candidate moves most), IoU predictions within 0.0005. Real regression photos: `/opt/ae-regression/images` was not reachable on the export day (Wikimedia rate limit) – run it again on `side_left`, `front`, `suv_fr45` (see `tests/visual/`) |
-| Not used for | the cut line, pixels, the current pipeline. A later feature loads it on first use (`create_sam2(settings)`); until then a missing graph costs nothing |
+| Used for | the automatic glass masks of interior shots (`app/pipeline/glass_mask.py`, above – loaded on the first interior photo whose preset enables `glassBackdrop`, never earlier; a missing graph costs nothing until then and is a `ModelUnavailableError` then). Never for the cut line or any pixel |
 
 **Resources (measured 2026-11-06, 4 vCPUs, load average ≈ 1.5 from other
 work, `PROCESSOR_THREADS=0`, synthetic 3840 × 2880 / 4032 × 3024 / 2160 × 3840
