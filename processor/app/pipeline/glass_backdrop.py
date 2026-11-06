@@ -89,6 +89,7 @@ from .color import linear_to_srgb, linear_to_u8, srgb_to_linear
 from .debug import NULL_DEBUG, DebugSink
 from .detail_backdrop import Crop, defocus, light_match, noise_level, resample_crop
 from .mask import QualityWarning
+from .segmentation import ModelUnavailableError
 
 log = logging.getLogger(__name__)
 
@@ -216,7 +217,8 @@ class GlassMask:
 
 #: ``(rgb uint8 H×W×3, shot_key) -> GlassMask | None`` – None: no glass found / nothing to say. Raises
 #: nothing for an unclear photo (that is the gate's job) – only ``GlassMasksUnavailable`` when it has
-#: no model to look with. The mask must have the photo's size.
+#: no model to look with, or ``segmentation.ModelUnavailableError`` when that model cannot be loaded
+#: (both: the original with the ``no_mask_provider`` hint). The mask must have the photo's size.
 GlassMaskProvider = Callable[[np.ndarray, "str | None"], "GlassMask | None"]
 
 
@@ -596,6 +598,11 @@ def run_glass(
         mask = glass_masks(rgb, shot_key)
     except GlassMasksUnavailable as error:
         log.info("Glass backdrop (%s) without glass masks: %s", shot_key, error)
+        return skip("no_mask_provider", maskSource=None, detail=str(error))
+    except ModelUnavailableError as error:
+        # the provider has a model to look with but cannot load it (a graph missing or refused at its
+        # first use, ONNX Runtime failing on it): the same outcome, loudly – never a failed interior job
+        log.error("Glass backdrop (%s): the glass-mask model is unavailable: %s", shot_key, error)
         return skip("no_mask_provider", maskSource=None, detail=str(error))
     mark("mask")
     if mask is None:

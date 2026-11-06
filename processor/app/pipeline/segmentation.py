@@ -196,7 +196,9 @@ class OnnxSegmenter:
         self.name = f"onnx:{spec.name}"
         #: Semantic vehicle detector used next to this model (see detection.py).
         self.detector = detector
-        #: SAM 2.1 for the contested cut (mask.sam_cut), None when its graphs are not there.
+        #: The process's ONE SAM 2.1: the contested cut (mask.sam_cut) and the automatic glass masks of
+        #: interior shots (glass_mask.shared_glass_masks read it per call); None when its graphs are not
+        #: there or were refused – both uses are off then.
         self.sam2 = sam2
         #: Why the SAM 2.1 graphs were refused at warm-up (checksum), if they were; then `sam2` is None.
         self.sam2_error: str | None = None
@@ -247,10 +249,13 @@ class OnnxSegmenter:
                 self.sam2.verify()  # checksums only (≈ 0.5 s); the sessions load with the first contested region
             except ModelUnavailableError as error:
                 # an optional model: jobs run as without it (a glued foreign object rejects the photo as
-                # before) – loudly, and visible in /health (sam2Error)
+                # before, interior shots stay the original with a hint) – loudly, and visible in /health
+                # (sam2Error, glassMasks null)
                 self.sam2_error = str(error)
                 self.sam2 = None
-                log.error("SAM 2.1 graphs refused – the contested cut is off: %s", error)
+                log.error(
+                    "SAM 2.1 graphs refused – the contested cut and the automatic glass masks are off: %s", error
+                )
 
     def segment(self, rgb: np.ndarray) -> np.ndarray:
         if rgb.ndim != 3 or rgb.shape[2] != 3:

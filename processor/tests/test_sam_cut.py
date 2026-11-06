@@ -530,7 +530,7 @@ def test_warm_up_refuses_foreign_graphs_loudly_and_switches_the_cut_off(settings
     with caplog.at_level(logging.ERROR, logger="app.pipeline.segmentation"):
         segmenter.warm_up()
     assert segmenter.sam2 is None and "Checksum mismatch" in (segmenter.sam2_error or "")
-    assert segmenter.loaded and any("contested cut is off" in r.message for r in caplog.records)
+    assert segmenter.loaded and any("contested cut and the automatic glass masks are off" in r.message for r in caplog.records)
 
 
 def test_health_reports_the_sam_model(settings, fake_segmenter):

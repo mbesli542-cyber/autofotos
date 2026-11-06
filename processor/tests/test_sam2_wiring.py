@@ -118,6 +118,37 @@ def test_a_warm_up_refusal_after_creation_switches_the_glass_masks_off(settings,
         provider(RGB, "cockpit")
 
 
+def test_a_model_that_cannot_be_loaded_at_first_use_leaves_the_original_with_the_hint(settings, caplog):
+    """No warm-up ran yet (or the graph broke after it): the provider has a SAM 2.1 to look with, but
+    its first encode raises ModelUnavailableError (checksum, an ONNX Runtime load failure). The
+    interior job never fails on it – the original with the ``no_mask_provider`` hint, logged as an
+    error."""
+    from app.main import create_glass_masks
+    from app.pipeline.segmentation import ModelUnavailableError
+
+    _fake_graphs(settings)  # present, but not the registered export – refused at the first use
+    segmenter = create_segmenter(settings)
+    provider = create_glass_masks(settings, segmenter)
+    assert segmenter.sam2 is not None and provider is not None
+    with pytest.raises(ModelUnavailableError, match="Checksum mismatch"):
+        provider(RGB, "cockpit")
+    preset = parse_preset(_enabled_data())
+    with caplog.at_level(logging.ERROR, logger="app.pipeline.glass_backdrop"):
+        outcome = run_glass(RGB, preset=preset, backgrounds=None, glass_masks=provider, shot_key="cockpit")
+    assert not outcome.applied and outcome.meta["reason"] == "no_mask_provider"
+    assert "Checksum mismatch" in outcome.meta["detail"] and outcome.meta["maskSource"] is None
+    assert outcome.warnings[0].code == "glass_backdrop_skipped" and "nicht verfügbar" in outcome.warnings[0].message
+    assert np.array_equal(outcome.rgb, RGB)
+    assert any(r.levelno == logging.ERROR and "unavailable" in r.message for r in caplog.records)
+
+    # the same for a load failure of ONNX Runtime (any ModelUnavailableError of the provider)
+    def failing(_rgb, _shot):
+        raise ModelUnavailableError("cannot load model sam2.1-hiera-small (encoder): no")
+
+    outcome = run_glass(RGB, preset=preset, backgrounds=None, glass_masks=failing, shot_key="cockpit")
+    assert not outcome.applied and outcome.meta["reason"] == "no_mask_provider" and "cannot load" in outcome.meta["detail"]
+
+
 # --------------------------------------------------------------------------- /health
 
 
