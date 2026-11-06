@@ -158,8 +158,12 @@ roof boxes. A second, small model gives the semantic signal:
      zone first, then the most interior one of the tile – plus our car's box
      (the vehicle instance and our alpha outside the zone); "not that" = up to 3
      negative points in the core of the other object's instance (eroded the
-     same way): inside the glued part, next to the contact outside our alpha,
-     then anywhere in the tile. Screening of the candidates (SAM's three
+     same way, and never inside our alpha outside the verified region – the
+     other instance is as coarse as ours: in the dealer's front-left photo the
+     black car's instance also claimed a strip of OUR bonnet, two "not that"
+     points landed on it, SAM excluded the bonnet and every candidate failed
+     the agreement screen): inside the glued part, next to the contact outside
+     our alpha, then anywhere in the tile. Screening of the candidates (SAM's three
      granularities): it must contain every positive and no negative point,
      agree with the BiRefNet alpha outside the zone (≤ 3 % of the alpha's pixels
      there differ, away from the tile border; measured 0.06–2.1 % for the right

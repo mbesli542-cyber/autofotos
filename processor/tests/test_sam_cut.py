@@ -401,6 +401,35 @@ def test_the_scene_puts_the_prompts_on_the_right_objects_and_the_zone_around_the
     assert sam_scene(binary, replace(finding, verdict=None), scale=scale, zone_px=zone_px) == (None, "no_zoom_verdict")
 
 
+def test_not_that_prompts_never_land_on_our_car_when_the_other_instance_reaches_onto_it():
+    """The dealer's ID.5 in front of a black car: the black car's coarse instance also claimed a
+    strip of OUR bonnet. Negative prompts and the foreign core must stay out of our alpha outside
+    the verified region – otherwise SAM excludes our bonnet and every candidate is refused (or a
+    screen demands cutting it)."""
+    car, wheel, rgb, detector = _glued_wheel_scene()
+    alpha = (car | wheel).astype(np.float32)
+    overreach = np.zeros_like(car)
+    cv2.rectangle(overreach.view(np.uint8), (1900, 900), (2040, 960), 1, -1)  # a strip of our bonnet/bumper top
+    overreach &= car
+    neighbour = np.zeros_like(car)
+    cv2.rectangle(neighbour.view(np.uint8), (1980, 820), (2399, 1130), 1, -1)
+    detector = FakeDetector().add("car", car, 0.95).add("car", (neighbour & ~car) | overreach, 0.9)
+    binary, finding, scale, zone_px, vw = _finding(alpha, rgb, detector)
+    scene, reason = sam_scene(binary, finding, scale=scale, zone_px=zone_px)
+    assert scene is not None, reason
+    x0, y0, x1, y1 = scene.window
+    for x, y, label in scene.points:
+        if label == 0:
+            assert not car[y0 + int(y), x0 + int(x)]  # never on our car
+            assert not scene.mask[int(y), int(x)] or scene.region[int(y), int(x)]
+    assert not (scene.foreign_core & scene.mask & ~scene.region).any()
+    # and the cut goes through: the strip stays, the wheel goes
+    result, info = clean_mask(alpha, rgb=rgb, detector=detector, sam=FakeSam(car))
+    finding = next(f for f in info.semantic["findings"] if f["foreign"])
+    assert finding["action"] == "cut" and finding["verify"]["samCut"]["reasons"] == []
+    assert (result[overreach] >= 0.5).all() and (result[wheel & ~cv2.dilate(car.view(np.uint8), np.ones((9, 9), np.uint8)).astype(bool)] < 0.5).all()
+
+
 def test_sam_cut_on_refuses_a_wrong_number_of_candidates_and_records_every_candidate():
     car, wheel, rgb, detector = _glued_wheel_scene()
     alpha = (car | wheel).astype(np.float32)

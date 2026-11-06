@@ -1161,11 +1161,15 @@ def sam_scene(
     logit_px = max(shape) / SAM_LOGIT_CELLS
     core_radius = max(1, int(round(SAM_CORE_CELLS * cell + SAM_CORE_LOGIT_CELLS * logit_px)))
     vehicle_core = (cv2.erode(vehicle.astype(np.uint8), _ellipse(core_radius)) > 0) & mask & ~region
-    foreign_core = (cv2.erode(other.astype(np.uint8), _ellipse(core_radius)) > 0) & ~vehicle_core
+    # the other object's core: never inside our alpha outside the verified region – the other
+    # instance is as coarse as ours and reached onto the bonnet of the dealer's ID.5 (a dark
+    # windscreen base in front of a black car); a "not that" point there, or a screen demanding
+    # that strip be removed, would cut or refuse our own car
+    foreign_core = (cv2.erode(other.astype(np.uint8), _ellipse(core_radius)) > 0) & ~vehicle_core & (~mask | region)
     near = cv2.dilate(zone.astype(np.uint8), _ellipse(max(1, int(round(SAM_PROMPT_REACH_CELLS * cell))))) > 0
     positive = _prompt_points(vehicle_core, [near, None], cell)
     # "not that": inside the glued part itself where the core reaches it, the other object right
-    # next to the contact, then anywhere in the tile
+    # next to the contact, then anywhere in the tile (always outside our alpha there)
     negative = _prompt_points(foreign_core, [region, near & ~mask, None], cell)
     if not positive or not negative:
         return None, "no_prompt"
@@ -1259,6 +1263,11 @@ def sam_cut_on(
             }
         )
     diag["candidates"] = candidates
+    if layers is not None:
+        layers.update(
+            mask=mask, region=region, zone=zone, vehicle=scene.vehicle, other=scene.other, vehicle_core=scene.vehicle_core,
+            foreign_core=scene.foreign_core, solids=solids,
+        )  # fmt: skip
     usable = [k for k, c in enumerate(candidates) if c["ok"]]
     if not usable:
         diag["reasons"] = ["no_candidate"]
@@ -1339,10 +1348,7 @@ def sam_cut_on(
         reasons.append("no_colour_edge")
     diag["reasons"] = reasons
     if layers is not None:
-        layers.update(
-            mask=mask, region=region, zone=zone, vehicle=scene.vehicle, other=scene.other, vehicle_core=scene.vehicle_core,
-            foreign_core=scene.foreign_core, solid=solid, cut=cut, line=line, edges=edges, solids=solids, spill=spill,
-        )  # fmt: skip
+        layers.update(solid=solid, cut=cut, line=line, edges=edges, spill=spill)
     if reasons:
         return None, diag
     return SamCut(window=scene.window, region=cut, soft=_sam_soft_edge(np.asarray(logits[chosen], np.float32)), zone=zone), diag
