@@ -502,14 +502,16 @@ Zen 3 cores under WSL2.
 **Docker:** the graphs are built in a separate build stage (`sam2-export`:
 pinned torch + transformers, the pinned checkpoint, `scripts/export_sam2.py`)
 and only the two ONNX files are copied into the image – no torch in the service
-image. Build with `docker build … --build-arg SAM2_MODEL=sam2.1-hiera-small`
-(≈ 300 MB of downloads once, cached by BuildKit) for the contested cut; an image
-built without it runs, logs that the cut is off and rejects glued foreign
-objects as before.
-The service stage verifies the built files against the pinned SHA-256 and fails
-the build on a mismatch (the alternative – committing 160 MB of binaries or
-publishing them as release assets – would ship files nobody can rebuild from
-source; rejected).
+image. The stage is part of the DEFAULT build (both dealer features need the
+graphs; see Deploy for what it downloads); `docker build … --build-arg SAM2=off`
+skips it and sets `PROCESSOR_SAM2_ENABLED=false` in the image – the service then
+runs as before these features (a glued foreign object rejects the photo,
+interior shots stay the original with a hint); `--build-arg
+SAM2_MODEL=sam2.1-hiera-tiny` builds the smaller registered model instead.
+The service stage copies the graphs in BEFORE their check and verifies them
+against the pinned SHA-256; a mismatch fails the build (the alternative –
+committing 160 MB of binaries or publishing them as release assets – would
+ship files nobody can rebuild from source; rejected).
 
 ### Presets and assets
 
@@ -999,9 +1001,11 @@ curl -H "Authorization: Bearer <key>" http://127.0.0.1:8000/health   # … "auth
 The segmentation model and the vehicle detector are downloaded and
 checksum-verified at build time (`--build-arg SEGMENTATION_MODEL=isnet-general-use`
 for the alternative segmentation model, `--build-arg DETECTOR_MODEL=…` for
-another registered detector), the service runs as a non-root user and stores
-jobs in the `/data` volume. The image's health check calls the
-unauthenticated `/health` (status only).
+another registered detector), the SAM 2.1 graphs are BUILT in the `sam2-export`
+stage (default on, `--build-arg SAM2=off` to skip – see "SAM 2.1" above and
+Deploy below), the service runs as a non-root user and stores jobs in the
+`/data` volume. The image's health check calls the unauthenticated `/health`
+(status only).
 
 ## Deploy (so the Vercel/iPhone app can process real photos)
 
@@ -1023,7 +1027,9 @@ curl -H "Authorization: Bearer <PROCESSOR_API_KEY>" https://processor.example.co
 
 Check the authenticated answer: `"auth":true` (the key is active),
 `"modelLoaded":true` once the models are warmed up, `"showroomSource":"plates"`,
-`"presetError":null` and, in Supabase mode, `"supabase":true`. If an
+`"presetError":null`, `"sam2":"sam2.1-hiera-small"` with `"glassMasks":"sam2"`
+(the contested cut and the automatic glass masks are available) and, in
+Supabase mode, `"supabase":true`. If an
 unauthenticated `/health` returns these details with `"auth":false`, the
 processor is open. The compose file sets `PROCESSOR_REQUIRE_API_KEY: "true"`
 itself, so `../.env` cannot switch it off: with an empty key the processor
@@ -1038,6 +1044,30 @@ Let's-Encrypt certificate in front of it (`Caddyfile`). The DNS record of
 Update: `git pull && PROCESSOR_DOMAIN=processor.example.com docker compose up -d --build`
 (a changed `requirements.txt`, e.g. the move to Pillow 13, rebuilds the pip
 layer by itself).
+
+**What `docker build` downloads since the SAM 2.1 features (2026-11-06):** besides
+the two downloaded models (BiRefNet ≈ 220 MB, detector ≈ 130 MB, as before) the
+`sam2-export` stage fetches, ONCE, the pinned export stack from the official
+indexes – the CPU-only torch wheel 2.15.0+cpu (≈ 210 MB) and
+transformers/onnx/onnxscript/onnxruntime/huggingface_hub/numpy/pillow (≈ 90 MB
+together, ≈ 300 MB of wheels in all; the installed stage is ≈ 1.1 GB) – and the
+Hugging Face checkpoint `facebook/sam2.1-hiera-small` (`model.safetensors`
+184 MB + three small config files), so ≈ 0.5 GB more than before; no GPU
+packages. The export itself takes ≈ 1 min of CPU (encoder ≈ 10 s and decoder
+≈ 3 s, each exported twice to prove the bytes identical, plus the model load and
+the checksum); the whole first build is ≈ 5–10 min more than before on a
+50 Mbit/s line, mostly the downloads. BuildKit keeps the pip wheels and the
+checkpoint in its caches (`--mount=type=cache`), so later builds re-export only
+when `scripts/export_sam2.py` changes and never download them again (`docker
+builder prune` drops the caches, the next build downloads them once more). The
+final image carries the two ONNX graphs (≈ 160 MB) and no torch. The build needs
+to reach `download.pytorch.org`, `pypi.org`/`files.pythonhosted.org` and
+`huggingface.co` (plus `cas-bridge.xethub.hf.co` for the checkpoint); a server
+without that access builds with `--build-arg SAM2=off` (no contested cut, no
+automatic glass masks – `/health` shows `"sam2": null`, `"glassMasks": null`).
+Check after the deploy: `"sam2": "sam2.1-hiera-small"` and `"glassMasks": "sam2"`
+in the authenticated `/health` (`sam2Loaded` turns true with the first photo that
+needs it; `sam2Error` names a refused graph).
 
 **A new look under the same preset id** (e.g. the switch to the dealer's studio): the
 preset and its plates ship in this image, so the look changes when the processor is

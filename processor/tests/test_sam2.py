@@ -178,6 +178,41 @@ def test_download_script_knows_the_built_graphs_and_only_verifies_them(tmp_path,
     assert not list(tmp_path.iterdir())
 
 
+def test_download_script_without_names_tolerates_unbuilt_graphs_but_never_foreign_ones(tmp_path, monkeypatch, capsys):
+    """`download_models.py` / `--all` (the Docker build, a developer's first setup): the two
+    downloadable models plus the CONFIGURED SAM 2.1 graphs – not built = reported, exit 0 (the
+    service runs without SAM 2.1); built but not the registered export = exit 1. The other
+    registered SAM 2.1 model (tiny) is never checked by --all."""
+    download = _script("download_models")
+    monkeypatch.setenv("PROCESSOR_MODELS_DIR", str(tmp_path))
+    monkeypatch.setenv("PROCESSOR_ENV_FILE", str(tmp_path / "no.env"))
+    monkeypatch.setenv("PROCESSOR_SAM2_MODEL", "sam2.1-hiera-small")
+    downloaded: list[str] = []
+
+    def fake_ensure_model(spec, models_dir, *, auto_download):
+        downloaded.append(spec.name)
+        path = Path(models_dir) / spec.filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"model")
+        return path
+
+    monkeypatch.setattr(download, "ensure_model", fake_ensure_model)
+    for argv in (["download_models.py"], ["download_models.py", "--all"]):
+        downloaded.clear()
+        monkeypatch.setattr("sys.argv", argv)
+        assert download.main() == 0
+        out = capsys.readouterr()
+        assert "sam2.1-hiera-small: not built" in out.out and "sam2.1-hiera-tiny" not in out.out
+        assert "sam2.1-hiera-small" not in downloaded  # never downloaded
+    assert set(downloaded) == set(download.MODEL_REGISTRY) | set(download.DETECTOR_REGISTRY)  # --all
+    spec = SAM2_REGISTRY["sam2.1-hiera-small"]
+    for name in spec.filenames:
+        (tmp_path / name).write_bytes(b"not the registered export")
+    monkeypatch.setattr("sys.argv", ["download_models.py"])
+    assert download.main() == 1
+    assert "Checksum mismatch" in capsys.readouterr().err
+
+
 def test_sam2_model_is_configured_by_name(settings, monkeypatch):
     assert create_sam2(settings).spec.name == "sam2.1-hiera-small"
     with pytest.raises(SegmentationError):
