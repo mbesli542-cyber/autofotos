@@ -8,7 +8,9 @@ front_left_45), --debug-dir (writes mask/geometry/cut-out/plate/... images),
 --no-detector (skip the vehicle detector: no semantic check of the mask – neither
 foreign objects nor missing vehicle parts – and the window of portrait photos
 comes from a whole-frame pass; for comparisons only, the service always uses
-the detector). A photo rejected by the quality
+the detector), --glass-mask (interior shots with the preset's glassBackdrop
+enabled: a grey PNG, 255 = see-through glass; default <photo>-glass.png next
+to the photo when it exists). A photo rejected by the quality
 gate prints the German message and the gate details and exits with code 2.
 """
 
@@ -22,6 +24,7 @@ from pathlib import Path
 
 from .config import Settings
 from .pipeline.debug import NULL_DEBUG, DebugSink
+from .pipeline.glass_backdrop import file_glass_masks, glass_mask_beside
 from .pipeline.pipeline import process_photo
 from .pipeline.quality import QualityGateError
 from .pipeline.segmentation import create_segmenter
@@ -36,7 +39,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shot", default="front_left_45")
     parser.add_argument("--debug-dir", type=Path, default=None)
     parser.add_argument("--no-detector", action="store_true", help="comparison only: without the vehicle detector")
+    parser.add_argument(
+        "--glass-mask", type=Path, default=None, help="glass mask PNG of an interior shot (default: <photo>-glass.png)"
+    )
     args = parser.parse_args(argv)
+    glass_mask = args.glass_mask or glass_mask_beside(args.input)
 
     settings = Settings.from_env()
     preset = load_preset(settings, args.preset)
@@ -56,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
             shot_key=args.shot,
             debug=debug,
             progress=lambda p, step: print(f"  {int(p * 100):3d}% {step}", file=sys.stderr),
+            glass_masks=file_glass_masks(glass_mask) if glass_mask.is_file() else None,
         )
     except QualityGateError as error:
         print(

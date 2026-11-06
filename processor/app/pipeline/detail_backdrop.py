@@ -73,6 +73,7 @@ __all__ = [
     "detail_backdrop_applies",
     "part_alpha",
     "plan_backdrop",
+    "resample_crop",
     "run_detail",
 ]
 
@@ -342,7 +343,9 @@ def plan_crop(
     return crop
 
 
-def _resample(plate_rgb: np.ndarray, crop: Crop, width: int, height: int) -> np.ndarray:
+def resample_crop(plate_rgb: np.ndarray, crop: Crop, width: int, height: int) -> np.ndarray:
+    """The plate's ``crop`` resampled to (width, height) – area resampling when it shrinks,
+    cubic when it is enlarged (also used by the glass backdrop)."""
     sx, sy = width / crop.width, height / crop.height
     matrix = np.array([[sx, 0.0, -crop.x0 * sx], [0.0, sy, -crop.y0 * sy]], np.float32)
     interpolation = cv2.INTER_AREA if sx < 1.0 else cv2.INTER_CUBIC
@@ -591,7 +594,7 @@ def compose(
         plan = plan_backdrop(rgb, alpha, (plate_w, plate_h), floor_top, cfg)
     crop, background = plan.crop, plan.background
     long_edge = float(max(width, height))
-    plate = srgb_to_linear(_resample(plate_rgb, crop, width, height))
+    plate = srgb_to_linear(resample_crop(plate_rgb, crop, width, height))
     horizon_y = crop.horizon * height
     backdrop = defocus(plate, horizon_y, cfg.blur * long_edge, cfg.floor_blur, plan.ground)
     photo = srgb_to_linear(rgb)

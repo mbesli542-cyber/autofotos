@@ -47,6 +47,51 @@ re-encoded (orientation, sRGB, long edge scaled down to at most
 `output.longEdgeMax` = 2400 px, never up) because a showroom background makes
 no sense there.
 
+**Glass backdrop – the showroom THROUGH the glass of interior shots (off by
+default).** Dealer decision: an interior photo stays exactly as photographed –
+dashboard, steering wheel, mirror, pillars, wipers, stickers on the glass, the
+glass's own reflections – and ONLY what is seen through the see-through glass
+(windscreen, side windows: car park, other cars, buildings) is replaced by a
+defocused view of the shipped studio plate, like a car standing inside the
+showroom. Preset section `glassBackdrop` (`enabled: false`; `shots` ⊆
+`cockpit`, `front_interior`, `driver_seat`, `rear_seats`; every field written
+out when the section is set): `app/pipeline/glass_backdrop.py`. The glass alpha
+(1 = see-through glass) comes from a **pluggable mask provider** the caller
+injects – `process_photo(..., glass_masks=)`, `JobManager(glass_masks=)`: a
+callable `(rgb, shot_key) -> GlassMask | None` (`GlassMask.alpha` H×W float32,
+optional `panes` with their own view); shipped: `file_glass_masks(path)` – a
+grey PNG next to the photo (CLI `--glass-mask`, default `<photo>-glass.png`) –,
+a prompted segmentation model is the next provider. Without a provider those
+shots stay the original with the hint. Per pane: a crop of the branded plate
+(`forward` for the windscreen: the brand wall ahead, the plate's horizon at
+`horizon` of the photo height, `cropHeight` of the plate, centred on
+`centerX`; `side` for side windows: the slat/plant side; the official logo
+appears when in view), Gaussian depth of field (`blur` × the long edge,
+`floorBlur` × it at the bottom row), mean colour moved towards the photo's own
+glass region (`lightMatch`, ±1 EV, ±12 % per channel), the photo's measured
+sensor noise (`grain`), then `out = original · (1 − α·k) + backdrop · α·k` with
+`k = 1 − glassKeep` (the share of the ORIGINAL glass pixels kept – tint, noise,
+strong reflections; above ≈ 0.1 the outside scene ghosts through, measured on
+the dealer's photos, shipped 0.05). Every pixel with alpha 0 is bit-identical
+(tested). Gate (`assess_glass`, all measurements in the metadata) – the original
+with the hint `glass_backdrop_skipped` (`reason`): `no_glass`,
+`glass_too_small` (< `minGlassFraction` of the frame), `edge_undecided` (soft
+alpha band 0.05–0.95 wider than `maxUndecided` × the long edge per outline
+pixel), `mask_leaked` (more than `maxBorderSides` photo borders touched, or
+the bottom border over more than `maxBottomTouch` of the width – glass is never
+at the bottom of an interior photo), `interior_structure` (share of the
+region's core darker than 0.15 sRGB above `maxInteriorStructure`: through the
+glass the outside is bright in daylight, black steering wheels, pillars, the
+mirror and trim are not – measured on the dealer's ID.5 photos: correct masks
+≤ 0.035, the mask with the mirror 0.05, with the steering wheel 0.1; a night
+photo is rejected too, rightly), `no_mask_provider`, `mask_invalid`,
+`showroom_unavailable`. Not switched on: the mask source decides what is glass
+– hand-made masks so far. Metadata: `shotKind` `interior_glass_backdrop` /
+`interior_passthrough`, `glassBackdrop` (gate, maskSource, panes with crop /
+light / grain, timings); debug `mask.png` (glass alpha), `geometry.jpg`
+(region + gate), `background.jpg` (the backdrop), `final.jpg`. Tests:
+`tests/test_glass_backdrop.py`.
+
 **EXPERIMENTAL – detail backdrop (off by default).** Preset section
 `detailBackdrop` (`enabled: false`; `shots` ⊆ `wheel_detail`,
 `special_detail`, `extra` = every `extra_NN`; never interior shots) puts the
@@ -276,7 +321,11 @@ projected through the plate misses it), `reflection` (`enabled`, `strength` ≤ 
 the plate's measured reflectance, `maxReflectance`/`defaultReflectance` ≤ 0.3,
 `fade` 0.2–2 × car height, `blurRate` ≤ 0.2, optional `footprintReach` like the shadow's
 for the band under the car where the plate's own reflection is removed),
-`vehicleAdjustments`, `quality`. Unknown keys, wrong types, NaN/Infinity and
+`vehicleAdjustments`, `quality`, `detailBackdrop` (experimental, off), `glassBackdrop`
+(off; when set, every field: `blur` 0–0.03, `floorBlur` 0–1, `lightMatch` 0–1, `grain` 0–2,
+`glassKeep` 0–0.6, `minGlassFraction` 0.001–0.5, `maxUndecided` 0–0.05, `maxBorderSides` 0–4,
+`maxBottomTouch` 0–1, `maxInteriorStructure` 0–0.5, per view `cropHeight` 0.25–1, `centerX` 0–1,
+`horizon` 0.05–0.95). Unknown keys, wrong types, NaN/Infinity and
 out-of-range values are rejected (`PresetConfigError`), never replaced by
 defaults – `/health` reports them as `presetError` and jobs fail with
 `configuration`. Ranges besides the ones above (`app/presets.py`):
@@ -836,7 +885,9 @@ taken or flagged with the hint; what is taken stops at colour edges) and the
 "quer halten" message (upscale rule only), colour-edge matting (no alpha above the model
 outside its contour, thin parts such as antenna masts keep the model alpha),
 colour guard and hard
-limits (navy stays navy), decoding (header budgets, animated images, reduced
+limits (navy stays navy), the glass backdrop (config with every field, the gate's reasons on
+a synthetic cockpit with deliberately wrong masks, bit-identical pixels outside the glass,
+pipeline wiring with and without a mask provider, panes with their own views), decoding (header budgets, animated images, reduced
 decoding of very large JPEGs, `image_too_large`), debug output (every listed
 debug file can be downloaded) and the Supabase store (HTTP mocked). Tests use small synthetic plate sets with exact geometry
 (`tests/plate_fixtures.py`), synthetic vehicles and a fake segmenter – no

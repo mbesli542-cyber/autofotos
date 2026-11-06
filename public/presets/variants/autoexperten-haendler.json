@@ -158,5 +158,34 @@
     "maxAspectFactor": 1.9,
     "highViewRiseFactor": 1.42,
     "highViewAspectFactor": 0.88
+  },
+  "glassBackdrop": {
+    "enabled": false,
+    "shots": [
+      "cockpit",
+      "front_interior",
+      "driver_seat",
+      "rear_seats"
+    ],
+    "forward": {
+      "cropHeight": 0.75,
+      "centerX": 0.5,
+      "horizon": 0.36
+    },
+    "side": {
+      "cropHeight": 0.5,
+      "centerX": 0.15,
+      "horizon": 0.45
+    },
+    "blur": 0.005,
+    "floorBlur": 1.0,
+    "lightMatch": 0.5,
+    "grain": 1.0,
+    "glassKeep": 0.05,
+    "minGlassFraction": 0.02,
+    "maxUndecided": 0.008,
+    "maxBorderSides": 3,
+    "maxBottomTouch": 0.02,
+    "maxInteriorStructure": 0.04
   }
 }
